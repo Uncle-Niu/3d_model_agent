@@ -4,9 +4,10 @@
 
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Environment, Grid, Center, useGLTF } from '@react-three/drei';
-import { Suspense, useEffect, useRef } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { useViewportStore } from '../stores';
+import { api } from '../api';
 
 function Model({ url }: { url: string }) {
   const { scene } = useGLTF(url);
@@ -56,7 +57,40 @@ function EmptyState() {
 }
 
 export default function Viewport() {
-  const { glbUrl, isLoading } = useViewportStore();
+  const { glbUrl, isLoading, currentModelId, currentProjectId } = useViewportStore();
+  const [showDownloadMenu, setShowDownloadMenu] = useState(false);
+  const [downloadingFormat, setDownloadingFormat] = useState<string | null>(null);
+  const downloadMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close download menu when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (downloadMenuRef.current && !downloadMenuRef.current.contains(event.target as Node)) {
+        setShowDownloadMenu(false);
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  async function handleDownload(format: 'stl' | 'step' | 'glb') {
+    if (!currentModelId || !currentProjectId) return;
+
+    try {
+      setDownloadingFormat(format);
+      const filename = `model-${currentModelId}.${format}`;
+      const downloadPath = `/api/projects/${currentProjectId}/models/${currentModelId}/${format}`;
+      
+      await api.downloadFile(downloadPath, filename);
+      setShowDownloadMenu(false);
+    } catch (err) {
+      console.error(`Failed to download ${format} file:`, err);
+      alert(`Failed to download ${format.toUpperCase()} file`);
+    } finally {
+      setDownloadingFormat(null);
+    }
+  }
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
@@ -115,6 +149,67 @@ export default function Viewport() {
           <div className="viewport-empty">
             Send a message to generate a 3D model
           </div>
+        </div>
+      )}
+
+      {/* Download button */}
+      {glbUrl && !isLoading && (
+        <div className="viewport-download-btn-container" ref={downloadMenuRef}>
+          <button
+            className="viewport-download-btn"
+            onClick={() => setShowDownloadMenu(!showDownloadMenu)}
+            disabled={downloadingFormat !== null}
+            title="Download 3D model file"
+          >
+            {downloadingFormat ? (
+              <>
+                <span className="download-spinner" />
+                Downloading...
+              </>
+            ) : (
+              <>
+                ⬇️ Download
+              </>
+            )}
+          </button>
+
+          {showDownloadMenu && (
+            <div className="viewport-download-menu">
+              <button
+                className="viewport-download-option"
+                onClick={() => handleDownload('stl')}
+                disabled={downloadingFormat !== null}
+              >
+                <span className="option-icon">📦</span>
+                <span className="option-text">
+                  <div className="option-title">STL File</div>
+                  <div className="option-desc">Best for 3D printing</div>
+                </span>
+              </button>
+              <button
+                className="viewport-download-option"
+                onClick={() => handleDownload('step')}
+                disabled={downloadingFormat !== null}
+              >
+                <span className="option-icon">🔧</span>
+                <span className="option-text">
+                  <div className="option-title">STEP File</div>
+                  <div className="option-desc">For CAD software</div>
+                </span>
+              </button>
+              <button
+                className="viewport-download-option"
+                onClick={() => handleDownload('glb')}
+                disabled={downloadingFormat !== null}
+              >
+                <span className="option-icon">🌐</span>
+                <span className="option-text">
+                  <div className="option-title">GLB File</div>
+                  <div className="option-desc">For web/viewing</div>
+                </span>
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

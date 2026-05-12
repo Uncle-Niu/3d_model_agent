@@ -78,7 +78,7 @@ export function useWebSocket(projectId: string | null) {
 
       case 'model_ready':
         console.log(`[WS] Model ready: ${msg.model_id} → ${msg.glb_url}`);
-        viewport.setModel(msg.model_id, api.url(msg.glb_url));
+        viewport.setModel(msg.model_id, api.url(msg.glb_url), projectId || '');
         break;
 
       case 'chat_response':

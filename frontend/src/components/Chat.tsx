@@ -2,7 +2,8 @@
  * Chat interface component — message list + input.
  */
 
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { FormEvent } from 'react';
 import { useChatStore } from '../stores';
 
 interface ChatProps {

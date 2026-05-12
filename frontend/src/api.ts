@@ -42,4 +42,24 @@ export const api = {
     if (!res.ok) throw new Error(`PUT ${path} failed: ${res.status}`);
     return res.json();
   },
+
+  /** Download a file by triggering browser download */
+  async downloadFile(path: string, filename: string): Promise<void> {
+    try {
+      const res = await fetch(path);
+      if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Download error:', err);
+      throw err;
+    }
+  },
 };

@@ -75,8 +75,9 @@ export const useChatStore = create<ChatState>((set) => ({
 interface ViewportState {
   glbUrl: string | null;
   currentModelId: string | null;
+  currentProjectId: string | null;
   isLoading: boolean;
-  setModel: (modelId: string, glbUrl: string) => void;
+  setModel: (modelId: string, glbUrl: string, projectId: string) => void;
   setLoading: (loading: boolean) => void;
   reset: () => void;
 }
@@ -84,15 +85,16 @@ interface ViewportState {
 export const useViewportStore = create<ViewportState>((set) => ({
   glbUrl: null,
   currentModelId: null,
+  currentProjectId: null,
   isLoading: false,
 
-  setModel: (modelId, glbUrl) =>
-    set({ currentModelId: modelId, glbUrl, isLoading: false }),
+  setModel: (modelId, glbUrl, projectId) =>
+    set({ currentModelId: modelId, glbUrl, currentProjectId: projectId, isLoading: false }),
 
   setLoading: (loading) => set({ isLoading: loading }),
 
   reset: () =>
-    set({ glbUrl: null, currentModelId: null, isLoading: false }),
+    set({ glbUrl: null, currentModelId: null, currentProjectId: null, isLoading: false }),
 }));
 
 // ---------------------------------------------------------------------------
