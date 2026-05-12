@@ -7,6 +7,7 @@ export interface Project {
   name: string;
   created_at: string;
   updated_at: string;
+  project_path: string;
   hard_constraints: HardConstraints;
   soft_constraints: SoftConstraints;
 }
@@ -42,6 +43,23 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
   model_id?: string;
+}
+
+export interface ChatThreadSummary {
+  thread_id: string;
+  title: string;
+  created_at: string | null;
+  updated_at: string | null;
+  message_count: number;
+  last_message?: ChatMessage | null;
+}
+
+export interface ChatThread {
+  thread_id: string;
+  title: string;
+  created_at: string | null;
+  updated_at: string | null;
+  messages: ChatMessage[];
 }
 
 // WebSocket message types (server → client)

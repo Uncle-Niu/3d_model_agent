@@ -5,6 +5,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useDebugStore } from '../stores';
+import { formatLocalTime } from '../time';
 import type { DebugEntry } from '../types';
 
 // Category → badge color
@@ -34,7 +35,7 @@ function EntryRow({ entry, isExpanded, onToggle }: {
   isExpanded: boolean;
   onToggle: () => void;
 }) {
-  const ts = entry.timestamp.replace('T', ' ').replace('Z', '').slice(11, 23);
+  const ts = formatLocalTime(entry.timestamp);
 
   return (
     <div className="debug-entry">

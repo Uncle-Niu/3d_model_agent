@@ -5,12 +5,14 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useChatStore } from '../stores';
+import { formatLocalDateTime } from '../time';
 
 interface ChatProps {
   onSend: (message: string) => void;
+  disabled?: boolean;
 }
 
-export default function Chat({ onSend }: ChatProps) {
+export default function Chat({ onSend, disabled = false }: ChatProps) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -31,7 +33,7 @@ export default function Chat({ onSend }: ChatProps) {
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     const trimmed = input.trim();
-    if (!trimmed || isGenerating) return;
+    if (!trimmed || isGenerating || disabled) return;
     onSend(trimmed);
     setInput('');
   };
@@ -72,6 +74,10 @@ export default function Chat({ onSend }: ChatProps) {
               {msg.role === 'user' ? '👤' : '🤖'}
             </div>
             <div className="chat-message-content">
+              <div className="chat-message-meta">
+                <span>{msg.role === 'user' ? 'You' : 'Assistant'}</span>
+                <time dateTime={msg.timestamp}>{formatLocalDateTime(msg.timestamp)}</time>
+              </div>
               <pre>{msg.content}</pre>
             </div>
           </div>
@@ -110,12 +116,12 @@ export default function Chat({ onSend }: ChatProps) {
           onKeyDown={handleKeyDown}
           placeholder="Describe a 3D part to generate..."
           rows={1}
-          disabled={isGenerating}
+          disabled={isGenerating || disabled}
         />
         <button
           className="chat-send-btn"
           type="submit"
-          disabled={!input.trim() || isGenerating}
+          disabled={!input.trim() || isGenerating || disabled}
         >
           {isGenerating ? (
             <span className="spinner" />

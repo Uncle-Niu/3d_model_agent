@@ -23,6 +23,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from datetime import datetime
 from typing import Optional
 
 from ..domain.models import ChatMessage, ModelMetadata, ProjectConfig
@@ -50,6 +51,7 @@ class StorageService:
         project_dir = self.projects_dir / config.project_id
         project_dir.mkdir(parents=True, exist_ok=True)
         (project_dir / "models").mkdir(exist_ok=True)
+        (project_dir / "chat_threads").mkdir(exist_ok=True)
 
         self._write_json(project_dir / "project.json", config.model_dump(mode="json"))
         self._write_json(project_dir / "chat_history.json", [])
@@ -62,6 +64,10 @@ class StorageService:
             return None
         data = self._read_json(config_path)
         return ProjectConfig(**data)
+
+    def get_project_dir(self, project_id: str) -> Path:
+        """Get the project directory path."""
+        return self.projects_dir / project_id
 
     def list_projects(self) -> list[ProjectConfig]:
         """List all projects."""
@@ -135,6 +141,20 @@ class StorageService:
                     result.append(meta)
         return result
 
+    def latest_successful_model(self, project_id: str) -> Optional[ModelMetadata]:
+        """Get the latest successful model checkpoint for a project."""
+        models = [m for m in self.list_models(project_id) if m.has_glb and not m.failure_type]
+        if not models:
+            return None
+        return models[-1]
+
+    def get_model_source_text(self, project_id: str, model_id: str) -> str:
+        """Load CadQuery source for a model checkpoint."""
+        source_path = self.get_model_file_path(project_id, model_id, "source.py")
+        if not source_path.exists():
+            return ""
+        return source_path.read_text(encoding="utf-8")
+
     def get_model_file_path(self, project_id: str, model_id: str, filename: str) -> Path:
         """Get the full path to a model file."""
         return self.projects_dir / project_id / "models" / model_id / filename
@@ -159,6 +179,148 @@ class StorageService:
     # Chat History
     # ------------------------------------------------------------------
 
+    def create_chat_thread(self, project_id: str, title: str = "New chat") -> dict:
+        """Create a chat thread for a project."""
+        import uuid
+
+        thread_id = str(uuid.uuid4())[:8]
+        now = datetime.utcnow().isoformat()
+        thread = {
+            "thread_id": thread_id,
+            "title": title,
+            "created_at": now,
+            "updated_at": now,
+            "messages": [],
+        }
+        thread_dir = self.projects_dir / project_id / "chat_threads"
+        thread_dir.mkdir(parents=True, exist_ok=True)
+        self._write_json(thread_dir / f"{thread_id}.json", thread)
+        return thread
+
+    def list_chat_threads(self, project_id: str) -> list[dict]:
+        """List chat threads for a project, including legacy chat_history.json."""
+        project_dir = self.projects_dir / project_id
+        thread_dir = project_dir / "chat_threads"
+        threads: list[dict] = []
+
+        if thread_dir.exists():
+            for path in sorted(thread_dir.glob("*.json")):
+                data = self._read_json(path)
+                messages = data.get("messages", [])
+                threads.append({
+                    "thread_id": data.get("thread_id", path.stem),
+                    "title": data.get("title") or self._chat_thread_title(messages),
+                    "created_at": data.get("created_at"),
+                    "updated_at": data.get("updated_at") or data.get("created_at"),
+                    "message_count": len(messages),
+                    "last_message": messages[-1] if messages else None,
+                })
+
+        legacy_path = project_dir / "chat_history.json"
+        if legacy_path.exists():
+            messages = self._read_json(legacy_path)
+            if messages:
+                legacy_meta = self._read_legacy_chat_meta(project_id)
+                threads.append({
+                    "thread_id": "legacy",
+                    "title": legacy_meta.get("title") or self._chat_thread_title(messages),
+                    "created_at": messages[0].get("timestamp"),
+                    "updated_at": legacy_meta.get("updated_at") or messages[-1].get("timestamp"),
+                    "message_count": len(messages),
+                    "last_message": messages[-1],
+                })
+
+        return sorted(
+            threads,
+            key=lambda t: t.get("updated_at") or t.get("created_at") or "",
+            reverse=True,
+        )
+
+    def get_chat_thread(self, project_id: str, thread_id: str) -> dict | None:
+        """Load a chat thread by ID."""
+        if thread_id == "legacy":
+            messages = self.get_chat_history(project_id)
+            if not messages:
+                return None
+            data = [m.model_dump(mode="json") for m in messages]
+            legacy_meta = self._read_legacy_chat_meta(project_id)
+            return {
+                "thread_id": "legacy",
+                "title": legacy_meta.get("title") or self._chat_thread_title(data),
+                "created_at": data[0].get("timestamp"),
+                "updated_at": legacy_meta.get("updated_at") or data[-1].get("timestamp"),
+                "messages": data,
+            }
+
+        path = self.projects_dir / project_id / "chat_threads" / f"{thread_id}.json"
+        if not path.exists():
+            return None
+        return self._read_json(path)
+
+    def get_chat_thread_messages(self, project_id: str, thread_id: str) -> list[ChatMessage]:
+        """Load messages for a chat thread."""
+        thread = self.get_chat_thread(project_id, thread_id)
+        if not thread:
+            return []
+        return [ChatMessage(**m) for m in thread.get("messages", [])]
+
+    def append_chat_thread_message(self, project_id: str, thread_id: str, message: ChatMessage) -> None:
+        """Append a message to a chat thread."""
+        if thread_id == "legacy":
+            self.append_chat_message(project_id, message)
+            return
+
+        thread = self.get_chat_thread(project_id, thread_id)
+        if not thread:
+            now = datetime.utcnow().isoformat()
+            thread = {
+                "thread_id": thread_id,
+                "title": "New chat",
+                "created_at": now,
+                "updated_at": now,
+                "messages": [],
+            }
+
+        messages = thread.setdefault("messages", [])
+        messages.append(message.model_dump(mode="json"))
+        if thread.get("title") == "New chat" and message.role == "user":
+            thread["title"] = self._chat_thread_title(messages)
+        thread["updated_at"] = datetime.utcnow().isoformat()
+
+        thread_dir = self.projects_dir / project_id / "chat_threads"
+        thread_dir.mkdir(parents=True, exist_ok=True)
+        self._write_json(thread_dir / f"{thread_id}.json", thread)
+
+    def rename_chat_thread(self, project_id: str, thread_id: str, title: str) -> dict | None:
+        """Rename a chat thread."""
+        thread = self.get_chat_thread(project_id, thread_id)
+        if not thread:
+            return None
+
+        thread["title"] = title
+        thread["updated_at"] = datetime.utcnow().isoformat()
+
+        if thread_id == "legacy":
+            meta_path = self.projects_dir / project_id / "legacy_chat_meta.json"
+            self._write_json(meta_path, {"title": title, "updated_at": thread["updated_at"]})
+        else:
+            path = self.projects_dir / project_id / "chat_threads" / f"{thread_id}.json"
+            self._write_json(path, thread)
+        return thread
+
+    def delete_chat_thread(self, project_id: str, thread_id: str) -> None:
+        """Delete a chat thread."""
+        if thread_id == "legacy":
+            self._write_json(self.projects_dir / project_id / "chat_history.json", [])
+            meta_path = self.projects_dir / project_id / "legacy_chat_meta.json"
+            if meta_path.exists():
+                meta_path.unlink()
+            return
+
+        path = self.projects_dir / project_id / "chat_threads" / f"{thread_id}.json"
+        if path.exists():
+            path.unlink()
+
     def get_chat_history(self, project_id: str) -> list[ChatMessage]:
         """Load chat history for a project."""
         chat_path = self.projects_dir / project_id / "chat_history.json"
@@ -175,6 +337,20 @@ class StorageService:
             history = self._read_json(chat_path)
         history.append(message.model_dump(mode="json"))
         self._write_json(chat_path, history)
+
+    @staticmethod
+    def _chat_thread_title(messages: list[dict]) -> str:
+        for msg in messages:
+            if msg.get("role") == "user" and msg.get("content"):
+                title = " ".join(str(msg["content"]).split())
+                return title[:48] + ("..." if len(title) > 48 else "")
+        return "New chat"
+
+    def _read_legacy_chat_meta(self, project_id: str) -> dict:
+        meta_path = self.projects_dir / project_id / "legacy_chat_meta.json"
+        if not meta_path.exists():
+            return {}
+        return self._read_json(meta_path)
 
     # ------------------------------------------------------------------
     # Helpers

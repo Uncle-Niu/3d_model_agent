@@ -11,9 +11,10 @@ export const api = {
   },
 
   /** WebSocket URL for a project */
-  ws(projectId: string): string {
+  ws(projectId: string, threadId?: string | null): string {
     const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    return `${proto}://${window.location.host}/ws/${projectId}`;
+    const query = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : '';
+    return `${proto}://${window.location.host}/ws/${projectId}${query}`;
   },
 
   /** Fetch wrapper with JSON parsing */
@@ -21,6 +22,12 @@ export const api = {
     const res = await fetch(path);
     if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
     return res.json();
+  },
+
+  async getText(path: string): Promise<string> {
+    const res = await fetch(path);
+    if (!res.ok) throw new Error(`GET ${path} failed: ${res.status}`);
+    return res.text();
   },
 
   async post<T = unknown>(path: string, body?: unknown): Promise<T> {
@@ -40,6 +47,12 @@ export const api = {
       body: body ? JSON.stringify(body) : undefined,
     });
     if (!res.ok) throw new Error(`PUT ${path} failed: ${res.status}`);
+    return res.json();
+  },
+
+  async delete<T = unknown>(path: string): Promise<T> {
+    const res = await fetch(path, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`DELETE ${path} failed: ${res.status}`);
     return res.json();
   },
 

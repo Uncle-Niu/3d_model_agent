@@ -2,30 +2,34 @@
  * WebSocket hook for real-time communication with the backend.
  */
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { useChatStore, useDebugStore, useViewportStore } from '../stores';
 import type { WSMessage } from '../types';
 
-export function useWebSocket(projectId: string | null) {
+export function useWebSocket(projectId: string | null, threadId: string | null) {
   const wsRef = useRef<WebSocket | null>(null);
   const chat = useChatStore();
   const viewport = useViewportStore();
   const debug = useDebugStore();
+  const [isConnected, setIsConnected] = useState(false);
 
   // Connect to WebSocket
   useEffect(() => {
-    if (!projectId) return;
+    if (!projectId || !threadId) return;
 
-    const ws = new WebSocket(api.ws(projectId));
+    const ws = new WebSocket(api.ws(projectId, threadId));
     wsRef.current = ws;
 
     ws.onopen = () => {
+      if (wsRef.current !== ws) return;
+      setIsConnected(true);
       console.log('[WS] Connected to project:', projectId);
       debug.addEntry({
         timestamp: new Date().toISOString(),
         category: 'ws',
         message: `WebSocket connected to project ${projectId}`,
+        data: { thread_id: threadId },
       });
     };
 
@@ -39,12 +43,14 @@ export function useWebSocket(projectId: string | null) {
     };
 
     ws.onclose = () => {
+      if (wsRef.current !== ws) return;
       console.log('[WS] Disconnected');
       debug.addEntry({
         timestamp: new Date().toISOString(),
         category: 'ws',
         message: 'WebSocket disconnected',
       });
+      setIsConnected(false);
       wsRef.current = null;
     };
 
@@ -60,10 +66,13 @@ export function useWebSocket(projectId: string | null) {
 
     return () => {
       ws.close();
-      wsRef.current = null;
+      if (wsRef.current === ws) {
+        wsRef.current = null;
+      }
+      setIsConnected(false);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId]);
+  }, [projectId, threadId]);
 
   const handleMessage = useCallback((msg: WSMessage) => {
     switch (msg.type) {
@@ -79,6 +88,9 @@ export function useWebSocket(projectId: string | null) {
       case 'model_ready':
         console.log(`[WS] Model ready: ${msg.model_id} → ${msg.glb_url}`);
         viewport.setModel(msg.model_id, api.url(msg.glb_url), projectId || '');
+        window.dispatchEvent(new CustomEvent('cad-model-ready', {
+          detail: { projectId, modelId: msg.model_id },
+        }));
         break;
 
       case 'chat_response':
@@ -120,6 +132,11 @@ export function useWebSocket(projectId: string | null) {
     (content: string) => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
         console.error('[WS] Not connected');
+        chat.addMessage({
+          role: 'assistant',
+          content: 'Error: chat connection is still reconnecting. Please try again in a moment.',
+          timestamp: new Date().toISOString(),
+        });
         return;
       }
 
@@ -132,12 +149,16 @@ export function useWebSocket(projectId: string | null) {
       chat.clearStream();
 
       wsRef.current.send(
-        JSON.stringify({ type: 'chat_message', content })
+        JSON.stringify({
+          type: 'chat_message',
+          content,
+          thread_id: threadId,
+          base_model_id: viewport.currentModelId,
+        })
       );
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
+    [threadId, viewport.currentModelId]
   );
 
-  return { sendMessage, isConnected: !!wsRef.current };
+  return { sendMessage, isConnected };
 }

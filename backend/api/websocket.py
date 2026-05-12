@@ -172,13 +172,16 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
 
             if msg_type == "chat_message":
                 content = msg.get("content", "").strip()
+                thread_id = msg.get("thread_id") or ws.query_params.get("thread_id") or "legacy"
+                base_model_id = msg.get("base_model_id")
                 if not content:
                     await _send(ws, {"type": "error", "message": "Empty message"})
                     continue
 
                 # Save user message
-                storage.append_chat_message(
+                storage.append_chat_thread_message(
                     project_id,
+                    thread_id,
                     ChatMessage(role="user", content=content),
                 )
 
@@ -188,6 +191,8 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
                     llm=llm,
                     storage=storage,
                     project_id=project_id,
+                    thread_id=thread_id,
+                    base_model_id=base_model_id,
                     user_message=content,
                 )
             elif msg_type == "ping":
@@ -212,6 +217,8 @@ async def _run_generation_pipeline(
     llm: LLMService,
     storage: StorageService,
     project_id: str,
+    thread_id: str,
+    base_model_id: str | None,
     user_message: str,
 ):
     """
@@ -235,8 +242,9 @@ async def _run_generation_pipeline(
             "❌ Cannot reach Ollama. Please make sure Ollama is running "
             f"and the model `{llm.model}` is available."
         )
-        storage.append_chat_message(
+        storage.append_chat_thread_message(
             project_id,
+            thread_id,
             ChatMessage(role="assistant", content=useChatStore_msg),
         )
         return
@@ -251,7 +259,7 @@ async def _run_generation_pipeline(
                 await _send_status(ws, "generating", "Generating CadQuery code...")
 
                 # Build chat history context (last few messages)
-                history = storage.get_chat_history(project_id)
+                history = storage.get_chat_thread_messages(project_id, thread_id)
                 chat_ctx = []
                 for msg in history[-10:]:  # last 10 messages for context
                     chat_ctx.append({"role": msg.role, "content": msg.content})
@@ -259,11 +267,34 @@ async def _run_generation_pipeline(
                 system_prompt = build_system_prompt(
                     config.hard_constraints, config.soft_constraints
                 )
+                current_source = ""
+                current_model_id = base_model_id
+                if current_model_id:
+                    current_source = storage.get_model_source_text(project_id, current_model_id)
+
+                if not current_source:
+                    latest_model = storage.latest_successful_model(project_id)
+                    if latest_model:
+                        current_model_id = latest_model.model_id
+                        current_source = storage.get_model_source_text(project_id, latest_model.model_id)
+
+                effective_user_message = user_message
+                if current_source:
+                    effective_user_message = (
+                        "The project has one model with versioned checkpoints. "
+                        f"Use checkpoint `{current_model_id}` as the current base model and edit it for this request.\n\n"
+                        "## Current CadQuery Source\n"
+                        "```python\n"
+                        f"{current_source}\n"
+                        "```\n\n"
+                        "## Requested Change\n"
+                        f"{user_message}"
+                    )
 
                 # --- Debug: send the raw LLM request ---
                 messages_payload = [{"role": "system", "content": system_prompt}]
                 messages_payload.extend(chat_ctx)
-                messages_payload.append({"role": "user", "content": user_message})
+                messages_payload.append({"role": "user", "content": effective_user_message})
 
                 await _send_debug(ws, "llm_request", "Sending request to LLM", {
                     "model": llm.model,
@@ -275,6 +306,8 @@ async def _run_generation_pipeline(
                     "system_prompt_length": len(system_prompt),
                     "system_prompt_preview": system_prompt[:500] + ("..." if len(system_prompt) > 500 else ""),
                     "user_message": user_message,
+                    "base_model_id": current_model_id,
+                    "included_current_source": bool(current_source),
                     "chat_context_messages": len(chat_ctx),
                 })
 
@@ -285,7 +318,7 @@ async def _run_generation_pipeline(
 
                 try:
                     async for chunk in llm.generate_stream(
-                        user_message, system_prompt, chat_ctx
+                        effective_user_message, system_prompt, chat_ctx
                     ):
                         full_response += chunk
                         token_count += 1
@@ -303,8 +336,9 @@ async def _run_generation_pipeline(
                         "message": f"LLM call failed: {e}",
                         "failure_type": "llm_error",
                     })
-                    storage.append_chat_message(
+                    storage.append_chat_thread_message(
                         project_id,
+                        thread_id,
                         ChatMessage(
                             role="assistant",
                             content=f"❌ LLM call failed: {e}. Is Ollama running with model `{llm.model}`?",
@@ -428,8 +462,9 @@ async def _run_generation_pipeline(
                         "failure_type": "max_retries_exceeded",
                     })
                     # Save assistant failure message
-                    storage.append_chat_message(
+                    storage.append_chat_thread_message(
                         project_id,
+                        thread_id,
                         ChatMessage(
                             role="assistant",
                             content=f"I wasn't able to generate a valid model after {MAX_REPAIR_ITERATIONS} attempts. Last error: {last_error[:200]}. Could you try rephrasing your request or simplifying the design?",
@@ -481,8 +516,9 @@ async def _run_generation_pipeline(
             await _send(ws, {"type": "chat_response", "content": response_text})
 
             # Save assistant message
-            storage.append_chat_message(
+            storage.append_chat_thread_message(
                 project_id,
+                thread_id,
                 ChatMessage(
                     role="assistant",
                     content=response_text,

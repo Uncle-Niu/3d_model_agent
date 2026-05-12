@@ -29,6 +29,7 @@ interface ChatState {
   isGenerating: boolean;
   currentStage: string;
   currentStatus: string;
+  setMessages: (messages: ChatMessage[]) => void;
   addMessage: (msg: ChatMessage) => void;
   appendStreamChunk: (chunk: string) => void;
   clearStream: () => void;
@@ -43,6 +44,8 @@ export const useChatStore = create<ChatState>((set) => ({
   isGenerating: false,
   currentStage: '',
   currentStatus: '',
+
+  setMessages: (messages) => set({ messages }),
 
   addMessage: (msg) =>
     set((s) => ({ messages: [...s.messages, msg] })),
