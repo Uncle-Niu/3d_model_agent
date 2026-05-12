@@ -4,9 +4,11 @@ REST API routes.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -21,6 +23,41 @@ from ..storage import StorageService
 
 router = APIRouter()
 
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+
+@router.get("/health")
+async def health_check():
+    """Check system health: Ollama connectivity, available models."""
+    llm_base = os.environ.get("LLM_BASE_URL", "http://localhost:11434/v1")
+    llm_model = os.environ.get("LLM_MODEL", "qwen3.6:27b")
+    ollama_base = llm_base.replace("/v1", "")
+
+    result = {
+        "status": "ok",
+        "llm_base_url": llm_base,
+        "llm_model": llm_model,
+        "ollama_connected": False,
+        "available_models": [],
+        "model_available": False,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{ollama_base}/api/tags")
+            if resp.status_code == 200:
+                result["ollama_connected"] = True
+                data = resp.json()
+                models = [m["name"] for m in data.get("models", [])]
+                result["available_models"] = models
+                result["model_available"] = llm_model in models
+    except Exception as e:
+        result["status"] = "degraded"
+        result["ollama_error"] = str(e)
+
+    return result
 
 # ---------------------------------------------------------------------------
 # Request / Response schemas
