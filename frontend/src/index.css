@@ -81,6 +81,7 @@ body {
   flex-direction: column;
   height: 100vh;
   width: 100vw;
+  overflow: hidden;
 }
 
 .app-header {
@@ -147,6 +148,7 @@ body {
   display: flex;
   flex: 1;
   overflow: hidden;
+  min-height: 0;
 }
 
 .app-viewport {
@@ -534,21 +536,16 @@ body {
    ================================================================ */
 
 .debug-panel {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  z-index: 100;
   background: var(--bg-primary);
   border-top: 1px solid var(--border);
-  transition: height var(--transition-normal);
   display: flex;
   flex-direction: column;
+  flex-shrink: 0;
+  overflow: hidden;
 }
 
 .debug-panel-open {
-  height: 320px;
-  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
+  height: 280px;
 }
 
 .debug-toggle-bar {
