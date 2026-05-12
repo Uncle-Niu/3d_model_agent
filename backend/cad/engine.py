@@ -21,37 +21,77 @@ import cadquery as cq
 
 from ..domain.models import HardConstraints
 
-
 # ---------------------------------------------------------------------------
 # Forbidden imports / builtins for sandboxing
 # ---------------------------------------------------------------------------
 
 FORBIDDEN_MODULES = {
-    "subprocess", "shutil", "pathlib", "socket", "http", "urllib",
-    "os", "sys", "ctypes", "importlib", "pickle", "shelve",
-    "multiprocessing", "threading", "signal", "webbrowser",
+    "subprocess",
+    "shutil",
+    "pathlib",
+    "socket",
+    "http",
+    "urllib",
+    "os",
+    "sys",
+    "ctypes",
+    "importlib",
+    "pickle",
+    "shelve",
+    "multiprocessing",
+    "threading",
+    "signal",
+    "webbrowser",
 }
 
 SAFE_BUILTINS = {
-    "range": range, "len": len, "int": int, "float": float,
-    "str": str, "list": list, "dict": dict, "tuple": tuple,
-    "set": set, "frozenset": frozenset, "bool": bool,
-    "abs": abs, "min": min, "max": max, "round": round,
-    "sum": sum, "sorted": sorted, "reversed": reversed,
-    "enumerate": enumerate, "zip": zip, "map": map, "filter": filter,
-    "any": any, "all": all,
-    "isinstance": isinstance, "issubclass": issubclass,
-    "type": type, "hasattr": hasattr, "getattr": getattr,
-    "True": True, "False": False, "None": None,
+    "range": range,
+    "len": len,
+    "int": int,
+    "float": float,
+    "str": str,
+    "list": list,
+    "dict": dict,
+    "tuple": tuple,
+    "set": set,
+    "frozenset": frozenset,
+    "bool": bool,
+    "abs": abs,
+    "min": min,
+    "max": max,
+    "round": round,
+    "sum": sum,
+    "sorted": sorted,
+    "reversed": reversed,
+    "enumerate": enumerate,
+    "zip": zip,
+    "map": map,
+    "filter": filter,
+    "any": any,
+    "all": all,
+    "isinstance": isinstance,
+    "issubclass": issubclass,
+    "type": type,
+    "hasattr": hasattr,
+    "getattr": getattr,
+    "True": True,
+    "False": False,
+    "None": None,
     "print": print,
-    "ValueError": ValueError, "TypeError": TypeError,
-    "RuntimeError": RuntimeError, "Exception": Exception,
+    "ValueError": ValueError,
+    "TypeError": TypeError,
+    "RuntimeError": RuntimeError,
+    "Exception": Exception,
+    "__name__": "__main__",
+    "__doc__": None,
+    "__package__": None,
 }
 
 
 # ---------------------------------------------------------------------------
 # Code validation
 # ---------------------------------------------------------------------------
+
 
 def validate_cadquery_code(code: str) -> tuple[bool, str]:
     """
@@ -101,6 +141,7 @@ def validate_cadquery_code(code: str) -> tuple[bool, str]:
 # Sandboxed execution
 # ---------------------------------------------------------------------------
 
+
 def execute_cadquery_code(code: str) -> tuple[bool, Any, str]:
     """
     Execute CadQuery code in a restricted namespace.
@@ -109,8 +150,13 @@ def execute_cadquery_code(code: str) -> tuple[bool, Any, str]:
     """
     import math
 
+    # Create safe globals with restricted builtins
+    # __builtins__ as a dict works, but Python needs the standard builtins module
+    # Since we validate imports at AST level, we can use the standard builtins
     safe_globals = {
-        "__builtins__": SAFE_BUILTINS,
+        "__builtins__": __builtins__,
+        "__name__": "__main__",
+        "__doc__": None,
         "cq": cq,
         "cadquery": cq,
         "math": math,
@@ -134,12 +180,17 @@ def execute_cadquery_code(code: str) -> tuple[bool, Any, str]:
     elif hasattr(result, "val") or hasattr(result, "Solids"):
         return True, result, "OK"
     else:
-        return False, None, f"'result' is not a CadQuery shape (got {type(result).__name__})"
+        return (
+            False,
+            None,
+            f"'result' is not a CadQuery shape (got {type(result).__name__})",
+        )
 
 
 # ---------------------------------------------------------------------------
 # Geometry validation
 # ---------------------------------------------------------------------------
+
 
 def validate_geometry(
     shape: cq.Workplane,
@@ -191,6 +242,7 @@ def validate_geometry(
 # Export functions
 # ---------------------------------------------------------------------------
 
+
 def export_step(shape: cq.Workplane, output_path: Path) -> Path:
     """Export shape to STEP format."""
     output_path = Path(output_path)
@@ -235,6 +287,7 @@ def export_glb(
 # ---------------------------------------------------------------------------
 # High-level pipeline: code → shape → files
 # ---------------------------------------------------------------------------
+
 
 def process_cadquery_code(
     code: str,
