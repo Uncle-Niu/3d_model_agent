@@ -23,10 +23,16 @@ export function formatLocalDateTime(timestamp: string): string {
   const date = new Date(normalizeTimestamp(timestamp));
   if (Number.isNaN(date.getTime())) return '';
 
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short',
+  const datePart = new Intl.DateTimeFormat('en-CA', {
+    year: 'numeric',
+    month: '2-digit',
     day: '2-digit',
+  }).format(date);
+  const timePart = new Intl.DateTimeFormat(undefined, {
     hour: '2-digit',
     minute: '2-digit',
+    second: '2-digit',
   }).format(date);
+
+  return `${datePart} ${timePart}`;
 }

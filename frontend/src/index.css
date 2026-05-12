@@ -1163,7 +1163,7 @@ body {
   color: var(--text-muted);
   font-size: 10px;
   flex-shrink: 0;
-  width: 80px;
+  width: 170px;
 }
 
 .debug-badge {
@@ -1195,7 +1195,7 @@ body {
 }
 
 .debug-entry-data {
-  padding: 4px 16px 8px 104px;
+  padding: 4px 16px 8px 194px;
   overflow-x: auto;
 }
 
