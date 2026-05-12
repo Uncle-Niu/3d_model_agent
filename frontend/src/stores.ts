@@ -3,7 +3,7 @@
  */
 
 import { create } from 'zustand';
-import type { ChatMessage, Project } from './types';
+import type { ChatMessage, DebugEntry, Project } from './types';
 
 // ---------------------------------------------------------------------------
 // Project store
@@ -93,4 +93,34 @@ export const useViewportStore = create<ViewportState>((set) => ({
 
   reset: () =>
     set({ glbUrl: null, currentModelId: null, isLoading: false }),
+}));
+
+// ---------------------------------------------------------------------------
+// Debug store — raw LLM request/response log
+// ---------------------------------------------------------------------------
+
+let _debugId = 0;
+
+interface DebugState {
+  entries: DebugEntry[];
+  isOpen: boolean;
+  addEntry: (entry: Omit<DebugEntry, 'id'>) => void;
+  toggleOpen: () => void;
+  setOpen: (open: boolean) => void;
+  clear: () => void;
+}
+
+export const useDebugStore = create<DebugState>((set) => ({
+  entries: [],
+  isOpen: false,
+
+  addEntry: (entry) =>
+    set((s) => ({
+      entries: [...s.entries, { ...entry, id: ++_debugId }],
+    })),
+
+  toggleOpen: () => set((s) => ({ isOpen: !s.isOpen })),
+  setOpen: (open) => set({ isOpen: open }),
+
+  clear: () => set({ entries: [] }),
 }));

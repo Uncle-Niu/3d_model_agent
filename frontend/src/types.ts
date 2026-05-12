@@ -73,9 +73,27 @@ export interface WSError {
   failure_type?: string;
 }
 
+export interface WSDebugLog {
+  type: 'debug_log';
+  timestamp: string;
+  category: string;
+  message: string;
+  data?: Record<string, unknown>;
+}
+
 export type WSMessage =
   | WSStatus
   | WSModelReady
   | WSLLMChunk
   | WSChatResponse
-  | WSError;
+  | WSError
+  | WSDebugLog;
+
+// Debug log entry for the store
+export interface DebugEntry {
+  id: number;
+  timestamp: string;
+  category: string;
+  message: string;
+  data?: Record<string, unknown>;
+}

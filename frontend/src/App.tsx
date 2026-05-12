@@ -1,9 +1,10 @@
 /**
- * Main App component — layout with viewport and chat panel.
+ * Main App component — layout with viewport, chat panel, and debug panel.
  */
 
 import { useEffect, useState } from 'react';
 import Chat from './components/Chat';
+import DebugPanel from './components/DebugPanel';
 import Viewport from './components/Viewport';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useProjectStore } from './stores';
@@ -88,6 +89,9 @@ function App() {
           <Chat onSend={sendMessage} />
         </div>
       </div>
+
+      {/* Debug Panel — bottom overlay */}
+      <DebugPanel />
     </div>
   );
 }

@@ -13,6 +13,7 @@ langgraph==0.4.1
 langchain-core==0.3.55
 langchain-openai==0.3.18
 httpx==0.28.1
+openai>=1.30.0
 
 # Utilities
 python-dotenv==1.1.0

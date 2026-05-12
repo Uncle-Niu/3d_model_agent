@@ -4,13 +4,14 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 import { api } from '../api';
-import { useChatStore, useViewportStore } from '../stores';
+import { useChatStore, useDebugStore, useViewportStore } from '../stores';
 import type { WSMessage } from '../types';
 
 export function useWebSocket(projectId: string | null) {
   const wsRef = useRef<WebSocket | null>(null);
   const chat = useChatStore();
   const viewport = useViewportStore();
+  const debug = useDebugStore();
 
   // Connect to WebSocket
   useEffect(() => {
@@ -21,6 +22,11 @@ export function useWebSocket(projectId: string | null) {
 
     ws.onopen = () => {
       console.log('[WS] Connected to project:', projectId);
+      debug.addEntry({
+        timestamp: new Date().toISOString(),
+        category: 'ws',
+        message: `WebSocket connected to project ${projectId}`,
+      });
     };
 
     ws.onmessage = (event) => {
@@ -34,11 +40,22 @@ export function useWebSocket(projectId: string | null) {
 
     ws.onclose = () => {
       console.log('[WS] Disconnected');
+      debug.addEntry({
+        timestamp: new Date().toISOString(),
+        category: 'ws',
+        message: 'WebSocket disconnected',
+      });
       wsRef.current = null;
     };
 
     ws.onerror = (err) => {
       console.error('[WS] Error:', err);
+      debug.addEntry({
+        timestamp: new Date().toISOString(),
+        category: 'ws',
+        message: 'WebSocket error',
+        data: { error: String(err) },
+      });
     };
 
     return () => {
@@ -51,6 +68,7 @@ export function useWebSocket(projectId: string | null) {
   const handleMessage = useCallback((msg: WSMessage) => {
     switch (msg.type) {
       case 'status':
+        console.log(`[WS] Status: ${msg.stage} — ${msg.message}`);
         chat.setStage(msg.stage, msg.message);
         break;
 
@@ -59,6 +77,7 @@ export function useWebSocket(projectId: string | null) {
         break;
 
       case 'model_ready':
+        console.log(`[WS] Model ready: ${msg.model_id} → ${msg.glb_url}`);
         viewport.setModel(msg.model_id, api.url(msg.glb_url));
         break;
 
@@ -74,6 +93,7 @@ export function useWebSocket(projectId: string | null) {
         break;
 
       case 'error':
+        console.error(`[WS] Error: ${msg.message}`);
         chat.clearStream();
         chat.addMessage({
           role: 'assistant',
@@ -81,6 +101,16 @@ export function useWebSocket(projectId: string | null) {
           timestamp: new Date().toISOString(),
         });
         chat.setGenerating(false);
+        break;
+
+      case 'debug_log':
+        console.log(`[DEBUG][${msg.category}] ${msg.message}`, msg.data || '');
+        debug.addEntry({
+          timestamp: msg.timestamp,
+          category: msg.category,
+          message: msg.message,
+          data: msg.data,
+        });
         break;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
