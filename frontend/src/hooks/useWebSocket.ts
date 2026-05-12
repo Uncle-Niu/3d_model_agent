@@ -1,0 +1,114 @@
+/**
+ * WebSocket hook for real-time communication with the backend.
+ */
+
+import { useCallback, useEffect, useRef } from 'react';
+import { api } from '../api';
+import { useChatStore, useViewportStore } from '../stores';
+import type { WSMessage } from '../types';
+
+export function useWebSocket(projectId: string | null) {
+  const wsRef = useRef<WebSocket | null>(null);
+  const chat = useChatStore();
+  const viewport = useViewportStore();
+
+  // Connect to WebSocket
+  useEffect(() => {
+    if (!projectId) return;
+
+    const ws = new WebSocket(api.ws(projectId));
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log('[WS] Connected to project:', projectId);
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg: WSMessage = JSON.parse(event.data);
+        handleMessage(msg);
+      } catch (e) {
+        console.error('[WS] Failed to parse message:', e);
+      }
+    };
+
+    ws.onclose = () => {
+      console.log('[WS] Disconnected');
+      wsRef.current = null;
+    };
+
+    ws.onerror = (err) => {
+      console.error('[WS] Error:', err);
+    };
+
+    return () => {
+      ws.close();
+      wsRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  const handleMessage = useCallback((msg: WSMessage) => {
+    switch (msg.type) {
+      case 'status':
+        chat.setStage(msg.stage, msg.message);
+        break;
+
+      case 'llm_chunk':
+        chat.appendStreamChunk(msg.content);
+        break;
+
+      case 'model_ready':
+        viewport.setModel(msg.model_id, api.url(msg.glb_url));
+        break;
+
+      case 'chat_response':
+        // Finalize: move streaming content to a proper message
+        chat.clearStream();
+        chat.addMessage({
+          role: 'assistant',
+          content: msg.content,
+          timestamp: new Date().toISOString(),
+        });
+        chat.setGenerating(false);
+        break;
+
+      case 'error':
+        chat.clearStream();
+        chat.addMessage({
+          role: 'assistant',
+          content: `❌ Error: ${msg.message}`,
+          timestamp: new Date().toISOString(),
+        });
+        chat.setGenerating(false);
+        break;
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Send a chat message
+  const sendMessage = useCallback(
+    (content: string) => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+        console.error('[WS] Not connected');
+        return;
+      }
+
+      chat.addMessage({
+        role: 'user',
+        content,
+        timestamp: new Date().toISOString(),
+      });
+      chat.setGenerating(true);
+      chat.clearStream();
+
+      wsRef.current.send(
+        JSON.stringify({ type: 'chat_message', content })
+      );
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
+  return { sendMessage, isConnected: !!wsRef.current };
+}
