@@ -75,18 +75,27 @@ export default function Viewport() {
   }, []);
 
   async function handleDownload(format: 'stl' | 'step' | 'glb') {
-    if (!currentModelId || !currentProjectId) return;
+    if (!currentModelId || !currentProjectId) {
+      console.error('[Download] Missing modelId or projectId');
+      alert('Model information not available');
+      return;
+    }
 
     try {
       setDownloadingFormat(format);
       const filename = `model-${currentModelId}.${format}`;
       const downloadPath = `/api/projects/${currentProjectId}/models/${currentModelId}/${format}`;
       
+      console.log(`[Download Handler] Downloading ${format} from path: ${downloadPath}`);
+      console.log(`[Download Handler] Model ID: ${currentModelId}, Project ID: ${currentProjectId}`);
+      
       await api.downloadFile(downloadPath, filename);
+      console.log(`[Download Handler] Download completed successfully`);
       setShowDownloadMenu(false);
     } catch (err) {
-      console.error(`Failed to download ${format} file:`, err);
-      alert(`Failed to download ${format.toUpperCase()} file`);
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[Download Handler] Failed to download ${format} file:`, errorMsg);
+      alert(`Failed to download ${format.toUpperCase()} file: ${errorMsg}`);
     } finally {
       setDownloadingFormat(null);
     }

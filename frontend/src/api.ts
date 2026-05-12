@@ -46,19 +46,44 @@ export const api = {
   /** Download a file by triggering browser download */
   async downloadFile(path: string, filename: string): Promise<void> {
     try {
+      console.log(`[Download] Starting download from: ${path}`);
       const res = await fetch(path);
-      if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+      console.log(`[Download] Response status: ${res.status}, ok: ${res.ok}`);
+      
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error(`[Download] Server error response:`, errorText);
+        throw new Error(`Download failed with status ${res.status}: ${errorText}`);
+      }
+      
       const blob = await res.blob();
+      console.log(`[Download] Blob received, size: ${blob.size} bytes, type: ${blob.type}`);
+      
+      if (blob.size === 0) {
+        throw new Error('Downloaded file is empty');
+      }
+      
       const url = URL.createObjectURL(blob);
+      console.log(`[Download] Object URL created: ${url}`);
+      
       const a = document.createElement('a');
       a.href = url;
       a.download = filename;
       document.body.appendChild(a);
+      console.log(`[Download] Triggering download with filename: ${filename}`);
+      
       a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      
+      // Clean up after a short delay to allow download to start
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        console.log(`[Download] Cleanup completed`);
+      }, 100);
+      
+      console.log(`[Download] Download triggered successfully`);
     } catch (err) {
-      console.error('Download error:', err);
+      console.error('[Download] Error during download:', err);
       throw err;
     }
   },

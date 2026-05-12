@@ -113,8 +113,7 @@ export function useWebSocket(projectId: string | null) {
         });
         break;
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [projectId, chat, viewport, debug]);
 
   // Send a chat message
   const sendMessage = useCallback(
