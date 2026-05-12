@@ -44,44 +44,67 @@ FORBIDDEN_MODULES = {
     "webbrowser",
 }
 
+def _restricted_import(name, *args, **kwargs):
+    """Only allow importing cadquery and math (provided in globals)."""
+    allowed_modules = {"cadquery", "math"}
+    if name in allowed_modules:
+        # Return the module from globals if available
+        import sys
+        if name == "cadquery":
+            import cadquery
+            return cadquery
+        elif name == "math":
+            import math
+            return math
+    raise ImportError(f"Importing '{name}' is not allowed.")
+
+
 SAFE_BUILTINS = {
-    "range": range,
-    "len": len,
+    # Basic types
     "int": int,
     "float": float,
     "str": str,
+    "bool": bool,
     "list": list,
     "dict": dict,
     "tuple": tuple,
     "set": set,
     "frozenset": frozenset,
-    "bool": bool,
+    # Math functions
     "abs": abs,
     "min": min,
     "max": max,
     "round": round,
     "sum": sum,
-    "sorted": sorted,
-    "reversed": reversed,
+    "pow": pow,
+    # Collections/iteration
+    "range": range,
+    "len": len,
     "enumerate": enumerate,
     "zip": zip,
     "map": map,
     "filter": filter,
+    "reversed": reversed,
+    "sorted": sorted,
+    # Logic
     "any": any,
     "all": all,
     "isinstance": isinstance,
-    "issubclass": issubclass,
     "type": type,
-    "hasattr": hasattr,
-    "getattr": getattr,
-    "True": True,
-    "False": False,
-    "None": None,
-    "print": print,
+    # Exceptions
     "ValueError": ValueError,
     "TypeError": TypeError,
     "RuntimeError": RuntimeError,
     "Exception": Exception,
+    # Output
+    "print": print,
+    # Constants
+    "True": True,
+    "False": False,
+    "None": None,
+    # Import control
+    "__import__": _restricted_import,
+    # Special
     "__name__": "__main__",
     "__doc__": None,
     "__package__": None,
@@ -150,13 +173,8 @@ def execute_cadquery_code(code: str) -> tuple[bool, Any, str]:
     """
     import math
 
-    # Create safe globals with restricted builtins
-    # __builtins__ as a dict works, but Python needs the standard builtins module
-    # Since we validate imports at AST level, we can use the standard builtins
     safe_globals = {
-        "__builtins__": __builtins__,
-        "__name__": "__main__",
-        "__doc__": None,
+        "__builtins__": SAFE_BUILTINS,
         "cq": cq,
         "cadquery": cq,
         "math": math,
