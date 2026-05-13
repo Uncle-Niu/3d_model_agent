@@ -301,6 +301,7 @@ class AgentOrchestrator:
                     critique=critique,
                     geometry_stats=geo_stats_model,
                     manufacturability=manufacturability,
+                    assembly=exec_result.get("assembly"),
                     iteration=iteration,
                     vision_score=critique.overall_printability if critique else None,
                 )

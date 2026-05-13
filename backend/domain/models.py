@@ -8,7 +8,7 @@ all backend modules (API, agent, CAD, storage).
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from pydantic import BaseModel, Field
@@ -94,6 +94,9 @@ class GeometryStats(BaseModel):
     edge_count: int = 0
     is_closed: bool = False
     estimated_mass_g: Optional[float] = None
+    center_of_mass_x: Optional[float] = None
+    center_of_mass_y: Optional[float] = None
+    center_of_mass_z: Optional[float] = None
     small_feature_count: int = 0
     tiny_face_count: int = 0
     sharp_corner_count: int = 0
@@ -113,10 +116,26 @@ class ManufacturabilityReport(BaseModel):
     score: float = 1.0  # 0.0 - 1.0
 
 
+class AssemblyPart(BaseModel):
+    """Metadata for a single part within an assembly."""
+    name: str
+    color: Optional[str] = None
+    material: Optional[str] = None
+    geometry_stats: Optional[GeometryStats] = None
+    manufacturability: Optional[ManufacturabilityReport] = None
+    visible: bool = True
+
+
+class AssemblyManifest(BaseModel):
+    """Manifest of all parts in a model."""
+    parts: list[AssemblyPart] = Field(default_factory=list)
+    total_parts: int = 0
+
+
 class ModelMetadata(BaseModel):
     """Metadata stored alongside each model revision."""
     model_id: str
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     prompt: str = ""
     cad_source: str = ""
     has_step: bool = False
@@ -131,14 +150,15 @@ class ModelMetadata(BaseModel):
     failure_message: str = ""
     iteration: int = 0
     vision_score: Optional[float] = None  # latest vision critique score
+    assembly: Optional[AssemblyManifest] = None
 
 
 class ProjectConfig(BaseModel):
     """Project-level configuration."""
     project_id: str
     name: str = "Untitled Project"
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     hard_constraints: HardConstraints = Field(default_factory=HardConstraints)
     soft_constraints: SoftConstraints = Field(default_factory=SoftConstraints)
 
@@ -150,7 +170,7 @@ class ProjectConfig(BaseModel):
 class ChatMessage(BaseModel):
     role: str  # "user" or "assistant"
     content: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     model_id: Optional[str] = None  # linked model if applicable
 
 

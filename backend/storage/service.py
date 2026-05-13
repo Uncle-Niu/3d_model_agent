@@ -23,7 +23,7 @@ import json
 import os
 import shutil
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from ..domain.models import ChatMessage, ModelMetadata, ProjectConfig
@@ -218,7 +218,7 @@ class StorageService:
         import uuid
 
         thread_id = str(uuid.uuid4())[:8]
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         thread = {
             "thread_id": thread_id,
             "title": title,
@@ -306,7 +306,7 @@ class StorageService:
 
         thread = self.get_chat_thread(project_id, thread_id)
         if not thread:
-            now = datetime.utcnow().isoformat()
+            now = datetime.now(timezone.utc).isoformat()
             thread = {
                 "thread_id": thread_id,
                 "title": "New chat",
@@ -319,7 +319,7 @@ class StorageService:
         messages.append(message.model_dump(mode="json"))
         if thread.get("title") == "New chat" and message.role == "user":
             thread["title"] = self._chat_thread_title(messages)
-        thread["updated_at"] = datetime.utcnow().isoformat()
+        thread["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         thread_dir = self.projects_dir / project_id / "chat_threads"
         thread_dir.mkdir(parents=True, exist_ok=True)
@@ -332,7 +332,7 @@ class StorageService:
             return None
 
         thread["title"] = title
-        thread["updated_at"] = datetime.utcnow().isoformat()
+        thread["updated_at"] = datetime.now(timezone.utc).isoformat()
 
         if thread_id == "legacy":
             meta_path = self.projects_dir / project_id / "legacy_chat_meta.json"

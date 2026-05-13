@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import io
+import json
 import tempfile
 import traceback
 from pathlib import Path
@@ -190,8 +191,8 @@ def execute_cadquery_code(code: str) -> tuple[bool, Any, str]:
     if result is None:
         return False, None, "Code executed but 'result' variable is None or not set"
 
-    # Accept CadQuery Workplane or Shape objects
-    if isinstance(result, cq.Workplane):
+    # Accept CadQuery Workplane, Shape, or Assembly objects
+    if isinstance(result, (cq.Workplane, cq.Assembly)):
         return True, result, "OK"
     elif hasattr(result, "val") or hasattr(result, "Solids"):
         return True, result, "OK"
@@ -259,24 +260,30 @@ def validate_geometry(
 # ---------------------------------------------------------------------------
 
 
-def export_step(shape: cq.Workplane, output_path: Path) -> Path:
+def export_step(shape: cq.Workplane | cq.Assembly, output_path: Path) -> Path:
     """Export shape to STEP format."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    cq.exporters.export(shape, str(output_path), exportType="STEP")
+    if isinstance(shape, cq.Assembly):
+        shape.export(str(output_path), exportType="STEP")
+    else:
+        cq.exporters.export(shape, str(output_path), exportType="STEP")
     return output_path
 
 
-def export_stl(shape: cq.Workplane, output_path: Path, tolerance: float = 0.01) -> Path:
+def export_stl(shape: cq.Workplane | cq.Assembly, output_path: Path, tolerance: float = 0.01) -> Path:
     """Export shape to STL format."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    cq.exporters.export(shape, str(output_path), exportType="STL", tolerance=tolerance)
+    if isinstance(shape, cq.Assembly):
+        shape.export(str(output_path), exportType="STL", tolerance=tolerance)
+    else:
+        cq.exporters.export(shape, str(output_path), exportType="STL", tolerance=tolerance)
     return output_path
 
 
 def export_glb(
-    shape: cq.Workplane,
+    shape: cq.Workplane | cq.Assembly,
     output_path: Path,
     name: str = "part",
     tolerance: float = 0.01,
@@ -284,19 +291,24 @@ def export_glb(
 ) -> Path:
     """
     Export shape to glTF binary (.glb) format.
-
-    Uses CadQuery's Assembly.export() for tessellation.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    assy = cq.Assembly()
-    assy.add(shape, name=name, color=cq.Color(0.4, 0.6, 0.8, 1.0))  # steel blue
-    assy.export(
-        str(output_path),
-        tolerance=tolerance,
-        angularTolerance=angular_tolerance,
-    )
+    if isinstance(shape, cq.Assembly):
+        shape.export(
+            str(output_path),
+            tolerance=tolerance,
+            angularTolerance=angular_tolerance,
+        )
+    else:
+        assy = cq.Assembly()
+        assy.add(shape, name=name, color=cq.Color(0.4, 0.6, 0.8, 1.0))
+        assy.export(
+            str(output_path),
+            tolerance=tolerance,
+            angularTolerance=angular_tolerance,
+        )
     return output_path
 
 
@@ -353,29 +365,90 @@ def process_cadquery_code(
 
     # 3. Enhanced geometry validation
     try:
-        from ..validation.validator import validate_geometry_enhanced
-        val_result = validate_geometry_enhanced(shape, constraints)
+        from ..validation.validator import validate_geometry_enhanced, compute_geometry_analysis
+        from ..domain.models import AssemblyManifest, AssemblyPart
 
-        result["violations"] = val_result.violations
-        result["warnings"] = val_result.warnings
+        assembly_parts = []
+        
+        if isinstance(shape, cq.Assembly):
+            # Iterate through children
+            for name, obj in shape.objects.items():
+                # Skip nodes without an actual shape (e.g. sub-assembly containers)
+                if obj.obj is None:
+                    continue
+                
+                # obj.obj is the actual shape (Workplane or Shape)
+                part_shape = obj.obj
+                if not isinstance(part_shape, cq.Workplane):
+                    part_shape = cq.Workplane("XY").add(part_shape)
+                
+                val_result = validate_geometry_enhanced(part_shape, constraints)
+                
+                # Collect violations
+                result["violations"].extend([f"[{name}] {v}" for v in val_result.violations])
+                result["warnings"].extend([f"[{name}] {w}" for w in val_result.warnings])
+                
+                # Convert GeometryAnalysis to GeometryStats
+                from ..domain.models import GeometryStats
+                geo_stats = None
+                if val_result.analysis:
+                    geo_stats = GeometryStats(**{
+                        k: v for k, v in val_result.analysis.__dict__.items()
+                        if k in GeometryStats.model_fields
+                    })
+                
+                assembly_parts.append(AssemblyPart(
+                    name=name,
+                    geometry_stats=geo_stats,
+                    manufacturability=val_result.manufacturability
+                ))
 
-        if val_result.analysis:
-            result["geometry_stats"] = val_result.analysis.to_stats_dict()
+            result["assembly"] = AssemblyManifest(
+                parts=assembly_parts,
+                total_parts=len(assembly_parts)
+            )
+            
+            # For backward compatibility and top-level stats, use the combined bounding box if possible
+            if assembly_parts:
+                result["geometry_stats"] = assembly_parts[0].geometry_stats.model_dump() if assembly_parts[0].geometry_stats else {}
+                result["manufacturability"] = assembly_parts[0].manufacturability
 
-        if not val_result.is_valid:
-            if val_result.has_constraint_violations:
+        else:
+            # Single part
+            val_result = validate_geometry_enhanced(shape, constraints)
+            result["violations"] = val_result.violations
+            result["warnings"] = val_result.warnings
+
+            geo_stats = None
+            if val_result.analysis:
+                from ..domain.models import GeometryStats
+                geo_stats = GeometryStats(**{
+                    k: v for k, v in val_result.analysis.__dict__.items()
+                    if k in GeometryStats.model_fields
+                })
+                result["geometry_stats"] = val_result.analysis.to_stats_dict()
+            
+            result["manufacturability"] = val_result.manufacturability
+            
+            result["assembly"] = AssemblyManifest(
+                parts=[AssemblyPart(
+                    name="part",
+                    geometry_stats=geo_stats,
+                    manufacturability=val_result.manufacturability
+                )],
+                total_parts=1
+            )
+
+        if result["violations"]:
+            if any("exceeds" in v for v in result["violations"]):
                 result["failure_type"] = "constraint_violation"
             else:
                 result["failure_type"] = "geometry_invalid"
-            result["message"] = f"Geometry validation failed: {'; '.join(val_result.violations)}"
-            # Fall through to export for debugging
-    except ImportError:
-        # Fallback to old validation if validation module not yet available
-        geo_valid, violations = validate_geometry(shape, constraints)
-        result["violations"] = violations
-        if not geo_valid:
-            result["failure_type"] = "geometry_invalid"
-            result["message"] = f"Geometry validation failed: {'; '.join(violations)}"
+            result["message"] = f"Geometry validation failed: {'; '.join(result['violations'])}"
+
+    except Exception as e:
+        result["warnings"].append(f"Validation error: {e}")
+        result["message"] = f"Validation failed with internal error: {e}"
 
     # 4. Export all formats
     output_dir = Path(output_dir)
@@ -408,27 +481,24 @@ def process_cadquery_code(
     # Expose the shape for downstream use (rendering, vision)
     result["_shape"] = shape
 
-    # 5. Extract Feature Manifest (for LLM context)
-    feature_manifest = []
-    if isinstance(shape, cq.Assembly):
-        for name, child in shape.objects.items():
+    # 5. Save Assembly Manifest and Features
+    if "assembly" in result:
+        # Save new rich manifest
+        manifest_path = output_dir / "assembly_manifest.json"
+        manifest_path.write_text(result["assembly"].model_dump_json(indent=2), encoding="utf-8")
+        result["files"]["assembly"] = str(manifest_path)
+
+        # Save legacy features.json for backward compatibility
+        feature_manifest = []
+        for part in result["assembly"].parts:
             feature_manifest.append({
-                "name": name,
-                "type": "assembly_child",
-                "center": [float(c) for c in child.obj.val().Center().toTuple()] if hasattr(child.obj, "val") else [0,0,0]
+                "name": part.name,
+                "type": "assembly_part",
+                "center": [part.geometry_stats.center_of_mass_x, part.geometry_stats.center_of_mass_y, part.geometry_stats.center_of_mass_z] if part.geometry_stats else [0,0,0]
             })
-    else:
-        # Single workplane
-        feature_manifest.append({
-            "name": "part",
-            "type": "workplane",
-            "center": [float(c) for c in shape.val().Center().toTuple()] if hasattr(shape, "val") else [0,0,0]
-        })
-    
-    import json
-    feature_path = output_dir / "features.json"
-    feature_path.write_text(json.dumps(feature_manifest, indent=2), encoding="utf-8")
-    result["files"]["features"] = str(feature_path)
+        feature_path = output_dir / "features.json"
+        feature_path.write_text(json.dumps(feature_manifest, indent=2), encoding="utf-8")
+        result["files"]["features"] = str(feature_path)
 
     # 6. Extract Editable Parameters
     try:

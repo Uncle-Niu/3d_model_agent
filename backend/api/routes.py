@@ -8,7 +8,7 @@ import asyncio
 import os
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
@@ -227,7 +227,7 @@ async def update_project(project_id: str, body: UpdateProjectRequest, request: R
             raise HTTPException(status_code=400, detail="Project name cannot be empty")
         config.name = name
 
-    config.updated_at = datetime.utcnow()
+    config.updated_at = datetime.now(timezone.utc)
     storage.update_project(config)
     return _project_response(storage, config)
 
@@ -276,7 +276,7 @@ async def update_constraints(
         config.hard_constraints = body.hard_constraints
     if body.soft_constraints:
         config.soft_constraints = body.soft_constraints
-    config.updated_at = datetime.utcnow()
+    config.updated_at = datetime.now(timezone.utc)
 
     storage.update_project(config)
     return _project_response(storage, config)

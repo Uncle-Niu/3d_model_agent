@@ -386,8 +386,9 @@ Generate CadQuery → Execute → Export GLB
 - ✅ `renders/render_{view}.png` — server-side render images
 - ✅ `feature_manifest.json` per model
 - ✅ `parameters.json` per model
-- ❌ `analysis.json` per model
-- ❌ `manufacturability.json` per model
+- ✅ `analysis.json` per model
+- ✅ `manufacturability.json` per model
+- ✅ `assembly_manifest.json` per model
 
 ### Storage Service
 - ✅ Create / get / list / update / delete projects
@@ -419,8 +420,8 @@ Generate CadQuery → Execute → Export GLB
 - ❌ `GeometryArtifact` / `RenderArtifact` models
 - ❌ `RepairTask` / `ToolResult` models
 - ❌ `CadParameter` / `CadFeature` / `FeatureManifest` models
-- ❌ `ManufacturabilityIssue` / `ManufacturabilityReport` models
-- ❌ `AssemblyPart` / `AssemblyManifest` models
+- ✅ `ManufacturabilityIssue` / `ManufacturabilityReport` models
+- ✅ `AssemblyPart` / `AssemblyManifest` models
 - ❌ `SearchResult` / `WebSearchProvider` models
 
 ---
@@ -485,13 +486,13 @@ Generate CadQuery → Execute → Export GLB
 - ✅ Section cut renders for internal geometry review
 
 ### 21.6 Assemblies & Multi-Part Workflows
-- ❌ `AssemblyPart` / `AssemblyManifest` schemas
-- ❌ CadQuery Assembly export (multi-part)
+- ✅ `AssemblyPart` / `AssemblyManifest` schemas
+- ✅ CadQuery Assembly export (multi-part)
 - ❌ Assembly tree UI
 - ❌ Toggle part visibility
 - ❌ Per-part STL download
 - ❌ Exploded-view slider
-- ❌ Named parts + print orientation per part
+- ✅ Named parts + print orientation per part (partial)
 
 ### 21.7 Import & Conversion Workflows
 - ❌ `POST /api/projects/{id}/imports` endpoint

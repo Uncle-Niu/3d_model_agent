@@ -149,6 +149,27 @@ class TestModelCRUD(unittest.TestCase):
         self.assertAlmostEqual(loaded.geometry_stats.bbox_x_mm, 50.0)
         self.assertTrue(loaded.geometry_stats.is_closed)
 
+    def test_metadata_with_assembly(self):
+        from backend.domain.models import AssemblyManifest, AssemblyPart
+        model_id = "model-001"
+        self.storage.create_model_dir(self.project_id, model_id)
+
+        assembly = AssemblyManifest(
+            parts=[
+                AssemblyPart(name="p1", visible=True),
+                AssemblyPart(name="p2", visible=False),
+            ],
+            total_parts=2
+        )
+        metadata = ModelMetadata(model_id=model_id, prompt="test", assembly=assembly)
+        self.storage.save_model_metadata(self.project_id, metadata)
+
+        loaded = self.storage.get_model_metadata(self.project_id, model_id)
+        self.assertIsNotNone(loaded.assembly)
+        self.assertEqual(loaded.assembly.total_parts, 2)
+        self.assertEqual(loaded.assembly.parts[1].name, "p2")
+        self.assertFalse(loaded.assembly.parts[1].visible)
+
     def test_get_metadata_missing_returns_none(self):
         result = self.storage.get_model_metadata(self.project_id, "model-999")
         self.assertIsNone(result)
