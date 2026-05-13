@@ -351,13 +351,27 @@ class AgentOrchestrator:
         
         selection_context = ""
         if selection:
+            # Try to find more metadata in the manifest
+            feature_meta = {}
+            if current_model_id:
+                manifest = self.storage.get_model_features(project_id, current_model_id)
+                for f in manifest:
+                    if f.get("name") == selection.feature_name:
+                        feature_meta = f
+                        break
+
             selection_context = (
                 f"## Active Selection\n"
                 f"The user has selected the following feature in the 3D viewport:\n"
                 f"- Feature Name: `{selection.feature_name}`\n"
             )
-            if selection.point:
+            if feature_meta.get("type"):
+                selection_context += f"- Feature Type: {feature_meta['type']}\n"
+            if feature_meta.get("center"):
+                selection_context += f"- Feature Center: {feature_meta['center']} (X, Y, Z in mm)\n"
+            elif selection.point:
                 selection_context += f"- Click Coordinates: {selection.point} (X, Y, Z in mm)\n"
+            
             selection_context += "\nYour changes should prioritize or relate to this selected feature if relevant to the request.\n\n"
 
         if current_source:

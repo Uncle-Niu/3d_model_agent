@@ -9,7 +9,7 @@ import os
 import subprocess
 import sys
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..cad.engine import process_cadquery_code
+from ..cad.parameters import inject_parameters
 from ..domain.models import (
     FailureType,
     HardConstraints,
@@ -114,6 +115,10 @@ class ExecuteSourceResponse(BaseModel):
     model: ModelResponse
     glb_url: Optional[str] = None
     violations: list[str] = []
+
+
+class UpdateParametersRequest(BaseModel):
+    parameters: dict[str, Any]
 
 
 class CreateChatThreadRequest(BaseModel):
@@ -456,6 +461,81 @@ async def execute_model_source(project_id: str, body: ExecuteSourceRequest, requ
         message=result["message"],
         model=model,
         glb_url=f"/api/projects/{project_id}/models/{model_id}/glb" if metadata.has_glb else None,
+        violations=result.get("violations", []),
+    )
+
+
+@router.get("/projects/{project_id}/models/{model_id}/parameters")
+async def get_model_parameters_endpoint(project_id: str, model_id: str, request: Request):
+    """Get editable parameters for a model."""
+    storage = _get_storage(request)
+    return storage.get_model_parameters(project_id, model_id)
+
+
+@router.get("/projects/{project_id}/models/{model_id}/features")
+async def get_model_features_endpoint(project_id: str, model_id: str, request: Request):
+    """Get feature manifest for a model."""
+    storage = _get_storage(request)
+    return storage.get_model_features(project_id, model_id)
+
+
+@router.post("/projects/{project_id}/models/{model_id}/update_parameters", response_model=ExecuteSourceResponse)
+async def update_model_parameters(
+    project_id: str, model_id: str, body: UpdateParametersRequest, request: Request
+):
+    """Update parameters in model source and regenerate."""
+    storage = _get_storage(request)
+    config = storage.get_project(project_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    old_source = storage.get_model_source_text(project_id, model_id)
+    if not old_source:
+        raise HTTPException(status_code=404, detail="Source not found for model")
+
+    new_source = inject_parameters(old_source, body.parameters)
+    
+    # Same logic as execute_source but with updated code
+    new_model_id = storage.next_model_id(project_id)
+    model_dir = storage.create_model_dir(project_id, new_model_id)
+    result = await asyncio.get_event_loop().run_in_executor(
+        None,
+        process_cadquery_code,
+        new_source,
+        model_dir,
+        "part",
+        config.hard_constraints,
+    )
+
+    metadata = ModelMetadata(
+        model_id=new_model_id,
+        prompt=f"Parameter update for {model_id}",
+        cad_source=new_source,
+        has_step="step" in result.get("files", {}),
+        has_stl="stl" in result.get("files", {}),
+        has_glb="glb" in result.get("files", {}),
+        failure_type=None if result["success"] else FailureType.EXECUTION_ERROR,
+        failure_message="" if result["success"] else result["message"],
+        iteration=0,
+    )
+    storage.save_model_metadata(project_id, metadata)
+    if "source" not in result.get("files", {}):
+        storage.save_model_text(project_id, new_model_id, "source.py", new_source)
+
+    model = ModelResponse(
+        model_id=metadata.model_id,
+        created_at=metadata.created_at,
+        prompt=metadata.prompt,
+        has_step=metadata.has_step,
+        has_stl=metadata.has_stl,
+        has_glb=metadata.has_glb,
+        iteration=metadata.iteration,
+    )
+    return ExecuteSourceResponse(
+        success=result["success"],
+        message=result["message"],
+        model=model,
+        glb_url=f"/api/projects/{project_id}/models/{new_model_id}/glb" if metadata.has_glb else None,
         violations=result.get("violations", []),
     )
 

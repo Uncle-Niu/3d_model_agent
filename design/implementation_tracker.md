@@ -383,8 +383,8 @@ Generate CadQuery → Execute → Export GLB
 - ✅ `chat_history.json` — legacy chat storage
 - ✅ `chat_threads/` — per-thread JSON files
 - ✅ `renders/render_{view}.png` — server-side render images
-- ❌ `feature_manifest.json` per model
-- ❌ `parameters.json` per model
+- ✅ `feature_manifest.json` per model
+- ✅ `parameters.json` per model
 - ❌ `analysis.json` per model
 - ❌ `manufacturability.json` per model
 
@@ -427,24 +427,24 @@ Generate CadQuery → Execute → Export GLB
 ## 21. Zoo Gap Closure Features
 
 ### 21.1 Feature Tree & Editable Parameters
-- ❌ Feature manifest generation alongside CadQuery code
-- ❌ `feature_manifest.json` / `parameters.json` persistence
-- ❌ CadParameter / CadFeature / FeatureManifest schemas
-- ❌ LLM generates named top-level parameters
-- ❌ Feature tree UI panel
-- ❌ Parameter table UI
-- ❌ Regenerate button on parameter edit
+- ✅ Feature manifest generation alongside CadQuery code
+- ✅ `feature_manifest.json` / `parameters.json` persistence
+- ✅ CadParameter / CadFeature / FeatureManifest schemas
+- ✅ LLM generates named top-level parameters
+- ✅ Feature tree UI panel
+- ✅ Parameter table UI
+- ✅ Regenerate button on parameter edit
 - ❌ Feature highlight in viewport on tree selection
 - ❌ Source span display
 
 ### 21.2 Selection-Aware Agent
-- ❌ Named Assembly children in GLB export
-- ❌ Three.js raycasting + cadName readout
-- ❌ Selection stored in Zustand
-- ❌ Selected mesh highlight
-- ❌ Selection context sent with chat messages
-- ❌ Backend resolves feature_id against manifest
-- ❌ Edit prompt with selected feature metadata
+- ✅ Named Assembly children in GLB export (via CadQuery Assembly)
+- ✅ Three.js raycasting + cadName readout
+- ✅ Selection stored in Zustand
+- ✅ Selected mesh highlight
+- ✅ Selection context sent with chat messages
+- ✅ Backend resolves feature_id against manifest
+- ✅ Edit prompt with selected feature metadata
 
 ### 21.3 Model-Derived Analysis Tools
 - ✅ Bounding box dimensions analysis (in validation module)

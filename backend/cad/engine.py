@@ -20,6 +20,7 @@ from typing import Any, Optional
 import cadquery as cq
 
 from ..domain.models import HardConstraints
+from .parameters import extract_parameters
 
 
 FORBIDDEN_MODULES = {
@@ -428,6 +429,16 @@ def process_cadquery_code(
     feature_path = output_dir / "features.json"
     feature_path.write_text(json.dumps(feature_manifest, indent=2), encoding="utf-8")
     result["files"]["features"] = str(feature_path)
+
+    # 6. Extract Editable Parameters
+    try:
+        params = extract_parameters(code)
+        param_path = output_dir / "parameters.json"
+        param_path.write_text(json.dumps([p.model_dump() for p in params], indent=2), encoding="utf-8")
+        result["files"]["parameters"] = str(param_path)
+        result["parameters"] = params
+    except Exception as e:
+        result["warnings"].append(f"Parameter extraction failed: {e}")
 
     if result["violations"]:
         # Geometry had violations but we exported anyway

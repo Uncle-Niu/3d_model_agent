@@ -194,6 +194,20 @@ class StorageService:
             return {}
         return self._read_json(path)
 
+    def get_model_parameters(self, project_id: str, model_id: str) -> list[dict]:
+        """Load editable parameters for a model."""
+        path = self.projects_dir / project_id / "models" / model_id / "parameters.json"
+        if not path.exists():
+            return []
+        return self._read_json(path)
+
+    def get_model_features(self, project_id: str, model_id: str) -> list[dict]:
+        """Load feature manifest for a model."""
+        path = self.projects_dir / project_id / "models" / model_id / "features.json"
+        if not path.exists():
+            return []
+        return self._read_json(path)
+
 
     # ------------------------------------------------------------------
     # Chat History

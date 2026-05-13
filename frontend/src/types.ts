@@ -140,3 +140,19 @@ export interface CritiqueState {
   issues: GeometryIssue[];
   renderUrls: Record<string, string>;
 }
+
+// CAD features and parameters
+export interface CadParameter {
+  name: string;
+  value: string | number | boolean;
+  type: 'float' | 'int' | 'str' | 'bool';
+  description?: string;
+  min_value?: number;
+  max_value?: number;
+}
+
+export interface FeatureManifest {
+  name: string;
+  type: string;
+  center: [number, number, number];
+}

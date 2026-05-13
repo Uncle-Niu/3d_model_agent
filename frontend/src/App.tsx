@@ -9,6 +9,8 @@ import DebugPanel from './components/DebugPanel';
 import HistorySidebar from './components/HistorySidebar';
 import SourcePanel from './components/SourcePanel';
 import Viewport from './components/Viewport';
+import ParameterPanel from './components/ParameterPanel';
+import FeaturePanel from './components/FeaturePanel';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useChatStore, useProjectStore, useSelectionStore, useViewportStore } from './stores';
 import { api } from './api';
@@ -465,6 +467,8 @@ function App() {
             }}
             sendWsMessage={sendRawMessage}
           />
+          <FeaturePanel />
+          <ParameterPanel />
         </div>
 
         {/* Chat Panel */}
