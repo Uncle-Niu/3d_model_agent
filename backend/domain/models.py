@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -78,6 +78,22 @@ class CritiqueReport(BaseModel):
     overall_printability: float = 0.0  # 0.0 - 1.0
     suggested_repairs: list[str] = Field(default_factory=list)
     confidence: float = 0.0
+    matches_intent: bool = True
+    repair_prompt: str = ""  # actionable repair instructions from vision model
+
+
+class GeometryStats(BaseModel):
+    """Measurements from geometry analysis, injected into critique/repair prompts."""
+    bbox_x_mm: Optional[float] = None
+    bbox_y_mm: Optional[float] = None
+    bbox_z_mm: Optional[float] = None
+    volume_mm3: Optional[float] = None
+    surface_area_mm2: Optional[float] = None
+    solid_count: int = 0
+    face_count: int = 0
+    edge_count: int = 0
+    is_closed: bool = False
+    estimated_mass_g: Optional[float] = None
 
 
 class ModelMetadata(BaseModel):
@@ -90,10 +106,13 @@ class ModelMetadata(BaseModel):
     has_stl: bool = False
     has_glb: bool = False
     has_render: bool = False
+    render_paths: dict[str, str] = Field(default_factory=dict)  # view_name → file_path
     critique: Optional[CritiqueReport] = None
+    geometry_stats: Optional[GeometryStats] = None
     failure_type: Optional[FailureType] = None
     failure_message: str = ""
     iteration: int = 0
+    vision_score: Optional[float] = None  # latest vision critique score
 
 
 class ProjectConfig(BaseModel):
@@ -115,6 +134,25 @@ class ChatMessage(BaseModel):
     content: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     model_id: Optional[str] = None  # linked model if applicable
+
+
+# ---------------------------------------------------------------------------
+# Agent state (for structured pipeline state tracking)
+# ---------------------------------------------------------------------------
+
+class AgentState(BaseModel):
+    """Structured state for the CAD generation pipeline."""
+    user_goal: str = ""
+    current_iteration: int = 0
+    max_iterations: int = 5
+    cad_source: str = ""
+    last_error: str = ""
+    failure_history: list[dict[str, Any]] = Field(default_factory=list)
+    critique_results: list[CritiqueReport] = Field(default_factory=list)
+    render_paths: dict[str, str] = Field(default_factory=dict)
+    geometry_stats: Optional[GeometryStats] = None
+    final_model_id: Optional[str] = None
+    success: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -153,3 +191,6 @@ class WSCritiqueResult(BaseModel):
     type: str = "critique_result"
     issues: list[GeometryIssue] = Field(default_factory=list)
     score: float = 0.0
+    matches_intent: bool = True
+    repair_prompt: str = ""
+    render_urls: dict[str, str] = Field(default_factory=dict)  # view → REST URL

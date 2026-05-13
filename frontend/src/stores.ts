@@ -3,7 +3,8 @@
  */
 
 import { create } from 'zustand';
-import type { ChatMessage, DebugEntry, Project } from './types';
+import type { ChatMessage, CritiqueState, DebugEntry, GeometryIssue, Project } from './types';
+
 
 // ---------------------------------------------------------------------------
 // Project store
@@ -129,3 +130,20 @@ export const useDebugStore = create<DebugState>((set) => ({
 
   clear: () => set({ entries: [] }),
 }));
+
+// ---------------------------------------------------------------------------
+// Critique store — vision model feedback
+// ---------------------------------------------------------------------------
+
+interface CritiqueStoreState {
+  critique: CritiqueState | null;
+  setCritique: (c: CritiqueState | null) => void;
+  clearCritique: () => void;
+}
+
+export const useCritiqueStore = create<CritiqueStoreState>((set) => ({
+  critique: null,
+  setCritique: (critique) => set({ critique }),
+  clearCritique: () => set({ critique: null }),
+}));
+

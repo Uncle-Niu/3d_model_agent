@@ -1,11 +1,12 @@
 /**
- * Chat interface component — message list + input.
+ * Chat interface component — message list + input + critique panel.
  */
 
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useChatStore } from '../stores';
 import { formatLocalDateTime } from '../time';
+import CritiquePanel from './CritiquePanel';
 
 interface ChatProps {
   onSend: (message: string) => void;
@@ -45,6 +46,18 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
     }
   };
 
+  // Stage → icon/label
+  const STAGE_ICONS: Record<string, string> = {
+    generating:  '✍️',
+    executing:   '⚙️',
+    tessellating:'🔺',
+    rendering:   '📷',
+    critiquing:  '👁',
+    repairing:   '🔧',
+    failed:      '❌',
+    validating:  '✅',
+  };
+
   return (
     <div className="chat-container">
       {/* Messages */}
@@ -64,6 +77,9 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
               <button onClick={() => onSend('Design a cylindrical container with a flat bottom, 25mm radius, 40mm tall')}>
                 🥫 Cylindrical container
               </button>
+              <button onClick={() => onSend('Create a cable clip that can snap onto a 4mm wire, with a hinge opening')}>
+                📎 Snap-fit cable clip
+              </button>
             </div>
           </div>
         )}
@@ -75,10 +91,10 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
             </div>
             <div className="chat-message-content">
               <div className="chat-message-meta">
-                <span>{msg.role === 'user' ? 'You' : 'Assistant'}</span>
+                <span>{msg.role === 'user' ? 'You' : 'CAD Agent'}</span>
                 <time dateTime={msg.timestamp}>{formatLocalDateTime(msg.timestamp)}</time>
               </div>
-              <pre>{msg.content}</pre>
+              <pre className="chat-message-text">{msg.content}</pre>
             </div>
           </div>
         ))}
@@ -88,7 +104,7 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
           <div className="chat-message chat-message-assistant">
             <div className="chat-message-avatar">🤖</div>
             <div className="chat-message-content streaming">
-              <pre>{streamingContent}</pre>
+              <pre className="chat-message-text">{streamingContent}</pre>
               <span className="cursor-blink">▊</span>
             </div>
           </div>
@@ -98,13 +114,17 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
         {isGenerating && currentStatus && (
           <div className="chat-status">
             <div className="chat-status-dot" />
+            <span className="chat-status-stage-icon">{STAGE_ICONS[currentStage] || '⏳'}</span>
             <span className="chat-status-stage">{currentStage}</span>
-            <span>{currentStatus}</span>
+            <span className="chat-status-message">{currentStatus}</span>
           </div>
         )}
 
         <div ref={messagesEndRef} />
       </div>
+
+      {/* Vision critique panel — shown below messages, above input */}
+      <CritiquePanel />
 
       {/* Input */}
       <form className="chat-input-form" onSubmit={handleSubmit}>

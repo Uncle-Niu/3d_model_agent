@@ -15,6 +15,13 @@ langchain-openai==0.3.18
 httpx==0.28.1
 openai>=1.30.0
 
+# Rendering (server-side multi-angle PNG generation for vision critique)
+trimesh[easy]>=4.4.0         # 3D mesh loading + rendering utilities
+matplotlib>=3.8.0             # Fallback renderer (headless 3D plots)
+Pillow>=10.0.0                # Image I/O
+# Optional (better renders, requires OSMesa or EGL on Linux / pyrender wheels on Windows):
+# pyrender>=0.1.45
+
 # Utilities
 python-dotenv==1.1.0
 aiofiles==24.1.0

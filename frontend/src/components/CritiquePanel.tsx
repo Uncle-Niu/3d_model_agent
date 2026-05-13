@@ -1,0 +1,111 @@
+/**
+ * CritiquePanel — displays vision AI critique results inline in the chat.
+ *
+ * Shows:
+ * - Printability score (color-coded)
+ * - Issue list (error/warning/info badges)
+ * - Multi-angle render thumbnails
+ */
+
+import { api } from '../api';
+import { useCritiqueStore } from '../stores';
+
+const SEVERITY_COLOR: Record<string, string> = {
+  error: 'var(--critique-error)',
+  warning: 'var(--critique-warning)',
+  info: 'var(--critique-info)',
+};
+
+const SEVERITY_LABEL: Record<string, string> = {
+  error: '✕ Error',
+  warning: '⚠ Warning',
+  info: '● Info',
+};
+
+export default function CritiquePanel() {
+  const { critique, clearCritique } = useCritiqueStore();
+
+  if (!critique) return null;
+
+  const { score, matchesIntent, issues, renderUrls } = critique;
+
+  const scoreColor =
+    score >= 0.8 ? 'var(--critique-good)' :
+    score >= 0.65 ? 'var(--critique-warn)' :
+    'var(--critique-error)';
+
+  const scoreLabel =
+    score >= 0.8 ? 'Good' :
+    score >= 0.65 ? 'Needs Improvement' :
+    'Poor – Repairing...';
+
+  const viewOrder = ['iso', 'front', 'right', 'top'] as const;
+
+  return (
+    <div className="critique-panel">
+      <div className="critique-header">
+        <div className="critique-title">
+          <span className="critique-icon">👁</span>
+          Vision Critique
+        </div>
+        <div className="critique-score" style={{ color: scoreColor }}>
+          <span className="critique-score-value">{(score * 100).toFixed(0)}%</span>
+          <span className="critique-score-label">{scoreLabel}</span>
+        </div>
+        <button className="critique-close" onClick={clearCritique} title="Dismiss">✕</button>
+      </div>
+
+      {!matchesIntent && (
+        <div className="critique-intent-warning">
+          ⚠ Model may not fully match your description
+        </div>
+      )}
+
+      {/* Render thumbnails */}
+      {Object.keys(renderUrls).length > 0 && (
+        <div className="critique-renders">
+          {viewOrder.map((view) =>
+            renderUrls[view] ? (
+              <div key={view} className="critique-render-thumb">
+                <img
+                  src={api.url(renderUrls[view])}
+                  alt={`${view} view`}
+                  className="critique-render-img"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = 'none';
+                  }}
+                />
+                <span className="critique-render-label">{view.toUpperCase()}</span>
+              </div>
+            ) : null
+          )}
+        </div>
+      )}
+
+      {/* Issues */}
+      {issues.length > 0 && (
+        <div className="critique-issues">
+          {issues.map((issue, i) => (
+            <div key={i} className="critique-issue">
+              <span
+                className="critique-issue-badge"
+                style={{ background: SEVERITY_COLOR[issue.severity] || 'var(--critique-info)' }}
+              >
+                {SEVERITY_LABEL[issue.severity] || issue.severity}
+              </span>
+              <span className="critique-issue-type">{issue.issue_type}</span>
+              <span className="critique-issue-desc">{issue.description}</span>
+              {issue.location_hint && (
+                <span className="critique-issue-location">@ {issue.location_hint}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {issues.length === 0 && (
+        <div className="critique-ok">✅ No printability issues detected</div>
+      )}
+    </div>
+  );
+}

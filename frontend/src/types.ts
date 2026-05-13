@@ -99,13 +99,30 @@ export interface WSDebugLog {
   data?: Record<string, unknown>;
 }
 
+export interface GeometryIssue {
+  issue_type: string;
+  severity: 'error' | 'warning' | 'info';
+  description: string;
+  location_hint: string;
+}
+
+export interface WSCritiqueResult {
+  type: 'critique_result';
+  score: number;
+  matches_intent: boolean;
+  issues: GeometryIssue[];
+  repair_prompt: string;
+  render_urls: Record<string, string>;  // view_name → REST URL
+}
+
 export type WSMessage =
   | WSStatus
   | WSModelReady
   | WSLLMChunk
   | WSChatResponse
   | WSError
-  | WSDebugLog;
+  | WSDebugLog
+  | WSCritiqueResult;
 
 // Debug log entry for the store
 export interface DebugEntry {
@@ -114,4 +131,12 @@ export interface DebugEntry {
   category: string;
   message: string;
   data?: Record<string, unknown>;
+}
+
+// Critique state stored in Zustand
+export interface CritiqueState {
+  score: number;
+  matchesIntent: boolean;
+  issues: GeometryIssue[];
+  renderUrls: Record<string, string>;
 }

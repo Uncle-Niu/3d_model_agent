@@ -21,9 +21,6 @@ import cadquery as cq
 
 from ..domain.models import HardConstraints
 
-# ---------------------------------------------------------------------------
-# Forbidden imports / builtins for sandboxing
-# ---------------------------------------------------------------------------
 
 FORBIDDEN_MODULES = {
     "subprocess",
@@ -320,38 +317,64 @@ def process_cadquery_code(
         success: bool
         message: str
         files: dict of generated file paths
-        violations: list of constraint violations
+        violations: list of hard constraint failures
+        warnings: list of soft geometry warnings
+        geometry_stats: dict of measurements (for vision critique)
+        failure_type: str hint for repair routing
     """
     if constraints is None:
         constraints = HardConstraints()
 
-    result = {
+    result: dict[str, Any] = {
         "success": False,
         "message": "",
         "files": {},
         "violations": [],
+        "warnings": [],
+        "geometry_stats": {},
+        "failure_type": None,
         "cad_source": code,
     }
 
-    # 1. Validate code
+    # 1. Validate code (AST)
     valid, msg = validate_cadquery_code(code)
     if not valid:
         result["message"] = f"Code validation failed: {msg}"
+        result["failure_type"] = "syntax_error"
         return result
 
     # 2. Execute
     success, shape, msg = execute_cadquery_code(code)
     if not success:
         result["message"] = msg
+        result["failure_type"] = "execution_error"
         return result
 
-    # 3. Validate geometry
-    geo_valid, violations = validate_geometry(shape, constraints)
-    result["violations"] = violations
-    if not geo_valid:
-        result["message"] = f"Geometry validation failed: {'; '.join(violations)}"
-        # Still try to export for debugging, but mark as failed
-        # Fall through to export
+    # 3. Enhanced geometry validation
+    try:
+        from ..validation.validator import validate_geometry_enhanced
+        val_result = validate_geometry_enhanced(shape, constraints)
+
+        result["violations"] = val_result.violations
+        result["warnings"] = val_result.warnings
+
+        if val_result.analysis:
+            result["geometry_stats"] = val_result.analysis.to_stats_dict()
+
+        if not val_result.is_valid:
+            if val_result.has_constraint_violations:
+                result["failure_type"] = "constraint_violation"
+            else:
+                result["failure_type"] = "geometry_invalid"
+            result["message"] = f"Geometry validation failed: {'; '.join(val_result.violations)}"
+            # Fall through to export for debugging
+    except ImportError:
+        # Fallback to old validation if validation module not yet available
+        geo_valid, violations = validate_geometry(shape, constraints)
+        result["violations"] = violations
+        if not geo_valid:
+            result["failure_type"] = "geometry_invalid"
+            result["message"] = f"Geometry validation failed: {'; '.join(violations)}"
 
     # 4. Export all formats
     output_dir = Path(output_dir)
@@ -368,20 +391,23 @@ def process_cadquery_code(
         stl_path = export_stl(shape, output_dir / "model.stl")
         result["files"]["stl"] = str(stl_path)
     except Exception as e:
-        result["violations"].append(f"STL export failed: {e}")
+        result["warnings"].append(f"STL export failed: {e}")
 
     try:
         glb_path = export_glb(shape, output_dir / "model.glb", name=model_name)
         result["files"]["glb"] = str(glb_path)
     except Exception as e:
-        result["violations"].append(f"glTF export failed: {e}")
+        result["warnings"].append(f"glTF export failed: {e}")
 
     # Save source code
     source_path = output_dir / "source.py"
     source_path.write_text(code, encoding="utf-8")
     result["files"]["source"] = str(source_path)
 
-    if not geo_valid:
+    # Expose the shape for downstream use (rendering, vision)
+    result["_shape"] = shape
+
+    if result["violations"]:
         # Geometry had violations but we exported anyway
         result["success"] = False
     else:

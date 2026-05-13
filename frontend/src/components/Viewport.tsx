@@ -1,30 +1,48 @@
 /**
  * 3D Viewport component — renders glTF models using React Three Fiber.
+ *
+ * Features:
+ * - GLB model rendering with orbit controls
+ * - Wireframe mode toggle
+ * - Bounding box overlay
+ * - Download menu (STL / STEP / GLB)
  */
 
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Environment, Grid, Center, useGLTF } from '@react-three/drei';
+import { OrbitControls, Environment, Grid, Center, useGLTF, Box } from '@react-three/drei';
 import { Suspense, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { useViewportStore } from '../stores';
 import { api } from '../api';
 
-function Model({ url }: { url: string }) {
+// ---------------------------------------------------------------------------
+// Model renderer with wireframe support
+// ---------------------------------------------------------------------------
+
+function Model({ url, wireframe }: { url: string; wireframe: boolean }) {
   const { scene } = useGLTF(url);
   const ref = useRef<THREE.Group>(null);
 
   useEffect(() => {
-    // Apply default material improvements
     scene.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
-        if (mesh.material instanceof THREE.MeshStandardMaterial) {
+        if (Array.isArray(mesh.material)) {
+          mesh.material.forEach((mat) => {
+            if (mat instanceof THREE.MeshStandardMaterial) {
+              mat.roughness = 0.4;
+              mat.metalness = 0.1;
+              mat.wireframe = wireframe;
+            }
+          });
+        } else if (mesh.material instanceof THREE.MeshStandardMaterial) {
           mesh.material.roughness = 0.4;
           mesh.material.metalness = 0.1;
+          mesh.material.wireframe = wireframe;
         }
       }
     });
-  }, [scene]);
+  }, [scene, wireframe]);
 
   return (
     <Center>
@@ -32,6 +50,40 @@ function Model({ url }: { url: string }) {
     </Center>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Bounding box wireframe overlay
+// ---------------------------------------------------------------------------
+
+function BoundingBoxOverlay({ url }: { url: string }) {
+  const { scene } = useGLTF(url);
+  const [bbox, setBbox] = useState<THREE.Box3 | null>(null);
+
+  useEffect(() => {
+    const box = new THREE.Box3().setFromObject(scene);
+    setBbox(box);
+  }, [scene]);
+
+  if (!bbox) return null;
+
+  const size = new THREE.Vector3();
+  bbox.getSize(size);
+  const center = new THREE.Vector3();
+  bbox.getCenter(center);
+
+  return (
+    <Box
+      args={[size.x, size.y, size.z]}
+      position={[center.x, center.y, center.z]}
+    >
+      <meshBasicMaterial wireframe color="#00aaff" transparent opacity={0.4} />
+    </Box>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Loading / Empty states
+// ---------------------------------------------------------------------------
 
 function LoadingIndicator() {
   return (
@@ -46,20 +98,21 @@ function EmptyState() {
   return (
     <mesh position={[0, 0.5, 0]}>
       <boxGeometry args={[2, 2, 2]} />
-      <meshStandardMaterial
-        color="#2a2a3a"
-        transparent
-        opacity={0.15}
-        wireframe
-      />
+      <meshStandardMaterial color="#2a2a3a" transparent opacity={0.15} wireframe />
     </mesh>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Main Viewport
+// ---------------------------------------------------------------------------
 
 export default function Viewport() {
   const { glbUrl, isLoading, currentModelId, currentProjectId } = useViewportStore();
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [downloadingFormat, setDownloadingFormat] = useState<string | null>(null);
+  const [wireframe, setWireframe] = useState(false);
+  const [showBbox, setShowBbox] = useState(false);
   const downloadMenuRef = useRef<HTMLDivElement>(null);
 
   // Close download menu when clicking outside
@@ -69,33 +122,30 @@ export default function Viewport() {
         setShowDownloadMenu(false);
       }
     }
-
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  // Reset view modes when model changes
+  useEffect(() => {
+    setWireframe(false);
+    setShowBbox(false);
+  }, [glbUrl]);
+
   async function handleDownload(format: 'stl' | 'step' | 'glb') {
     if (!currentModelId || !currentProjectId) {
-      console.error('[Download] Missing modelId or projectId');
       alert('Model information not available');
       return;
     }
-
     try {
       setDownloadingFormat(format);
-      const filename = `model-${currentModelId}.${format}`;
-      const downloadPath = `/api/projects/${currentProjectId}/models/${currentModelId}/${format}`;
-      
-      console.log(`[Download Handler] Downloading ${format} from path: ${downloadPath}`);
-      console.log(`[Download Handler] Model ID: ${currentModelId}, Project ID: ${currentProjectId}`);
-      
-      await api.downloadFile(downloadPath, filename);
-      console.log(`[Download Handler] Download completed successfully`);
+      await api.downloadFile(
+        `/api/projects/${currentProjectId}/models/${currentModelId}/${format}`,
+        `model-${currentModelId}.${format}`,
+      );
       setShowDownloadMenu(false);
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[Download Handler] Failed to download ${format} file:`, errorMsg);
-      alert(`Failed to download ${format.toUpperCase()} file: ${errorMsg}`);
+      alert(`Failed to download ${format.toUpperCase()}: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setDownloadingFormat(null);
     }
@@ -130,7 +180,10 @@ export default function Viewport() {
         {/* Model or empty state */}
         <Suspense fallback={<LoadingIndicator />}>
           {glbUrl ? (
-            <Model url={glbUrl} />
+            <>
+              <Model url={glbUrl} wireframe={wireframe} />
+              {showBbox && <BoundingBoxOverlay url={glbUrl} />}
+            </>
           ) : (
             <EmptyState />
           )}
@@ -146,7 +199,7 @@ export default function Viewport() {
         />
       </Canvas>
 
-      {/* Viewport overlay info */}
+      {/* Loading overlay */}
       {isLoading && (
         <div className="viewport-overlay">
           <div className="viewport-loading">Loading model...</div>
@@ -155,9 +208,27 @@ export default function Viewport() {
 
       {!glbUrl && !isLoading && (
         <div className="viewport-overlay">
-          <div className="viewport-empty">
-            Send a message to generate a 3D model
-          </div>
+          <div className="viewport-empty">Send a message to generate a 3D model</div>
+        </div>
+      )}
+
+      {/* Viewport toolbar — top-right buttons */}
+      {glbUrl && !isLoading && (
+        <div className="viewport-toolbar">
+          <button
+            className={`viewport-tool-btn ${wireframe ? 'active' : ''}`}
+            onClick={() => setWireframe((v) => !v)}
+            title="Toggle wireframe mode"
+          >
+            ◻ Wire
+          </button>
+          <button
+            className={`viewport-tool-btn ${showBbox ? 'active' : ''}`}
+            onClick={() => setShowBbox((v) => !v)}
+            title="Toggle bounding box"
+          >
+            ⬜ BBox
+          </button>
         </div>
       )}
 
@@ -176,9 +247,7 @@ export default function Viewport() {
                 Downloading...
               </>
             ) : (
-              <>
-                ⬇️ Download
-              </>
+              <>⬇️ Download</>
             )}
           </button>
 

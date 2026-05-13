@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
-import { useChatStore, useDebugStore, useViewportStore } from '../stores';
+import { useChatStore, useCritiqueStore, useDebugStore, useViewportStore } from '../stores';
 import type { WSMessage } from '../types';
 
 export function useWebSocket(projectId: string | null, threadId: string | null) {
@@ -12,6 +12,7 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
   const chat = useChatStore();
   const viewport = useViewportStore();
   const debug = useDebugStore();
+  const critique = useCritiqueStore();
   const [isConnected, setIsConnected] = useState(false);
 
   // Connect to WebSocket
@@ -124,8 +125,24 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
           data: msg.data,
         });
         break;
+
+      case 'critique_result':
+        console.log(`[WS] Vision critique: score=${msg.score.toFixed(2)}, issues=${msg.issues.length}`);
+        critique.setCritique({
+          score: msg.score,
+          matchesIntent: msg.matches_intent,
+          issues: msg.issues,
+          renderUrls: msg.render_urls,
+        });
+        debug.addEntry({
+          timestamp: new Date().toISOString(),
+          category: 'vision',
+          message: `Vision critique: score=${msg.score.toFixed(2)}, ${msg.issues.length} issue(s)`,
+          data: { score: msg.score, issues: msg.issues },
+        });
+        break;
     }
-  }, [projectId, chat, viewport, debug]);
+  }, [projectId, chat, viewport, debug, critique]);
 
   // Send a chat message
   const sendMessage = useCallback(

@@ -360,6 +360,24 @@ async def get_model_source(project_id: str, model_id: str, request: Request):
     )
 
 
+@router.get("/projects/{project_id}/models/{model_id}/renders/{view_name}")
+async def get_model_render(project_id: str, model_id: str, view_name: str, request: Request):
+    """Get a rendered PNG image for a model (iso, front, right, top)."""
+    storage = _get_storage(request)
+    valid_views = {"iso", "front", "right", "top"}
+    if view_name not in valid_views:
+        raise HTTPException(status_code=400, detail=f"Invalid view. Must be one of: {valid_views}")
+    file_path = storage.get_model_file_path(project_id, model_id, f"renders/render_{view_name}.png")
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Render '{view_name}' not found for this model")
+    return FileResponse(
+        path=str(file_path),
+        media_type="image/png",
+        filename=f"{model_id}_{view_name}.png",
+    )
+
+
+
 @router.post("/projects/{project_id}/models/execute_source", response_model=ExecuteSourceResponse)
 async def execute_model_source(project_id: str, body: ExecuteSourceRequest, request: Request):
     """Execute edited CadQuery source and save it as a new model checkpoint."""
