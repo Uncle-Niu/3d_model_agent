@@ -5,48 +5,131 @@
  * - GLB model rendering with orbit controls
  * - Wireframe mode toggle
  * - Bounding box overlay
+ * - Camera preset buttons (Iso, Front, Right, Top)
+ * - Assembly-level mesh click → selection → WS selection message
+ * - Visual highlight of selected mesh
  * - Download menu (STL / STEP / GLB)
  */
 
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, Environment, Grid, Center, useGLTF, Box } from '@react-three/drei';
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { useViewportStore } from '../stores';
 import { api } from '../api';
 
 // ---------------------------------------------------------------------------
-// Model renderer with wireframe support
+// Camera preset helper — imperative camera moves
 // ---------------------------------------------------------------------------
 
-function Model({ url, wireframe }: { url: string; wireframe: boolean }) {
+const CAMERA_PRESETS = {
+  iso:   new THREE.Vector3(80, 60, 80),
+  front: new THREE.Vector3(0, 0, 160),
+  right: new THREE.Vector3(160, 0, 0),
+  top:   new THREE.Vector3(0, 160, 0),
+} as const;
+
+type CameraPreset = keyof typeof CAMERA_PRESETS;
+
+function CameraController({ preset }: { preset: CameraPreset | null }) {
+  const { camera, controls } = useThree() as any;
+  useEffect(() => {
+    if (!preset) return;
+    const target = CAMERA_PRESETS[preset].clone();
+    camera.position.copy(target);
+    camera.lookAt(0, 0, 0);
+    if (controls && controls.target) {
+      controls.target.set(0, 0, 0);
+      controls.update();
+    }
+  }, [preset, camera, controls]);
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Model renderer with wireframe + selection highlight
+// ---------------------------------------------------------------------------
+
+interface ModelProps {
+  url: string;
+  wireframe: boolean;
+  selectedMeshName: string | null;
+  onMeshClick: (name: string | null, point: THREE.Vector3) => void;
+}
+
+function Model({ url, wireframe, selectedMeshName, onMeshClick }: ModelProps) {
   const { scene } = useGLTF(url);
   const ref = useRef<THREE.Group>(null);
+  const originalColors = useRef<Map<string, THREE.Color>>(new Map());
 
+  // Assign cadName from scene node names (for assembly-level selection)
   useEffect(() => {
     scene.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
-        if (Array.isArray(mesh.material)) {
-          mesh.material.forEach((mat) => {
-            if (mat instanceof THREE.MeshStandardMaterial) {
-              mat.roughness = 0.4;
-              mat.metalness = 0.1;
-              mat.wireframe = wireframe;
-            }
-          });
-        } else if (mesh.material instanceof THREE.MeshStandardMaterial) {
-          mesh.material.roughness = 0.4;
-          mesh.material.metalness = 0.1;
-          mesh.material.wireframe = wireframe;
+        // Preserve original color
+        if (!originalColors.current.has(mesh.uuid)) {
+          const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+          if (mat instanceof THREE.MeshStandardMaterial) {
+            originalColors.current.set(mesh.uuid, mat.color.clone());
+          }
+        }
+        // Set cadName in userData for raycasting readout
+        if (!mesh.userData.cadName) {
+          mesh.userData.cadName = mesh.name || `mesh_${mesh.uuid.slice(0, 6)}`;
         }
       }
     });
-  }, [scene, wireframe]);
+  }, [scene]);
+
+  // Apply material settings + selection highlight
+  useEffect(() => {
+    scene.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        const isSelected = mesh.userData.cadName === selectedMeshName;
+
+        mats.forEach((mat) => {
+          if (mat instanceof THREE.MeshStandardMaterial) {
+            mat.roughness = 0.4;
+            mat.metalness = 0.1;
+            mat.wireframe = wireframe;
+
+            if (isSelected) {
+              mat.color.set('#ff9020');
+              mat.emissive.set('#331800');
+            } else {
+              const orig = originalColors.current.get(mesh.uuid);
+              if (orig) mat.color.copy(orig);
+              mat.emissive.set('#000000');
+            }
+            mat.needsUpdate = true;
+          }
+        });
+      }
+    });
+  }, [scene, wireframe, selectedMeshName]);
+
+  function handleClick(e: any) {
+    e.stopPropagation();
+    const mesh = e.object as THREE.Mesh;
+    const cadName = mesh.userData.cadName ?? null;
+    onMeshClick(cadName, e.point);
+  }
+
+  function handleMissedClick() {
+    onMeshClick(null, new THREE.Vector3());
+  }
 
   return (
     <Center>
-      <primitive ref={ref} object={scene} />
+      <primitive
+        ref={ref}
+        object={scene}
+        onClick={handleClick}
+        onPointerMissed={handleMissedClick}
+      />
     </Center>
   );
 }
@@ -107,12 +190,21 @@ function EmptyState() {
 // Main Viewport
 // ---------------------------------------------------------------------------
 
-export default function Viewport() {
+interface ViewportProps {
+  /** Optional callback to expose selection events to the parent */
+  onSelect?: (cadName: string | null, point: THREE.Vector3) => void;
+  /** Optional ref to WS send function for selection messages */
+  sendWsMessage?: ((msg: object) => void) | null;
+}
+
+export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}) {
   const { glbUrl, isLoading, currentModelId, currentProjectId } = useViewportStore();
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [downloadingFormat, setDownloadingFormat] = useState<string | null>(null);
   const [wireframe, setWireframe] = useState(false);
   const [showBbox, setShowBbox] = useState(false);
+  const [cameraPreset, setCameraPreset] = useState<CameraPreset | null>(null);
+  const [selectedMeshName, setSelectedMeshName] = useState<string | null>(null);
   const downloadMenuRef = useRef<HTMLDivElement>(null);
 
   // Close download menu when clicking outside
@@ -130,7 +222,34 @@ export default function Viewport() {
   useEffect(() => {
     setWireframe(false);
     setShowBbox(false);
+    setSelectedMeshName(null);
+    setCameraPreset(null);
   }, [glbUrl]);
+
+  const handleMeshClick = useCallback(
+    (cadName: string | null, point: THREE.Vector3) => {
+      setSelectedMeshName(cadName);
+
+      // Notify parent
+      onSelect?.(cadName, point);
+
+      // Send WS selection message if connected
+      if (cadName && sendWsMessage) {
+        sendWsMessage({
+          type: 'selection',
+          feature_name: cadName,
+          point: [point.x, point.y, point.z],
+        });
+      }
+    },
+    [onSelect, sendWsMessage]
+  );
+
+  function handlePreset(preset: CameraPreset) {
+    setCameraPreset(preset);
+    // Reset after one frame so repeated clicks to same preset still trigger
+    setTimeout(() => setCameraPreset(null), 50);
+  }
 
   async function handleDownload(format: 'stl' | 'step' | 'glb') {
     if (!currentModelId || !currentProjectId) {
@@ -181,7 +300,12 @@ export default function Viewport() {
         <Suspense fallback={<LoadingIndicator />}>
           {glbUrl ? (
             <>
-              <Model url={glbUrl} wireframe={wireframe} />
+              <Model
+                url={glbUrl}
+                wireframe={wireframe}
+                selectedMeshName={selectedMeshName}
+                onMeshClick={handleMeshClick}
+              />
               {showBbox && <BoundingBoxOverlay url={glbUrl} />}
             </>
           ) : (
@@ -197,6 +321,9 @@ export default function Viewport() {
           minDistance={5}
           maxDistance={500}
         />
+
+        {/* Camera preset controller */}
+        <CameraController preset={cameraPreset} />
       </Canvas>
 
       {/* Loading overlay */}
@@ -212,9 +339,41 @@ export default function Viewport() {
         </div>
       )}
 
+      {/* Selection indicator */}
+      {selectedMeshName && (
+        <div className="viewport-selection-indicator" title="Click elsewhere to deselect">
+          <span className="viewport-selection-icon">◆</span>
+          <span className="viewport-selection-name">{selectedMeshName}</span>
+          <button
+            className="viewport-selection-clear"
+            onClick={() => setSelectedMeshName(null)}
+            aria-label="Clear selection"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Viewport toolbar — top-right buttons */}
       {glbUrl && !isLoading && (
         <div className="viewport-toolbar">
+          {/* View preset buttons */}
+          <div className="viewport-view-presets">
+            {(['iso', 'front', 'right', 'top'] as CameraPreset[]).map((preset) => (
+              <button
+                key={preset}
+                className="viewport-tool-btn viewport-preset-btn"
+                onClick={() => handlePreset(preset)}
+                title={`${preset.charAt(0).toUpperCase() + preset.slice(1)} view`}
+              >
+                {preset === 'iso' ? '◈' : preset === 'front' ? '↕' : preset === 'right' ? '↔' : '⊕'}
+                {' '}{preset}
+              </button>
+            ))}
+          </div>
+
+          <div className="viewport-toolbar-divider" />
+
           <button
             className={`viewport-tool-btn ${wireframe ? 'active' : ''}`}
             onClick={() => setWireframe((v) => !v)}

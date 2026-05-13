@@ -4,6 +4,7 @@
 
 import { create } from 'zustand';
 import type { ChatMessage, CritiqueState, DebugEntry, GeometryIssue, Project } from './types';
+import type { Vector3 } from 'three';
 
 
 // ---------------------------------------------------------------------------
@@ -145,5 +146,30 @@ export const useCritiqueStore = create<CritiqueStoreState>((set) => ({
   critique: null,
   setCritique: (critique) => set({ critique }),
   clearCritique: () => set({ critique: null }),
+}));
+
+// ---------------------------------------------------------------------------
+// Selection store — viewport geometry selection
+// ---------------------------------------------------------------------------
+
+interface SelectionState {
+  selectedFeatureName: string | null;
+  selectedPoint: [number, number, number] | null;
+  setSelection: (featureName: string | null, point?: Vector3 | null) => void;
+  clearSelection: () => void;
+}
+
+export const useSelectionStore = create<SelectionState>((set) => ({
+  selectedFeatureName: null,
+  selectedPoint: null,
+
+  setSelection: (featureName, point) =>
+    set({
+      selectedFeatureName: featureName,
+      selectedPoint: point ? [point.x, point.y, point.z] : null,
+    }),
+
+  clearSelection: () =>
+    set({ selectedFeatureName: null, selectedPoint: null }),
 }));
 

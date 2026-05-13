@@ -137,6 +137,16 @@ class ChatMessage(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Interaction Context
+# ---------------------------------------------------------------------------
+
+class SelectionContext(BaseModel):
+    """Context about a selected feature in the viewport."""
+    feature_name: str
+    point: Optional[list[float]] = None
+
+
+# ---------------------------------------------------------------------------
 # Agent state (for structured pipeline state tracking)
 # ---------------------------------------------------------------------------
 

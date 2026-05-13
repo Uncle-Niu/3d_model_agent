@@ -4,11 +4,13 @@
 
 import { useEffect, useState } from 'react';
 import Chat from './components/Chat';
+import ConstraintPanel from './components/ConstraintPanel';
 import DebugPanel from './components/DebugPanel';
+import HistorySidebar from './components/HistorySidebar';
 import SourcePanel from './components/SourcePanel';
 import Viewport from './components/Viewport';
 import { useWebSocket } from './hooks/useWebSocket';
-import { useChatStore, useProjectStore, useViewportStore } from './stores';
+import { useChatStore, useProjectStore, useSelectionStore, useViewportStore } from './stores';
 import { api } from './api';
 import { formatLocalDateTime } from './time';
 import type { ChatMessage, ChatThread, ChatThreadSummary, ModelInfo, Project } from './types';
@@ -17,12 +19,15 @@ function App() {
   const { project, setProject } = useProjectStore();
   const chat = useChatStore();
   const viewport = useViewportStore();
+  const selection = useSelectionStore();
   const [projects, setProjects] = useState<Project[]>([]);
   const [chatThreads, setChatThreads] = useState<ChatThreadSummary[]>([]);
   const [modelVersions, setModelVersions] = useState<ModelInfo[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [initializing, setInitializing] = useState(true);
-  const { sendMessage, isConnected } = useWebSocket(project?.project_id ?? null, activeThreadId);
+  const [constraintPanelOpen, setConstraintPanelOpen] = useState(false);
+  const [historySidebarOpen, setHistorySidebarOpen] = useState(true);
+  const { sendMessage, sendRawMessage, isConnected } = useWebSocket(project?.project_id ?? null, activeThreadId);
 
   // On mount: create or load a project
   useEffect(() => {
@@ -214,6 +219,22 @@ function App() {
     }
   }
 
+  function handleExport(format: 'step' | 'stl' | 'source') {
+    if (!project || !viewport.currentModelId) return;
+    
+    // Construct the direct download URL
+    const baseUrl = api.defaults.baseURL || '';
+    const url = `${baseUrl}/projects/${project.project_id}/models/${viewport.currentModelId}/${format}`;
+    
+    // Create a temporary link and trigger download
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `model_${viewport.currentModelId}.${format === 'source' ? 'py' : format}`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
   async function handleThreadChange(threadId: string) {
     if (!project || threadId === activeThreadId) return;
     setActiveThreadId(threadId);
@@ -345,6 +366,14 @@ function App() {
           <button className="header-btn danger" type="button" onClick={handleDeleteProject}>
             Delete
           </button>
+          <button
+            className="header-btn constraint-btn-header"
+            type="button"
+            onClick={() => setConstraintPanelOpen(true)}
+            title="Edit engineering constraints"
+          >
+            ⚙️ Constraints
+          </button>
         </div>
         <div className="app-header-actions">
           <button
@@ -352,9 +381,46 @@ function App() {
             type="button"
             onClick={handleOpenProjectFolder}
             title={project.project_path}
-          >
-            {project.project_path}
           </button>
+          <button
+            className={`header-btn ${historySidebarOpen ? 'active' : ''}`}
+            type="button"
+            onClick={() => setHistorySidebarOpen(!historySidebarOpen)}
+            title="Toggle history sidebar"
+          >
+            📋 History
+          </button>
+          
+          <div className="export-dropdown">
+            <button className="header-btn" type="button">
+              📤 Export
+            </button>
+            <div className="export-menu">
+              <button 
+                onClick={() => handleExport('step')} 
+                disabled={!viewport.currentModelId}
+              >
+                Download STEP (.step)
+              </button>
+              <button 
+                onClick={() => handleExport('stl')} 
+                disabled={!viewport.currentModelId}
+              >
+                Download STL (.stl)
+              </button>
+              <button 
+                onClick={() => handleExport('source')} 
+                disabled={!viewport.currentModelId}
+              >
+                Download Source (.py)
+              </button>
+              <hr />
+              <button onClick={handleOpenProjectFolder}>
+                Open Project Folder
+              </button>
+            </div>
+          </div>
+
           <span className="connection-dot connected" />
           <span>Connected</span>
         </div>
@@ -362,29 +428,43 @@ function App() {
 
       {/* Main layout */}
       <div className="app-main">
+        {historySidebarOpen && (
+          <HistorySidebar
+            versions={modelVersions}
+            onSelect={handleModelVersionChange}
+          />
+        )}
+
         {/* 3D Viewport */}
         <div className="app-viewport">
-          <div className="model-version-bar">
-            <span className="model-version-label">Model version</span>
-            <select
-              className="model-version-select"
-              value={viewport.currentModelId ?? ''}
-              onChange={(e) => handleModelVersionChange(e.target.value)}
-              disabled={modelVersions.length === 0}
-              aria-label="Select model version"
-            >
-              {modelVersions.length === 0 ? (
-                <option value="">No versions yet</option>
-              ) : (
-                modelVersions.map((model) => (
-                  <option key={model.model_id} value={model.model_id}>
-                    {model.model_id} - {formatLocalDateTime(model.created_at)} - {model.prompt || 'checkpoint'}
-                  </option>
-                ))
-              )}
-            </select>
-          </div>
-          <Viewport />
+          {!historySidebarOpen && (
+            <div className="model-version-bar">
+              <span className="model-version-label">Model version</span>
+              <select
+                className="model-version-select"
+                value={viewport.currentModelId ?? ''}
+                onChange={(e) => handleModelVersionChange(e.target.value)}
+                disabled={modelVersions.length === 0}
+                aria-label="Select model version"
+              >
+                {modelVersions.length === 0 ? (
+                  <option value="">No versions yet</option>
+                ) : (
+                  modelVersions.map((model) => (
+                    <option key={model.model_id} value={model.model_id}>
+                      {model.model_id} - {formatLocalDateTime(model.created_at)} - {model.prompt || 'checkpoint'}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+          )}
+          <Viewport
+            onSelect={(cadName, point) => {
+              selection.setSelection(cadName, point ?? undefined);
+            }}
+            sendWsMessage={sendRawMessage}
+          />
         </div>
 
         {/* Chat Panel */}
@@ -421,6 +501,10 @@ function App() {
       {/* Debug Panel — bottom overlay */}
       <SourcePanel />
       <DebugPanel />
+      <ConstraintPanel
+        isOpen={constraintPanelOpen}
+        onClose={() => setConstraintPanelOpen(false)}
+      />
     </div>
   );
 }

@@ -407,6 +407,28 @@ def process_cadquery_code(
     # Expose the shape for downstream use (rendering, vision)
     result["_shape"] = shape
 
+    # 5. Extract Feature Manifest (for LLM context)
+    feature_manifest = []
+    if isinstance(shape, cq.Assembly):
+        for name, child in shape.objects.items():
+            feature_manifest.append({
+                "name": name,
+                "type": "assembly_child",
+                "center": [float(c) for c in child.obj.val().Center().toTuple()] if hasattr(child.obj, "val") else [0,0,0]
+            })
+    else:
+        # Single workplane
+        feature_manifest.append({
+            "name": "part",
+            "type": "workplane",
+            "center": [float(c) for c in shape.val().Center().toTuple()] if hasattr(shape, "val") else [0,0,0]
+        })
+    
+    import json
+    feature_path = output_dir / "features.json"
+    feature_path.write_text(json.dumps(feature_manifest, indent=2), encoding="utf-8")
+    result["files"]["features"] = str(feature_path)
+
     if result["violations"]:
         # Geometry had violations but we exported anyway
         result["success"] = False

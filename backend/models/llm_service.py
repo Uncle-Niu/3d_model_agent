@@ -40,6 +40,7 @@ Generate production-quality CadQuery Python code for the user's request.
 - Use metric units (millimeters)
 - Do NOT use os, subprocess, open(), pathlib, or any file/system operations
 - Do NOT import anything other than `cadquery as cq` and `math`
+- For multi-part designs, use `cq.Assembly()` and add parts with descriptive names (e.g., `assy.add(part, name="base")`) to enable selection. Assign the assembly to `result`.
 
 ## Engineering Quality Standards
 - **Watertight**: All geometry must be closed / manifold (no open shells unless intentional)

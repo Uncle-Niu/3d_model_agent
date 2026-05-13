@@ -71,11 +71,10 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - ✅ Orbit controls (OrbitControls from drei)
 - ✅ Pan/zoom (via OrbitControls)
 - ✅ Wireframe mode toggle (viewport toolbar button)
-- ❌ Face highlighting
-- ✅ Bounding box overlay (BBox toggle in viewport toolbar)
-- ❌ Measurement tools
+- ✅ Face highlighting
+- ✅ Measurement tools (partial via selection coordinates)
 - ❌ Section cuts
-- ❌ Multiple camera views
+- ✅ Multiple camera views
 - ❌ Exploded views (future)
 - ❌ Assembly inspection (future)
 - ❌ Feature highlighting (future)
@@ -85,34 +84,31 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 ## 4. Frontend — Geometry Interaction
 
 ### Phase 1: Assembly-Level Selection
-- ❌ Named Assembly children preserved in glTF scene graph
-- ❌ Three.js raycasting for mesh click → cadName
-- ❌ Store active selection in Zustand
-- ❌ Visual highlight of selected mesh
-- ❌ Send selection context with chat messages (`selection` WS message type)
-
-### Phase 2: Per-Face Topology Mapping
-- ❌ Custom tessellation pipeline with face IDs (deferred)
+- ✅ Named Assembly children preserved in glTF scene graph
+- ✅ Three.js raycasting for mesh click → cadName
+- ✅ Store active selection in Zustand
+- ✅ Visual highlight of selected mesh
+- ✅ Send selection context with chat messages (`selection` WS message type)
+- ✅ Feature manifest (json list of named parts for LLM query)
 
 ---
 
 ## 5. Frontend — Design History
 
-- 🟡 Prompt history (stored in chat threads, viewable in chat)
-- 🟡 CAD source revisions (viewable in SourcePanel with diff view)
-- ❌ STEP revision browser
-- ❌ Render snapshots (renders saved to disk, not yet browseable in UI)
-- ❌ Critique reports display (shown inline in CritiquePanel for latest only)
+- ✅ Sidebar (Left): Visual Design History browser
+- ✅ Switching between model versions loads GLB and Source
+- ✅ Visual indication of validation/vision success
+- ✅ Export models (STEP/STL/GLB) via dropdown
 
 ---
 
 ## 6. Frontend — Constraint Panel
 
-- ❌ Hard constraint editor UI
-- ❌ Print volume dimension inputs
-- ❌ Min wall thickness input
-- ❌ Max file size input
-- ❌ Soft constraint editor UI (overhang angle, aesthetic prefs, material, etc.)
+- ✅ Hard constraint editor UI
+- ✅ Print volume dimension inputs
+- ✅ Min wall thickness input
+- ✅ Max file size input
+- ✅ Soft constraint editor UI (overhang angle, aesthetic prefs, material, etc.)
 - ✅ Hard constraints model defined (`HardConstraints` in domain/models.py)
 - ✅ Soft constraints model defined (`SoftConstraints` in domain/models.py)
 - ✅ Constraints stored in project config
@@ -176,7 +172,7 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 ### Client → Server Messages
 - ✅ `chat_message` with content + thread_id + base_model_id
 - ✅ `ping` / `pong`
-- ❌ `selection` message type (feature selection context)
+- ✅ `selection` message type (feature selection context)
 
 ### Server → Client Messages
 - ✅ `status` (stage + message) — all stages: generating, executing, tessellating, rendering, critiquing, repairing

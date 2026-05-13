@@ -177,5 +177,14 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
     [threadId, viewport.currentModelId]
   );
 
-  return { sendMessage, isConnected };
+  /**
+   * Send any arbitrary JSON message over the WebSocket (e.g. selection events).
+   * Silently drops if not connected.
+   */
+  const sendRawMessage = useCallback((msg: object) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify(msg));
+  }, []);
+
+  return { sendMessage, sendRawMessage, isConnected };
 }
