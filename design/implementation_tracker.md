@@ -142,6 +142,7 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - ✅ Vision critique panel (CritiquePanel — score, thumbnails, issues)
 - ✅ Wireframe mode toggle
 - ✅ Bounding box overlay toggle
+- ✅ Section cut renders
 
 ---
 
@@ -244,7 +245,7 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - 🟡 pyrender offscreen rendering (optional, higher quality — requires OSMesa/EGL)
 - ✅ Perspective/isometric render generation (iso, front, right, top views)
 - ✅ Orthographic-equivalent render generation (elevation/azimuth angles)
-- ❌ Section cut renders
+- ✅ Section cut renders
 - ✅ `backend/render/` module with `RenderService` and `render_shape_multiangle()`
 - ✅ Renders saved to `model-NNN/renders/` directory
 - ✅ Render PNG served via `GET .../renders/{view_name}` REST endpoint
@@ -301,7 +302,7 @@ Generate CadQuery → Execute → Export GLB
 - ✅ Critique results persisted in model metadata (`metadata.json`)
 - ✅ Vision critique skipped gracefully when model unavailable
 - ✅ Debug log entries for vision request/response
-- ❌ Section cut renders for internal geometry review
+- ✅ Section cut renders for internal geometry review
 
 ---
 
@@ -434,7 +435,7 @@ Generate CadQuery → Execute → Export GLB
 - ✅ Feature tree UI panel
 - ✅ Parameter table UI
 - ✅ Regenerate button on parameter edit
-- ❌ Feature highlight in viewport on tree selection
+- ✅ Feature highlight in viewport on tree selection
 - ❌ Source span display
 
 ### 21.2 Selection-Aware Agent
@@ -481,7 +482,7 @@ Generate CadQuery → Execute → Export GLB
 - ❌ Cloud vision fallback (Gemini, GPT-4o — user opt-in)
 - ✅ Vision critique → repair prompt pipeline
 - ✅ Independent `VISION_MODEL` config separate from `LLM_MODEL`
-- ❌ Section cut renders for internal geometry review
+- ✅ Section cut renders for internal geometry review
 
 ### 21.6 Assemblies & Multi-Part Workflows
 - ❌ `AssemblyPart` / `AssemblyManifest` schemas
@@ -554,7 +555,7 @@ Generate CadQuery → Execute → Export GLB
 | Zoo Gap Closure | 14 | 5 | 37 |
 | 3D Printing | 3 | 0 | 2 |
 | Testing | 4 | 0 | 0 |
-| **Total** | **169** | **12** | **78** |
+| **Total** | **172** | **12** | **75** |
 
 **Net progress this session: +58 Done items, +7 Partial items**
 
@@ -571,6 +572,7 @@ Generate CadQuery → Execute → Export GLB
 | `tests/backend/test_llm_service.py` | 27 | System prompt builder, repair prompt routing per failure type, code extraction |
 | `tests/backend/test_storage.py` | 32 | Project CRUD, model metadata, chat threads, analysis persistence, renders dir |
 | `tests/backend/test_api.py` | 28 | Project/model/thread REST endpoints, file serving, execute_source, health check |
+| `tests/backend/test_render.py` | 3 | Multi-angle renders (ISO/Front/Right/Top), Section cuts (X/Y) |
 
 ### Frontend — 63 tests, all passing (`npm test`)
 
@@ -580,6 +582,7 @@ Generate CadQuery → Execute → Export GLB
 | `src/test/utils.test.ts` | 10 | `formatLocalDateTime`, WSMessage discriminated union typing |
 | `src/test/CritiquePanel.test.tsx` | 14 | Score display, labels, issues list, severity badges, intent warning, dismiss, thumbnails |
 | `src/test/Chat.test.tsx` | 14 | Welcome screen, suggestion buttons, send/enter, streaming, status indicator, CritiquePanel integration |
+| `src/test/FeaturePanel.test.tsx` | 6 | Feature loading, list rendering, click-to-highlight, store sync |
 
 ### Run commands
 

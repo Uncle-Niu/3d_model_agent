@@ -4,11 +4,12 @@
 
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import { useViewportStore } from '../stores';
+import { useViewportStore, useSelectionStore } from '../stores';
 import type { FeatureManifest } from '../types';
 
 export default function FeaturePanel() {
   const { currentModelId, currentProjectId } = useViewportStore();
+  const { selectedFeatureName, setSelection } = useSelectionStore();
   const [isOpen, setIsOpen] = useState(false);
   const [features, setFeatures] = useState<FeatureManifest[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -56,7 +57,11 @@ export default function FeaturePanel() {
           ) : (
             <ul className="feature-list">
               {features.map((f, i) => (
-                <li key={`${f.name}-${i}`} className="feature-item">
+                <li 
+                  key={`${f.name}-${i}`} 
+                  className={`feature-item ${selectedFeatureName === f.name ? 'active' : ''}`}
+                  onClick={() => setSelection(f.name === selectedFeatureName ? null : f.name)}
+                >
                   <span className="feature-name">{f.name}</span>
                   <span className="feature-type">{f.type}</span>
                   <div className="feature-coords">

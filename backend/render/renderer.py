@@ -51,6 +51,12 @@ VIEWS: dict[str, tuple[float, float]] = {
     "top":   (90.0,  0.0),
 }
 
+# Section views: (plane_name, elevation_deg, azimuth_deg)
+SECTION_VIEWS: dict[str, tuple[str, float, float]] = {
+    "section_x": ("X", 0.0, 90.0),
+    "section_y": ("Y", 0.0, 0.0),
+}
+
 IMAGE_SIZE = (512, 512)
 
 
@@ -253,6 +259,7 @@ class RenderService:
         shape: cq.Workplane,
         output_dir: Path,
         model_name: str = "part",
+        include_sections: bool = True,
     ) -> RenderResult:
         """
         Render a CadQuery shape from multiple angles.
@@ -284,7 +291,7 @@ class RenderService:
                 message="Exported STL is empty — shape may be degenerate",
             )
 
-        # Step 2: Render
+        # Step 2: Render main views
         try:
             renders = _render_with_trimesh(stl_path, renders_dir)
         except RuntimeError as e:
@@ -296,6 +303,14 @@ class RenderService:
                 message=f"Rendering failed: {traceback.format_exc()}",
             )
 
+        # Step 3: Render sections (optional)
+        if include_sections:
+            try:
+                self._render_sections(shape, renders_dir, renders)
+            except Exception as e:
+                # Log warning but continue
+                print(f"Warning: Section rendering failed: {e}")
+
         if not renders:
             return RenderResult(success=False, message="No render images produced")
 
@@ -304,6 +319,58 @@ class RenderService:
             message=f"Rendered {len(renders)} views",
             renders=renders,
         )
+
+    def _render_sections(self, shape: cq.Workplane, output_dir: Path, renders: dict[str, str]):
+        """Generate section cut renders."""
+        try:
+            bb = shape.val().BoundingBox()
+            center = [(bb.xmin + bb.xmax) / 2, (bb.ymin + bb.ymax) / 2, (bb.zmin + bb.zmax) / 2]
+        except Exception:
+            center = [0, 0, 0]
+
+        for name, (plane, elev, azim) in SECTION_VIEWS.items():
+            try:
+                # Create sectioned shape
+                if plane == "X":
+                    sectioned = cq.Workplane("YZ", origin=(center[0], 0, 0)).add(shape.val()).split(keepTop=True)
+                elif plane == "Y":
+                    sectioned = cq.Workplane("XZ", origin=(0, center[1], 0)).add(shape.val()).split(keepTop=True)
+                else:
+                    continue
+
+                # Export sectioned to temp STL
+                section_stl = output_dir / f"_section_{name}.stl"
+                cq.exporters.export(sectioned, str(section_stl), exportType="STL", tolerance=0.02)
+
+                if not section_stl.exists() or section_stl.stat().st_size == 0:
+                    continue
+
+                # Render this specific view
+                import trimesh
+                mesh = trimesh.load(str(section_stl), force="mesh")
+                if mesh is None or (hasattr(mesh, "is_empty") and mesh.is_empty):
+                    continue
+
+                # Normalize for consistent viewing
+                mesh.apply_translation(-mesh.bounds.mean(axis=0))
+                scale = max(mesh.extents)
+                if scale > 0:
+                    mesh.apply_scale(2.0 / scale)
+
+                # Use matplotlib for sections as it's more robust in diverse environments
+                # We only want ONE view for this specific section mesh
+                # Temporary override VIEWS for _render_matplotlib call
+                global VIEWS
+                original_views = VIEWS
+                VIEWS = {name: (elev, azim)}
+                try:
+                    section_renders = _render_matplotlib(mesh, output_dir)
+                    renders.update(section_renders)
+                finally:
+                    VIEWS = original_views
+
+            except Exception as e:
+                print(f"Failed to render section {name}: {e}")
 
 
 def render_shape_multiangle(

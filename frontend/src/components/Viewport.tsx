@@ -15,7 +15,7 @@ import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, Environment, Grid, Center, useGLTF, Box } from '@react-three/drei';
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { useViewportStore } from '../stores';
+import { useViewportStore, useSelectionStore } from '../stores';
 import { api } from '../api';
 
 // ---------------------------------------------------------------------------
@@ -204,7 +204,7 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
   const [wireframe, setWireframe] = useState(false);
   const [showBbox, setShowBbox] = useState(false);
   const [cameraPreset, setCameraPreset] = useState<CameraPreset | null>(null);
-  const [selectedMeshName, setSelectedMeshName] = useState<string | null>(null);
+  const { selectedFeatureName, setSelection } = useSelectionStore();
   const downloadMenuRef = useRef<HTMLDivElement>(null);
 
   // Close download menu when clicking outside
@@ -222,13 +222,13 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
   useEffect(() => {
     setWireframe(false);
     setShowBbox(false);
-    setSelectedMeshName(null);
+    setSelection(null);
     setCameraPreset(null);
-  }, [glbUrl]);
+  }, [glbUrl, setSelection]);
 
   const handleMeshClick = useCallback(
     (cadName: string | null, point: THREE.Vector3) => {
-      setSelectedMeshName(cadName);
+      setSelection(cadName, point);
 
       // Notify parent
       onSelect?.(cadName, point);
@@ -242,7 +242,7 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
         });
       }
     },
-    [onSelect, sendWsMessage]
+    [onSelect, sendWsMessage, setSelection]
   );
 
   function handlePreset(preset: CameraPreset) {
@@ -303,7 +303,7 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
               <Model
                 url={glbUrl}
                 wireframe={wireframe}
-                selectedMeshName={selectedMeshName}
+                selectedMeshName={selectedFeatureName}
                 onMeshClick={handleMeshClick}
               />
               {showBbox && <BoundingBoxOverlay url={glbUrl} />}
@@ -340,13 +340,13 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
       )}
 
       {/* Selection indicator */}
-      {selectedMeshName && (
+      {selectedFeatureName && (
         <div className="viewport-selection-indicator" title="Click elsewhere to deselect">
           <span className="viewport-selection-icon">◆</span>
-          <span className="viewport-selection-name">{selectedMeshName}</span>
+          <span className="viewport-selection-name">{selectedFeatureName}</span>
           <button
             className="viewport-selection-clear"
-            onClick={() => setSelectedMeshName(null)}
+            onClick={() => setSelection(null)}
             aria-label="Clear selection"
           >
             ✕
