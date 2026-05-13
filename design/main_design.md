@@ -1108,6 +1108,648 @@ Single-color STL export only for initial version.
 
 ---
 
+# Zoo Gap Closure Plan
+
+This section closes the main product gaps compared with Zoo Design Studio / Zookeeper while preserving the local-first CAD-agent architecture.
+
+Explicitly out of scope for this section:
+
+- Public API / SDK ecosystem
+- Enterprise / account / organization polish
+
+## 1. Feature Tree and Editable Parameters
+
+### Goal
+
+Expose generated CAD as an editable engineering model, not only as source code and exported files.
+
+### Approach
+
+Use a lightweight, source-adjacent feature manifest generated alongside CadQuery code.
+
+Each successful model revision should persist:
+
+```text
+model-001/
+    source.py
+    model.step
+    model.stl
+    model.glb
+    feature_manifest.json
+    parameters.json
+    metadata.json
+```
+
+### Feature Manifest Schema
+
+```python
+class CadParameter(BaseModel):
+    name: str
+    value: float | str | bool
+    unit: str = "mm"
+    description: str = ""
+    min_value: float | None = None
+    max_value: float | None = None
+
+
+class CadFeature(BaseModel):
+    feature_id: str
+    name: str
+    feature_type: str  # box, cylinder, hole, fillet, chamfer, shell, pattern, assembly_part
+    parameters: list[str] = []
+    parent_ids: list[str] = []
+    cad_name: str = ""  # name exported into Assembly / glTF scene graph
+    source_span: tuple[int, int] | None = None
+    description: str = ""
+
+
+class FeatureManifest(BaseModel):
+    model_id: str
+    parameters: list[CadParameter]
+    features: list[CadFeature]
+    root_feature_ids: list[str]
+```
+
+### Code Generation Requirement
+
+The LLM must generate code with named top-level parameters:
+
+```python
+import cadquery as cq
+
+length = 80
+width = 40
+height = 12
+hole_diameter = 5
+fillet_radius = 2
+
+base = cq.Workplane("XY").box(length, width, height)
+result = base.edges("|Z").fillet(fillet_radius)
+```
+
+The system should either:
+
+1. Ask the LLM to return `source.py` plus `feature_manifest.json`, then validate both.
+2. Or derive the manifest using AST parsing for simple parameter assignments and known CadQuery call chains.
+
+Prefer option 1 initially because it is easier to implement and works with local models.
+
+### UI
+
+Add a left or right panel:
+
+- Feature tree
+- Parameter table
+- Regenerate button after parameter edits
+- Highlight feature in viewport when selected in tree
+- Show source span for advanced users
+
+Parameter edits should rewrite only literal assignments in `source.py`, execute the edited source, and save a new checkpoint.
+
+## 2. Selection-Aware Agent
+
+### Goal
+
+Allow prompts like:
+
+```text
+Make this hole 2mm wider.
+Chamfer this edge.
+Move this mounting tab to the left.
+```
+
+### Phase 1: Assembly-Level Selection
+
+Use named CadQuery `Assembly` children and preserve names through GLB export.
+
+Frontend:
+
+- Add Three.js raycasting in the viewport.
+- On mesh click, read `mesh.name` and `mesh.userData.cadName`.
+- Store active selection in Zustand.
+- Visually highlight selected mesh.
+- Send selection context with chat messages.
+
+WebSocket message:
+
+```json
+{
+  "type": "chat_message",
+  "content": "Increase this hole diameter by 2mm",
+  "selection": {
+    "model_id": "model-004",
+    "cad_name": "hole_1",
+    "feature_id": "feature-hole-1",
+    "point": [10.0, 5.0, 2.5]
+  }
+}
+```
+
+Backend:
+
+- Resolve `feature_id` against `feature_manifest.json`.
+- Inject selected feature metadata and current source into the edit prompt.
+- Require the LLM to preserve all unrelated parameters and features.
+
+### Phase 2: Topology-Level Selection
+
+Add face/edge IDs later using a custom tessellation path from OpenCascade topology to glTF groups.
+
+Deferred because it requires reliable mapping:
+
+```text
+TopoDS_Face / TopoDS_Edge -> tessellated triangles -> glTF primitive/group -> frontend raycast hit
+```
+
+## 3. Model-Derived Analysis Tools
+
+### Goal
+
+Give the agent deterministic geometry facts instead of asking the model to infer everything from source or screenshots.
+
+### Initial Analysis Tools
+
+Implement in `backend/validation` or `backend/analysis`:
+
+- Bounding box dimensions
+- Volume
+- Surface area
+- Center of mass
+- Body count
+- Face count / edge count
+- Solid validity
+- Watertightness / closed-shell check where available
+- Minimum and maximum model dimensions
+- Estimated material volume and print weight
+
+Persist:
+
+```python
+class GeometryStats(BaseModel):
+    bbox_x_mm: float
+    bbox_y_mm: float
+    bbox_z_mm: float
+    volume_mm3: float
+    surface_area_mm2: float
+    center_of_mass: tuple[float, float, float]
+    solid_count: int
+    face_count: int
+    edge_count: int
+    estimated_mass_g: float | None = None
+```
+
+Save as:
+
+```text
+model-001/analysis.json
+```
+
+### Agent Usage
+
+Before repair or critique, inject compact analysis:
+
+```text
+Geometry analysis:
+- Bounding box: 80 x 40 x 12 mm
+- Volume: 18400 mm3
+- Center of mass: [0, 0, 0]
+- Solid count: 1
+- Constraint violations: none
+```
+
+## 4. Manufacturability and Design Review
+
+### Goal
+
+Move beyond "code ran successfully" to "part is likely printable and mechanically sane."
+
+### Validation Layers
+
+Use three layers, in order:
+
+```text
+CadQuery Source
+    -> Execute
+    -> Deterministic geometry validation
+    -> Manufacturability heuristics
+    -> Vision critique from rendered views
+    -> Repair prompt if needed
+```
+
+### Deterministic Checks
+
+Required checks:
+
+- Build volume
+- Solid count greater than zero
+- Closed/watertight solid where OCCT exposes this reliably
+- Degenerate dimensions
+- Very small features below nozzle/tolerance threshold
+- File size
+
+Best-effort checks:
+
+- Minimum wall thickness
+- Unsupported overhangs
+- Tiny isolated faces
+- Very sharp internal corners
+- Hole diameters below configured minimum
+- Thin pins/tabs likely to break
+
+### Wall Thickness Strategy
+
+Start with approximate checks:
+
+1. Sample points on the mesh or OCCT faces.
+2. Cast inward/outward distance probes where feasible.
+3. Flag regions below `min_wall_thickness_mm`.
+4. Store approximate location hints.
+
+This is acceptable for MVP because exact wall-thickness analysis is difficult and can be improved later.
+
+### Overhang Strategy
+
+For FDM printability:
+
+- Assume a default print direction: positive Z.
+- Compute face normals from tessellated mesh.
+- Flag downward-facing surfaces whose angle exceeds `overhang_angle_max`.
+- Ignore tiny faces under an area threshold.
+
+### Report Schema
+
+```python
+class ManufacturabilityIssue(BaseModel):
+    issue_type: str  # thin_wall, overhang, tiny_feature, non_manifold, weak_tab
+    severity: str    # error, warning, info
+    feature_id: str | None = None
+    location_hint: str = ""
+    measured_value: float | None = None
+    threshold: float | None = None
+    suggested_fix: str = ""
+
+
+class ManufacturabilityReport(BaseModel):
+    is_printable: bool
+    score: float
+    issues: list[ManufacturabilityIssue]
+    assumptions: list[str]
+```
+
+Persist as:
+
+```text
+model-001/manufacturability.json
+```
+
+## 5. Vision-Based Validation
+
+### Goal
+
+Use multimodal critique as a second opinion after deterministic checks.
+
+Vision is useful for:
+
+- Overall shape sanity
+- Missing requested features
+- Obvious unsupported spans
+- Symmetry mistakes
+- Visual mismatch with user intent
+- Detecting when generated geometry is valid but semantically wrong
+
+Vision should not be the only validator for:
+
+- Exact dimensions
+- Minimum wall thickness
+- Mechanical strength
+- Watertightness
+
+### Rendering Inputs
+
+Generate server-side PNG renders for each successful model:
+
+```text
+model-001/renders/
+    iso.png
+    front.png
+    right.png
+    top.png
+    section_x.png      # optional
+    section_y.png      # optional
+```
+
+Use one of:
+
+- Headless Three.js / Playwright screenshot
+- VTK
+- pygfx
+- OpenCascade offscreen renderer
+
+Initial recommendation: use headless Three.js or Playwright because the frontend already renders GLB.
+
+### Local Vision Model
+
+Use Ollama vision models first.
+
+Current Ollama vision API pattern:
+
+```bash
+IMG=$(base64 < render.png | tr -d '\n')
+
+curl -X POST http://localhost:11434/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3.6:27b",
+    "messages": [{
+      "role": "user",
+      "content": "Review this CAD render for printability and whether it matches the request. Return JSON.",
+      "images": ["'"$IMG"'"]
+    }],
+    "stream": false
+  }'
+```
+
+Ollama also supports passing image paths through the official Python/JavaScript SDKs. The raw REST API expects base64-encoded images.
+
+### Model Choice
+
+Preferred local-first candidates:
+
+- `qwen3.6:27b` if the installed Ollama tag reports vision support and fits available VRAM/RAM.
+- `qwen3-vl` variants for stronger vision reasoning if available locally.
+- `gemma3:27b` or smaller `gemma3` variants for lighter local image critique.
+
+At startup, inspect model capability metadata where possible and run a tiny image smoke test:
+
+```text
+Ask model: "Reply with exactly: vision-ok"
+Attach a simple generated image.
+Pass only if response is coherent.
+```
+
+If local vision fails:
+
+1. Continue deterministic validation.
+2. Mark vision critique as skipped.
+3. Optionally allow cloud vision only when the user enables it.
+
+### Vision Prompt Contract
+
+Ask for compact JSON:
+
+```json
+{
+  "matches_user_intent": true,
+  "printability_score": 0.82,
+  "issues": [
+    {
+      "type": "unsupported_overhang",
+      "severity": "warning",
+      "view": "front",
+      "description": "Long horizontal lip appears unsupported",
+      "suggested_fix": "Add chamfer or support rib"
+    }
+  ],
+  "recommended_repair_prompt": "Add two triangular ribs under the horizontal lip."
+}
+```
+
+Do not let the vision model directly edit CAD. It should produce critique that the CAD repair step consumes.
+
+## 6. Assemblies and Multi-Part Workflows
+
+### Goal
+
+Support functional multi-part designs without jumping into full mechanical mates.
+
+### MVP Assembly Model
+
+Represent assemblies as named parts with transforms:
+
+```python
+class AssemblyPart(BaseModel):
+    part_id: str
+    name: str
+    source_model_id: str | None = None
+    cad_name: str
+    transform: list[list[float]]  # 4x4 matrix
+    material: str = "PLA"
+    color: str = "#6f9fd8"
+
+
+class AssemblyManifest(BaseModel):
+    assembly_id: str
+    parts: list[AssemblyPart]
+```
+
+CadQuery export:
+
+```python
+assy = cq.Assembly()
+assy.add(base, name="base")
+assy.add(lid, name="lid", loc=cq.Location(cq.Vector(0, 0, 22)))
+assy.save("model.step")
+assy.export("model.glb")
+```
+
+### UI
+
+- Assembly tree
+- Toggle part visibility
+- Select part
+- Download whole assembly
+- Download selected part
+- Exploded-view slider
+
+### Agent Behavior
+
+When user requests a multi-part design:
+
+- Generate explicit named parts.
+- Explain print orientation assumptions per part.
+- Export whole assembly plus per-part STL files.
+
+Directory layout:
+
+```text
+model-001/
+    model.step
+    model.glb
+    parts/
+        base.stl
+        lid.stl
+```
+
+## 7. Import and Conversion Workflows
+
+### Goal
+
+Allow users to bring in existing CAD and ask the agent to inspect, modify, or derive from it.
+
+### MVP Supported Imports
+
+- STEP: preferred editable CAD input
+- STL: view/measure/printability only, not truly parametric
+- GLB: view/measure only
+
+### Endpoints
+
+```text
+POST /api/projects/{id}/imports
+GET  /api/projects/{id}/imports
+POST /api/projects/{id}/imports/{import_id}/analyze
+POST /api/projects/{id}/imports/{import_id}/derive
+```
+
+### Import Pipeline
+
+```text
+Upload file
+    -> Detect format
+    -> Store original
+    -> Convert preview to GLB
+    -> Run geometry stats
+    -> Run manufacturability checks where possible
+    -> Make import available as agent context
+```
+
+### STEP Modification Strategy
+
+True parametric editing of arbitrary imported STEP is hard because STEP usually lacks original feature history.
+
+For MVP:
+
+- Treat imported STEP as reference geometry.
+- Allow measurements, inspection, and derived designs.
+- Allow simple boolean modifications where reliable.
+- For complex edits, ask the agent to recreate a parametric CadQuery version from the imported geometry and user intent.
+
+## 8. Internet-Aware Local-First Research
+
+### Goal
+
+Give the local model controlled internet access for standards, hardware dimensions, material properties, vendor specs, and design references.
+
+The local model should remain the main reasoning and CAD-generation model. Web search is a tool called by the orchestrator, not a replacement model.
+
+### Free / Low-Cost Options
+
+Preferred options:
+
+1. **Ollama web search API**
+   - Official Ollama capability.
+   - Requires a free Ollama account and API key.
+   - Good integration path with Ollama Python/JS libraries.
+   - Not fully offline, but the reasoning model can remain local.
+
+2. **SearXNG self-hosted metasearch**
+   - Free and self-hostable.
+   - Can query multiple public search engines.
+   - Best privacy/control option.
+   - Requires running a local Docker service.
+
+3. **DuckDuckGo search through a Python package**
+   - Easy MVP.
+   - Free but unofficial and may be rate-limited or brittle.
+   - Good fallback for light usage.
+
+4. **Brave Search API**
+   - Has a free tier at times, but quotas and terms can change.
+   - Good structured API if the user is willing to configure a key.
+
+### Recommended Architecture
+
+Create `backend/tools/web_research.py` with a provider interface:
+
+```python
+class SearchResult(BaseModel):
+    title: str
+    url: str
+    snippet: str
+    source: str
+
+
+class WebSearchProvider(Protocol):
+    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+        ...
+
+    async def fetch(self, url: str, max_chars: int = 12000) -> str:
+        ...
+```
+
+Providers:
+
+```text
+OllamaSearchProvider
+SearxngSearchProvider
+DuckDuckGoSearchProvider
+BraveSearchProvider
+```
+
+Configuration:
+
+```env
+WEB_RESEARCH_ENABLED=false
+WEB_SEARCH_PROVIDER=ollama
+OLLAMA_API_KEY=
+SEARXNG_BASE_URL=http://localhost:8080
+BRAVE_SEARCH_API_KEY=
+WEB_FETCH_MAX_CHARS=12000
+WEB_SEARCH_MAX_RESULTS=5
+```
+
+### Agent Policy
+
+The agent may search only when:
+
+- User explicitly asks for current information.
+- User asks for standards, dimensions, material properties, or vendor specs not in local memory.
+- A generated design depends on hardware dimensions not provided by the user.
+
+The agent must cite URLs in the chat response when web results influenced the design.
+
+### Research Flow
+
+```text
+User prompt
+    -> Planner decides if web research is needed
+    -> Search query generated
+    -> Top results fetched/summarized
+    -> Source snippets injected into CAD prompt
+    -> Generated model metadata stores citations
+```
+
+Persist:
+
+```text
+model-001/research.json
+```
+
+### Guardrails
+
+- Never execute code from fetched pages.
+- Strip scripts/styles from fetched HTML.
+- Limit fetched content length.
+- Prefer official vendor/docs pages over forum content.
+- Store citations for reproducibility.
+- If web access fails, ask the user for the missing dimensions or proceed with clearly stated assumptions.
+
+## 9. Implementation Order
+
+Recommended sequence:
+
+1. Geometry stats and manufacturability report.
+2. Server-side renders and local vision critique.
+3. Feature manifest and parameter panel.
+4. Viewport selection and selection-aware chat.
+5. Import STEP/STL/GLB workflow.
+6. Assembly manifest and multi-part exports.
+7. Web research tool with provider interface.
+
+This order improves model quality and validation before adding more editing surface area.
+
+---
+
 # Future Extensions
 
 Possible future additions:
