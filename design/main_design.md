@@ -1473,11 +1473,23 @@ Ollama also supports passing image paths through the official Python/JavaScript 
 
 ### Model Choice
 
-Preferred local-first candidates:
+**Default vision model: `qwen3.6:27b`** — the same model used for CAD code generation. This keeps the setup simple (one model serves both roles) and avoids requiring additional model downloads.
 
-- `qwen3.6:27b` if the installed Ollama tag reports vision support and fits available VRAM/RAM.
-- `qwen3-vl` variants for stronger vision reasoning if available locally.
-- `gemma3:27b` or smaller `gemma3` variants for lighter local image critique.
+If `qwen3.6:27b` vision performance is insufficient (poor critique accuracy, hallucinated issues, or inability to parse renders), swap to one of these alternatives without changing the rest of the pipeline:
+
+| Priority | Model | Reason to try |
+|---|---|---|
+| 1 (default) | `qwen3.6:27b` | Already pulled for code gen, good baseline |
+| 2 | `qwen3-vl` variants | Dedicated vision-language model, stronger image reasoning |
+| 3 | `gemma3:27b` or smaller `gemma3` | Alternative architecture, lighter VRAM in smaller variants |
+| 4 | Cloud vision (Gemini, GPT-4o) | Best accuracy, requires API key and user opt-in |
+
+The vision model is configured independently from the code-generation model so it can be changed without affecting the rest of the system:
+
+```env
+VISION_MODEL=qwen3.6:27b          # default — same as LLM_MODEL
+VISION_BASE_URL=http://localhost:11434/v1   # default — same Ollama instance
+```
 
 At startup, inspect model capability metadata where possible and run a tiny image smoke test:
 
@@ -1491,7 +1503,8 @@ If local vision fails:
 
 1. Continue deterministic validation.
 2. Mark vision critique as skipped.
-3. Optionally allow cloud vision only when the user enables it.
+3. Log a warning so the user knows vision is unavailable.
+4. Optionally allow cloud vision only when the user enables it.
 
 ### Vision Prompt Contract
 

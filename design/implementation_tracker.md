@@ -248,13 +248,52 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 
 ## 14. Backend — Vision Critique System
 
+> **Default vision model: `qwen3.6:27b`** (same model as code generation).
+> If vision quality is poor, swap to `qwen3-vl`, `gemma3:27b`, or cloud (Gemini/GPT-4o).
+> Configured via `VISION_MODEL` / `VISION_BASE_URL` env vars.
+
+### Vision Model Setup
+- ❌ `VISION_MODEL` env var support (default: `qwen3.6:27b`)
+- ❌ `VISION_BASE_URL` env var support (default: same as Ollama)
+- ❌ Vision capability smoke test at startup (send test image, expect coherent reply)
+- ❌ Graceful fallback when vision model unavailable (skip critique, log warning)
+- ❌ Cloud vision opt-in when local model underperforms
+
+### Critique Pipeline
 - ❌ Multimodal AI model integration for geometry critique
 - ❌ Printability evaluation
 - ❌ Thin wall detection (vision)
 - ❌ Overhang detection (vision)
 - ❌ Symmetry check
+- ❌ Missing feature detection (vision vs user intent)
 - ❌ Critique report generation (schema defined but never populated)
 - ❌ `backend/vision/` module (directory missing)
+
+### Vision Verification Feedback Loop
+
+The full loop that wires rendering + vision + repair together:
+
+```
+Generate CadQuery → Execute → Export GLB
+  → Render server-side PNGs (iso, front, right, top)
+  → Send renders + user intent to vision model (qwen3.6:27b)
+  → Parse structured JSON critique
+  → If issues found → inject critique into repair prompt → re-generate
+  → Repeat up to MAX_REPAIR_ITERATIONS
+```
+
+- ❌ Server-side multi-angle PNG rendering (iso, front, right, top)
+- ❌ Render images saved to `model-NNN/renders/` directory
+- ❌ Vision model receives renders + original user prompt + geometry stats
+- ❌ Vision prompt contract returns structured JSON (matches_intent, score, issues, repair_prompt)
+- ❌ Critique result parsed into `CritiqueReport` domain model
+- ❌ Critique-driven repair: feed `recommended_repair_prompt` back into LLM
+- ❌ Repair loop extended: execute → validate → render → critique → repair (not just execute → retry)
+- ❌ `critique_result` WebSocket message sent to frontend
+- ❌ Critique results displayed in chat UI
+- ❌ Critique results persisted in model metadata
+- ❌ Vision critique skipped gracefully when model unavailable
+- ❌ Debug log entries for vision request/response
 
 ---
 
@@ -424,12 +463,17 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - ❌ `manufacturability.json` persistence
 
 ### 21.5 Vision-Based Validation
+
+> Default model: `qwen3.6:27b`. Swap to `qwen3-vl`, `gemma3`, or cloud if quality is insufficient.
+
 - ❌ Server-side PNG render generation (iso, front, right, top views)
-- ❌ Local Ollama vision model integration
+- ❌ Local Ollama vision model integration (`qwen3.6:27b` default)
 - ❌ Vision capability smoke test at startup
 - ❌ Vision prompt contract (JSON critique format)
-- ❌ Cloud vision fallback
+- ❌ Cloud vision fallback (Gemini, GPT-4o — user opt-in)
 - ❌ Vision critique → repair prompt pipeline
+- ❌ Independent `VISION_MODEL` config separate from `LLM_MODEL`
+- ❌ Section cut renders for internal geometry review
 
 ### 21.6 Assemblies & Multi-Part Workflows
 - ❌ `AssemblyPart` / `AssemblyManifest` schemas
