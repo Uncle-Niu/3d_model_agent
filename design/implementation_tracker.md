@@ -557,7 +557,40 @@ Generate CadQuery → Execute → Export GLB
 | Domain Models | 16 | 0 | 7 |
 | Zoo Gap Closure | 14 | 5 | 37 |
 | 3D Printing | 3 | 0 | 2 |
-| Testing | 0 | 0 | 4 |
-| **Total** | **165** | **12** | **82** |
+| Testing | 4 | 0 | 0 |
+| **Total** | **169** | **12** | **78** |
 
-**Net progress this session: +54 Done items, +7 Partial items**
+**Net progress this session: +58 Done items, +7 Partial items**
+
+---
+
+## 24. Test Coverage Summary
+
+### Backend — 128 tests, all passing (`python -m pytest tests/backend/ -v`)
+
+| Test file | Count | Coverage |
+|---|---|---|
+| `tests/backend/cad/test_engine.py` | 25 | Code execution sandbox, AST validation, all forbidden imports |
+| `tests/backend/test_validation.py` | 16 | Bounding box, volume/mass, face counts, constraint violations, heuristics |
+| `tests/backend/test_llm_service.py` | 27 | System prompt builder, repair prompt routing per failure type, code extraction |
+| `tests/backend/test_storage.py` | 32 | Project CRUD, model metadata, chat threads, analysis persistence, renders dir |
+| `tests/backend/test_api.py` | 28 | Project/model/thread REST endpoints, file serving, execute_source, health check |
+
+### Frontend — 63 tests, all passing (`npm test`)
+
+| Test file | Count | Coverage |
+|---|---|---|
+| `src/test/stores.test.ts` | 25 | `useChatStore`, `useViewportStore`, `useCritiqueStore`, `useDebugStore` |
+| `src/test/utils.test.ts` | 10 | `formatLocalDateTime`, WSMessage discriminated union typing |
+| `src/test/CritiquePanel.test.tsx` | 14 | Score display, labels, issues list, severity badges, intent warning, dismiss, thumbnails |
+| `src/test/Chat.test.tsx` | 14 | Welcome screen, suggestion buttons, send/enter, streaming, status indicator, CritiquePanel integration |
+
+### Run commands
+
+```bash
+# Backend
+python -m pytest tests/backend/ -v
+
+# Frontend
+cd frontend && npm test
+```
