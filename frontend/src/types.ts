@@ -156,3 +156,46 @@ export interface FeatureManifest {
   type: string;
   center: [number, number, number];
 }
+
+export interface GeometryStats {
+  bbox_x_mm?: number;
+  bbox_y_mm?: number;
+  bbox_z_mm?: number;
+  volume_mm3?: number;
+  surface_area_mm2?: number;
+  solid_count: number;
+  face_count: number;
+  edge_count: number;
+  is_closed: boolean;
+  estimated_mass_g?: number;
+  center_of_mass_x?: number;
+  center_of_mass_y?: number;
+  center_of_mass_z?: number;
+}
+
+export interface ManufacturabilityIssue {
+  issue_type: string;
+  severity: 'error' | 'warning';
+  description: string;
+  location_hint?: string;
+}
+
+export interface ManufacturabilityReport {
+  issues: ManufacturabilityIssue[];
+  is_printable: boolean;
+  score: number;
+}
+
+export interface AssemblyPart {
+  name: string;
+  color?: string;
+  material?: string;
+  geometry_stats?: GeometryStats;
+  manufacturability?: ManufacturabilityReport;
+  visible: boolean;
+}
+
+export interface AssemblyManifest {
+  parts: AssemblyPart[];
+  total_parts: number;
+}

@@ -11,6 +11,7 @@ import SourcePanel from './components/SourcePanel';
 import Viewport from './components/Viewport';
 import ParameterPanel from './components/ParameterPanel';
 import FeaturePanel from './components/FeaturePanel';
+import AssemblyPanel from './components/AssemblyPanel';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useChatStore, useProjectStore, useSelectionStore, useViewportStore } from './stores';
 import { api } from './api';
@@ -467,6 +468,7 @@ function App() {
             }}
             sendWsMessage={sendRawMessage}
           />
+          <AssemblyPanel />
           <FeaturePanel />
           <ParameterPanel />
         </div>

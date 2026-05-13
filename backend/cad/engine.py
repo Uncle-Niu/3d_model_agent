@@ -282,6 +282,32 @@ def export_stl(shape: cq.Workplane | cq.Assembly, output_path: Path, tolerance: 
     return output_path
 
 
+def export_part_stl(assembly: cq.Assembly, part_name: str, output_path: Path, tolerance: float = 0.01) -> Path:
+    """Export a single part from an assembly to STL."""
+    if part_name not in assembly.objects:
+        raise ValueError(f"Part '{part_name}' not found in assembly")
+    obj = assembly.objects[part_name].obj
+    if obj is None:
+        raise ValueError(f"Part '{part_name}' has no geometry")
+    if not isinstance(obj, cq.Workplane):
+        obj = cq.Workplane("XY").add(obj)
+    cq.exporters.export(obj, str(output_path), exportType="STL", tolerance=tolerance)
+    return output_path
+
+
+def export_part_step(assembly: cq.Assembly, part_name: str, output_path: Path) -> Path:
+    """Export a single part from an assembly to STEP."""
+    if part_name not in assembly.objects:
+        raise ValueError(f"Part '{part_name}' not found in assembly")
+    obj = assembly.objects[part_name].obj
+    if obj is None:
+        raise ValueError(f"Part '{part_name}' has no geometry")
+    if not isinstance(obj, cq.Workplane):
+        obj = cq.Workplane("XY").add(obj)
+    cq.exporters.export(obj, str(output_path), exportType="STEP")
+    return output_path
+
+
 def export_glb(
     shape: cq.Workplane | cq.Assembly,
     output_path: Path,

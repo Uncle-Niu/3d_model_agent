@@ -173,3 +173,54 @@ export const useSelectionStore = create<SelectionState>((set) => ({
     set({ selectedFeatureName: null, selectedPoint: null }),
 }));
 
+// ---------------------------------------------------------------------------
+// Assembly store — part visibility and exploded views
+// ---------------------------------------------------------------------------
+
+interface PartVisibility {
+  [name: string]: boolean;
+}
+
+interface AssemblyState {
+  partsVisibility: PartVisibility;
+  explodedFactor: number;
+  setParts: (partNames: string[]) => void;
+  toggleVisibility: (name: string) => void;
+  setVisibility: (name: string, visible: boolean) => void;
+  setExplodedFactor: (factor: number) => void;
+  reset: () => void;
+}
+
+export const useAssemblyStore = create<AssemblyState>((set) => ({
+  partsVisibility: {},
+  explodedFactor: 0,
+
+  setParts: (partNames) => {
+    const visibility: PartVisibility = {};
+    partNames.forEach((name) => {
+      visibility[name] = true;
+    });
+    set({ partsVisibility: visibility });
+  },
+
+  toggleVisibility: (name) =>
+    set((s) => ({
+      partsVisibility: {
+        ...s.partsVisibility,
+        [name]: !s.partsVisibility[name],
+      },
+    })),
+
+  setVisibility: (name, visible) =>
+    set((s) => ({
+      partsVisibility: {
+        ...s.partsVisibility,
+        [name]: visible,
+      },
+    })),
+
+  setExplodedFactor: (factor) => set({ explodedFactor: factor }),
+
+  reset: () => set({ partsVisibility: {}, explodedFactor: 0 }),
+}));
+

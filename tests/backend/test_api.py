@@ -225,6 +225,36 @@ class TestModelEndpoints(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.headers["content-type"], "image/png")
 
+    def test_get_assembly_manifest(self):
+        model_dir = self.storage.create_model_dir(self.pid, self.mid)
+        manifest_data = {
+            "parts": [
+                {"name": "base", "visible": True},
+                {"name": "lid", "visible": True}
+            ],
+            "total_parts": 2
+        }
+        (model_dir / "assembly_manifest.json").write_text(json.dumps(manifest_data))
+        
+        resp = self.client.get(f"/api/projects/{self.pid}/models/{self.mid}/assembly")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["total_parts"], 2)
+        self.assertEqual(data["parts"][0]["name"], "base")
+
+    def test_get_part_stl(self):
+        # We need a real-ish assembly for this to work because of re-execution
+        source = """
+import cadquery as cq
+result = cq.Assembly()
+result.add(cq.Workplane("XY").box(10,10,10), name="box")
+"""
+        self.storage.save_model_text(self.pid, self.mid, "source.py", source)
+        
+        resp = self.client.get(f"/api/projects/{self.pid}/models/{self.mid}/assembly/box/stl")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers["content-type"], "application/sla")
+
 
 class TestExecuteSourceEndpoint(unittest.TestCase):
 

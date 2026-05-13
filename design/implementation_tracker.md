@@ -75,9 +75,9 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - ✅ Measurement tools (partial via selection coordinates)
 - ❌ Section cuts
 - ✅ Multiple camera views
-- ❌ Exploded views (future)
-- ❌ Assembly inspection (future)
-- ❌ Feature highlighting (future)
+- ✅ Exploded views
+- ✅ Assembly inspection
+- ✅ Feature highlighting
 
 ---
 
@@ -488,10 +488,10 @@ Generate CadQuery → Execute → Export GLB
 ### 21.6 Assemblies & Multi-Part Workflows
 - ✅ `AssemblyPart` / `AssemblyManifest` schemas
 - ✅ CadQuery Assembly export (multi-part)
-- ❌ Assembly tree UI
-- ❌ Toggle part visibility
-- ❌ Per-part STL download
-- ❌ Exploded-view slider
+- ✅ Assembly tree UI
+- ✅ Toggle part visibility
+- ✅ Per-part STL download
+- ✅ Exploded-view slider
 - ✅ Named parts + print orientation per part (partial)
 
 ### 21.7 Import & Conversion Workflows
@@ -572,7 +572,7 @@ Generate CadQuery → Execute → Export GLB
 | `tests/backend/test_validation.py` | 20 | Bounding box, volume/mass, face counts, constraint violations, heuristics, small features, sharp corners, thin pins |
 | `tests/backend/test_llm_service.py` | 27 | System prompt builder, repair prompt routing per failure type, code extraction |
 | `tests/backend/test_storage.py` | 32 | Project CRUD, model metadata, chat threads, analysis persistence, renders dir |
-| `tests/backend/test_api.py` | 28 | Project/model/thread REST endpoints, file serving, execute_source, health check |
+| `tests/backend/test_api.py` | 30 | Project/model/thread REST endpoints, file serving, execute_source, health check, assembly manifests, per-part download |
 | `tests/backend/test_render.py` | 3 | Multi-angle renders (ISO/Front/Right/Top), Section cuts (X/Y) |
 | `tests/backend/test_parameters.py` | 5 | Parameter extraction and injection |
 

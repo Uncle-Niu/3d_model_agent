@@ -12,11 +12,14 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import httpx
+import cadquery as cq
+import tempfile
+from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from ..cad.engine import process_cadquery_code
+from ..cad.engine import process_cadquery_code, execute_cadquery_code, export_part_stl, export_part_step
 from ..cad.parameters import inject_parameters
 from ..domain.models import (
     FailureType,
@@ -365,6 +368,13 @@ async def get_model_source(project_id: str, model_id: str, request: Request):
     )
 
 
+    return FileResponse(
+        path=str(file_path),
+        media_type="image/png",
+        filename=f"{model_id}_{view_name}.png",
+    )
+
+
 @router.get("/projects/{project_id}/models/{model_id}/renders/{view_name}")
 async def get_model_render(project_id: str, model_id: str, view_name: str, request: Request):
     """Get a rendered PNG image for a model (iso, front, right, top)."""
@@ -380,6 +390,64 @@ async def get_model_render(project_id: str, model_id: str, view_name: str, reque
         media_type="image/png",
         filename=f"{model_id}_{view_name}.png",
     )
+
+
+@router.get("/projects/{project_id}/models/{model_id}/assembly/{part_name}/stl")
+async def get_model_part_stl(project_id: str, model_id: str, part_name: str, request: Request):
+    """Download STL for a specific part in an assembly."""
+    storage = _get_storage(request)
+    source = storage.get_model_source_text(project_id, model_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    success, shape, msg = execute_cadquery_code(source)
+    if not success or not isinstance(shape, cq.Assembly):
+        # If it's a single part, maybe part_name is 'part'
+        if success and part_name == "part":
+            # Just return the main STL
+            file_path = storage.get_model_file_path(project_id, model_id, "model.stl")
+            if file_path.exists():
+                return FileResponse(path=str(file_path), media_type="application/sla", filename=f"{part_name}.stl")
+        raise HTTPException(status_code=400, detail=f"Model is not an assembly or execution failed: {msg}")
+
+    with tempfile.NamedTemporaryFile(suffix=".stl", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    
+    try:
+        export_part_stl(shape, part_name, tmp_path)
+        return FileResponse(path=str(tmp_path), media_type="application/sla", filename=f"{part_name}.stl")
+    except Exception as e:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/projects/{project_id}/models/{model_id}/assembly/{part_name}/step")
+async def get_model_part_step(project_id: str, model_id: str, part_name: str, request: Request):
+    """Download STEP for a specific part in an assembly."""
+    storage = _get_storage(request)
+    source = storage.get_model_source_text(project_id, model_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    success, shape, msg = execute_cadquery_code(source)
+    if not success or not isinstance(shape, cq.Assembly):
+        if success and part_name == "part":
+            file_path = storage.get_model_file_path(project_id, model_id, "model.step")
+            if file_path.exists():
+                return FileResponse(path=str(file_path), media_type="application/step", filename=f"{part_name}.step")
+        raise HTTPException(status_code=400, detail=f"Model is not an assembly or execution failed: {msg}")
+
+    with tempfile.NamedTemporaryFile(suffix=".step", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    
+    try:
+        export_part_step(shape, part_name, tmp_path)
+        return FileResponse(path=str(tmp_path), media_type="application/step", filename=f"{part_name}.step")
+    except Exception as e:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.get("/projects/{project_id}/models/{model_id}/analysis")
@@ -477,6 +545,13 @@ async def get_model_features_endpoint(project_id: str, model_id: str, request: R
     """Get feature manifest for a model."""
     storage = _get_storage(request)
     return storage.get_model_features(project_id, model_id)
+
+
+@router.get("/projects/{project_id}/models/{model_id}/assembly")
+async def get_model_assembly_endpoint(project_id: str, model_id: str, request: Request):
+    """Get assembly manifest for a model."""
+    storage = _get_storage(request)
+    return storage.get_model_assembly(project_id, model_id)
 
 
 @router.post("/projects/{project_id}/models/{model_id}/update_parameters", response_model=ExecuteSourceResponse)

@@ -15,7 +15,7 @@ import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, Environment, Grid, Center, useGLTF, Box } from '@react-three/drei';
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { useViewportStore, useSelectionStore } from '../stores';
+import { useViewportStore, useSelectionStore, useAssemblyStore } from '../stores';
 import { api } from '../api';
 
 // ---------------------------------------------------------------------------
@@ -55,12 +55,15 @@ interface ModelProps {
   wireframe: boolean;
   selectedMeshName: string | null;
   onMeshClick: (name: string | null, point: THREE.Vector3) => void;
+  partsVisibility: Record<string, boolean>;
+  explodedFactor: number;
 }
 
-function Model({ url, wireframe, selectedMeshName, onMeshClick }: ModelProps) {
+function Model({ url, wireframe, selectedMeshName, onMeshClick, partsVisibility, explodedFactor }: ModelProps) {
   const { scene } = useGLTF(url);
   const ref = useRef<THREE.Group>(null);
   const originalColors = useRef<Map<string, THREE.Color>>(new Map());
+  const partCenters = useRef<Map<string, THREE.Vector3>>(new Map());
 
   // Assign cadName from scene node names (for assembly-level selection)
   useEffect(() => {
@@ -78,17 +81,38 @@ function Model({ url, wireframe, selectedMeshName, onMeshClick }: ModelProps) {
         if (!mesh.userData.cadName) {
           mesh.userData.cadName = mesh.name || `mesh_${mesh.uuid.slice(0, 6)}`;
         }
+        
+        // Calculate part center for exploded view
+        if (!partCenters.current.has(mesh.userData.cadName)) {
+           const box = new THREE.Box3().setFromObject(mesh);
+           const center = new THREE.Vector3();
+           box.getCenter(center);
+           partCenters.current.set(mesh.userData.cadName, center);
+        }
       }
     });
   }, [scene]);
 
-  // Apply material settings + selection highlight
+  // Apply material settings + selection highlight + visibility + exploded view
   useEffect(() => {
     scene.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
+        const cadName = mesh.userData.cadName;
         const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        const isSelected = mesh.userData.cadName === selectedMeshName;
+        const isSelected = cadName === selectedMeshName;
+        
+        // Visibility
+        mesh.visible = partsVisibility[cadName] !== false;
+
+        // Exploded View
+        if (explodedFactor > 0 && partCenters.current.has(cadName)) {
+          const center = partCenters.current.get(cadName)!;
+          // Move part away from origin based on its center vector
+          mesh.position.copy(center).multiplyScalar(explodedFactor);
+        } else {
+          mesh.position.set(0, 0, 0);
+        }
 
         mats.forEach((mat) => {
           if (mat instanceof THREE.MeshStandardMaterial) {
@@ -109,7 +133,7 @@ function Model({ url, wireframe, selectedMeshName, onMeshClick }: ModelProps) {
         });
       }
     });
-  }, [scene, wireframe, selectedMeshName]);
+  }, [scene, wireframe, selectedMeshName, partsVisibility, explodedFactor]);
 
   function handleClick(e: any) {
     e.stopPropagation();
@@ -199,6 +223,7 @@ interface ViewportProps {
 
 export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}) {
   const { glbUrl, isLoading, currentModelId, currentProjectId } = useViewportStore();
+  const { partsVisibility, explodedFactor } = useAssemblyStore();
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const [downloadingFormat, setDownloadingFormat] = useState<string | null>(null);
   const [wireframe, setWireframe] = useState(false);
@@ -305,6 +330,8 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
                 wireframe={wireframe}
                 selectedMeshName={selectedFeatureName}
                 onMeshClick={handleMeshClick}
+                partsVisibility={partsVisibility}
+                explodedFactor={explodedFactor}
               />
               {showBbox && <BoundingBoxOverlay url={glbUrl} />}
             </>

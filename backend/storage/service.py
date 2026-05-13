@@ -208,6 +208,13 @@ class StorageService:
             return []
         return self._read_json(path)
 
+    def get_model_assembly(self, project_id: str, model_id: str) -> dict:
+        """Load assembly manifest for a model."""
+        path = self.projects_dir / project_id / "models" / model_id / "assembly_manifest.json"
+        if not path.exists():
+            return {}
+        return self._read_json(path)
+
 
     # ------------------------------------------------------------------
     # Chat History
