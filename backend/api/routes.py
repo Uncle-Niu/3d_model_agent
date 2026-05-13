@@ -377,6 +377,32 @@ async def get_model_render(project_id: str, model_id: str, view_name: str, reque
     )
 
 
+@router.get("/projects/{project_id}/models/{model_id}/analysis")
+async def get_model_analysis(project_id: str, model_id: str, request: Request):
+    """Get geometry analysis (volume, bbox, mass estimate, etc.) for a model."""
+    storage = _get_storage(request)
+    analysis = storage.get_geometry_analysis(project_id, model_id)
+    if not analysis:
+        # Fallback: pull from metadata
+        meta = storage.get_model_metadata(project_id, model_id)
+        if not meta:
+            raise HTTPException(status_code=404, detail="Model not found")
+        if meta.geometry_stats:
+            analysis = meta.geometry_stats.model_dump()
+        else:
+            analysis = {}
+    return analysis
+
+
+@router.get("/projects/{project_id}/models/{model_id}/metadata")
+async def get_model_metadata_endpoint(project_id: str, model_id: str, request: Request):
+    """Get full model metadata including critique results and geometry stats."""
+    storage = _get_storage(request)
+    meta = storage.get_model_metadata(project_id, model_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Model not found")
+    return meta.model_dump(mode="json")
+
 
 @router.post("/projects/{project_id}/models/execute_source", response_model=ExecuteSourceResponse)
 async def execute_model_source(project_id: str, body: ExecuteSourceRequest, request: Request):

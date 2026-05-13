@@ -175,6 +175,26 @@ class StorageService:
         file_path.write_text(content, encoding="utf-8")
         return file_path
 
+    def get_model_renders_dir(self, project_id: str, model_id: str) -> Path:
+        """Get (and create) the renders sub-directory for a model."""
+        renders_dir = self.projects_dir / project_id / "models" / model_id / "renders"
+        renders_dir.mkdir(parents=True, exist_ok=True)
+        return renders_dir
+
+    def save_geometry_analysis(self, project_id: str, model_id: str, analysis: dict) -> None:
+        """Persist geometry analysis data as analysis.json for the model."""
+        model_dir = self.projects_dir / project_id / "models" / model_id
+        model_dir.mkdir(parents=True, exist_ok=True)
+        self._write_json(model_dir / "analysis.json", analysis)
+
+    def get_geometry_analysis(self, project_id: str, model_id: str) -> dict:
+        """Load geometry analysis from disk, or return empty dict if not found."""
+        path = self.projects_dir / project_id / "models" / model_id / "analysis.json"
+        if not path.exists():
+            return {}
+        return self._read_json(path)
+
+
     # ------------------------------------------------------------------
     # Chat History
     # ------------------------------------------------------------------

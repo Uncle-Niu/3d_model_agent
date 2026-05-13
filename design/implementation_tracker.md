@@ -1,7 +1,7 @@
 # Implementation Tracker
 
 > Auto-generated from `design/main_design.md` vs current codebase.
-> Last updated: 2026-05-12
+> Last updated: 2026-05-13
 
 Legend: ✅ Done | 🟡 Partial | ❌ Not started
 
@@ -29,17 +29,17 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 
 ### 1.3 Backend Directory Structure
 - ✅ `backend/api/` — API layer
-- ❌ `backend/agent/` — Agent orchestrator (directory missing)
+- ❌ `backend/agent/` — Agent orchestrator (directory missing; pipeline lives in websocket.py)
 - ✅ `backend/domain/` — Domain models
 - ✅ `backend/cad/` — CAD engine
-- ❌ `backend/render/` — Rendering service (directory missing)
-- ❌ `backend/vision/` — Vision critique (directory missing)
-- ❌ `backend/repair/` — Repair module (directory missing; repair logic lives in websocket.py)
+- ✅ `backend/render/` — Rendering service (trimesh + matplotlib fallback)
+- ✅ `backend/vision/` — Vision critique system
+- ❌ `backend/repair/` — Repair module (repair logic lives in websocket.py)
 - ✅ `backend/models/` — LLM service
-- ❌ `backend/validation/` — Geometry validation (directory missing; validation lives in cad/engine.py)
-- ❌ `backend/tessellation/` — Tessellation module (directory missing; tessellation lives in cad/engine.py)
+- ✅ `backend/validation/` — Enhanced geometry validation module
+- ❌ `backend/tessellation/` — Tessellation module (lives in cad/engine.py)
 - ✅ `backend/storage/` — Storage service
-- ❌ `backend/config/` — Config module (directory missing; config via env vars)
+- ❌ `backend/config/` — Config module (config via env vars)
 
 ### 1.4 Frontend Directory Structure
 - ✅ `frontend/src/components/` — UI components
@@ -57,10 +57,11 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 
 - ✅ Natural language prompt input
 - ✅ Streaming LLM responses (llm_chunk via WebSocket)
-- ✅ Stage status indicators (generating, executing, tessellating, etc.)
+- ✅ Stage status indicators (generating, executing, tessellating, rendering, critiquing, repairing)
+- ✅ Stage icons per pipeline step (emoji per stage)
 - ✅ Tool execution logs (debug_log messages in DebugPanel)
-- ❌ Critique feedback display (no critique UI)
-- ❌ Repair explanations in chat (only generic failure messages shown)
+- ✅ Critique feedback display (CritiquePanel with score, issues, render thumbnails)
+- 🟡 Repair explanations in chat (vision repair trigger shown; full explanation in response text)
 
 ---
 
@@ -69,9 +70,9 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - ✅ Real-time glTF model viewing
 - ✅ Orbit controls (OrbitControls from drei)
 - ✅ Pan/zoom (via OrbitControls)
-- ❌ Wireframe mode toggle
+- ✅ Wireframe mode toggle (viewport toolbar button)
 - ❌ Face highlighting
-- ❌ Bounding boxes overlay
+- ✅ Bounding box overlay (BBox toggle in viewport toolbar)
 - ❌ Measurement tools
 - ❌ Section cuts
 - ❌ Multiple camera views
@@ -100,8 +101,8 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - 🟡 Prompt history (stored in chat threads, viewable in chat)
 - 🟡 CAD source revisions (viewable in SourcePanel with diff view)
 - ❌ STEP revision browser
-- ❌ Render snapshots
-- ❌ Critique reports display
+- ❌ Render snapshots (renders saved to disk, not yet browseable in UI)
+- ❌ Critique reports display (shown inline in CritiquePanel for latest only)
 
 ---
 
@@ -142,6 +143,9 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - ✅ File download (STL, STEP, GLB) with dropdown menu
 - ✅ Debug log panel (DebugPanel)
 - ✅ Connection status indicator
+- ✅ Vision critique panel (CritiquePanel — score, thumbnails, issues)
+- ✅ Wireframe mode toggle
+- ✅ Bounding box overlay toggle
 
 ---
 
@@ -159,6 +163,7 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - ✅ `GET /api/projects/{id}/models/{id}/step` — Download STEP
 - ✅ `GET /api/projects/{id}/models/{id}/stl` — Download STL
 - ✅ `GET /api/projects/{id}/models/{id}/source` — Get CadQuery source
+- ✅ `GET /api/projects/{id}/models/{id}/renders/{view}` — Get render PNG (iso/front/right/top)
 - ✅ `POST /api/projects/{id}/models/execute_source` — Execute edited source
 - ✅ `GET /api/projects/{id}/history` — Get chat history
 - ✅ `GET /api/health` — Health check with Ollama status
@@ -174,13 +179,13 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - ❌ `selection` message type (feature selection context)
 
 ### Server → Client Messages
-- ✅ `status` (stage + message)
+- ✅ `status` (stage + message) — all stages: generating, executing, tessellating, rendering, critiquing, repairing
 - ✅ `llm_chunk` (streaming tokens)
-- ✅ `model_ready` (model_id + glb_url)
-- ✅ `chat_response` (final text)
+- ✅ `model_ready` (model_id + glb_url) — sent early so user sees model while critique runs
+- ✅ `chat_response` (final text with geometry stats + critique summary)
 - ✅ `error` (message + failure_type)
 - ✅ `debug_log` (timestamp, category, message, data)
-- ❌ `critique_result` (defined in domain models, never sent)
+- ✅ `critique_result` (score, matches_intent, issues, repair_prompt, render_urls)
 
 ---
 
@@ -225,11 +230,12 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 
 - ✅ Bounding box dimension check against hard constraints
 - ✅ Solid body count check (non-zero)
-- ❌ Manifold / closed shell (watertight) check
-- ❌ Minimum wall thickness check
-- ❌ Degenerate dimension check
+- ✅ Manifold / closed shell check (OCC BRepCheck_Analyzer)
+- ✅ Minimum wall thickness heuristic (fill-ratio based estimate)
+- ✅ Degenerate dimension check (near-zero dims)
 - ❌ File size check
-- ❌ Separate `backend/validation/` module (logic in `cad/engine.py`)
+- ✅ Separate `backend/validation/` module with `validate_geometry_enhanced()`
+- ✅ Geometry analysis: volume, surface area, face/edge count, center of mass, estimated mass
 
 ---
 
@@ -238,11 +244,14 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - ❌ OpenCascade offscreen rendering
 - ❌ VTK rendering
 - ❌ pygfx rendering
-- ❌ Headless Three.js rendering
-- ❌ Perspective render generation
-- ❌ Orthographic render generation
+- 🟡 Headless matplotlib 3D rendering (primary renderer — no display required)
+- 🟡 pyrender offscreen rendering (optional, higher quality — requires OSMesa/EGL)
+- ✅ Perspective/isometric render generation (iso, front, right, top views)
+- ✅ Orthographic-equivalent render generation (elevation/azimuth angles)
 - ❌ Section cut renders
-- ❌ `backend/render/` module (directory missing)
+- ✅ `backend/render/` module with `RenderService` and `render_shape_multiangle()`
+- ✅ Renders saved to `model-NNN/renders/` directory
+- ✅ Render PNG served via `GET .../renders/{view_name}` REST endpoint
 
 ---
 
@@ -253,47 +262,50 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 > Configured via `VISION_MODEL` / `VISION_BASE_URL` env vars.
 
 ### Vision Model Setup
-- ❌ `VISION_MODEL` env var support (default: `qwen3.6:27b`)
-- ❌ `VISION_BASE_URL` env var support (default: same as Ollama)
+- ✅ `VISION_MODEL` env var support (default: `qwen3.6:27b`)
+- ✅ `VISION_BASE_URL` env var support (default: same as Ollama)
 - ❌ Vision capability smoke test at startup (send test image, expect coherent reply)
-- ❌ Graceful fallback when vision model unavailable (skip critique, log warning)
+- ✅ Graceful fallback when vision model unavailable (skip critique, log warning)
 - ❌ Cloud vision opt-in when local model underperforms
 
 ### Critique Pipeline
-- ❌ Multimodal AI model integration for geometry critique
-- ❌ Printability evaluation
-- ❌ Thin wall detection (vision)
-- ❌ Overhang detection (vision)
-- ❌ Symmetry check
-- ❌ Missing feature detection (vision vs user intent)
-- ❌ Critique report generation (schema defined but never populated)
-- ❌ `backend/vision/` module (directory missing)
+- ✅ Multimodal AI model integration for geometry critique (`VisionCritic` class)
+- ✅ Printability evaluation
+- ✅ Thin wall detection (vision)
+- ✅ Overhang detection (vision)
+- ✅ Symmetry check
+- ✅ Missing feature detection (vision vs user intent)
+- ✅ Critique report generation (structured JSON → `CritiqueReport` domain model)
+- ✅ `backend/vision/` module with `VisionCritic`, `VisionCritiqueResult`
 
 ### Vision Verification Feedback Loop
 
-The full loop that wires rendering + vision + repair together:
+The full loop is now wired in `api/websocket.py`:
 
 ```
 Generate CadQuery → Execute → Export GLB
-  → Render server-side PNGs (iso, front, right, top)
-  → Send renders + user intent to vision model (qwen3.6:27b)
-  → Parse structured JSON critique
-  → If issues found → inject critique into repair prompt → re-generate
+  → model_ready sent to frontend (user sees model early)
+  → Render server-side PNGs (iso, front, right, top) via trimesh/matplotlib
+  → Send renders + user intent + geometry stats to vision model (qwen3.6:27b)
+  → Parse structured JSON critique (score, issues, repair_prompt)
+  → critique_result sent to frontend
+  → If score < 0.65 or has errors → inject critique into vision repair prompt → re-generate
   → Repeat up to MAX_REPAIR_ITERATIONS
 ```
 
-- ❌ Server-side multi-angle PNG rendering (iso, front, right, top)
-- ❌ Render images saved to `model-NNN/renders/` directory
-- ❌ Vision model receives renders + original user prompt + geometry stats
-- ❌ Vision prompt contract returns structured JSON (matches_intent, score, issues, repair_prompt)
-- ❌ Critique result parsed into `CritiqueReport` domain model
-- ❌ Critique-driven repair: feed `recommended_repair_prompt` back into LLM
-- ❌ Repair loop extended: execute → validate → render → critique → repair (not just execute → retry)
-- ❌ `critique_result` WebSocket message sent to frontend
-- ❌ Critique results displayed in chat UI
-- ❌ Critique results persisted in model metadata
-- ❌ Vision critique skipped gracefully when model unavailable
-- ❌ Debug log entries for vision request/response
+- ✅ Server-side multi-angle PNG rendering (iso, front, right, top views)
+- ✅ Render images saved to `model-NNN/renders/` directory
+- ✅ Vision model receives renders + original user prompt + geometry stats
+- ✅ Vision prompt contract returns structured JSON (matches_intent, score, issues, repair_prompt)
+- ✅ Critique result parsed into `CritiqueReport` domain model
+- ✅ Critique-driven repair: feed `repair_prompt` back into LLM
+- ✅ Repair loop extended: execute → validate → render → critique → repair (not just execute → retry)
+- ✅ `critique_result` WebSocket message sent to frontend
+- ✅ Critique results displayed in chat UI (CritiquePanel)
+- ✅ Critique results persisted in model metadata (`metadata.json`)
+- ✅ Vision critique skipped gracefully when model unavailable
+- ✅ Debug log entries for vision request/response
+- ❌ Section cut renders for internal geometry review
 
 ---
 
@@ -302,23 +314,24 @@ Generate CadQuery → Execute → Export GLB
 - ✅ Retry loop with MAX_REPAIR_ITERATIONS = 5
 - ✅ LOCAL_MODEL_RETRIES = 3 (constant defined)
 - ✅ Re-generate with error message on failure
-- ✅ Repair prompt builder (`build_repair_prompt`)
+- ✅ Vision-driven repair (critique issues + repair_prompt injected into LLM)
+- ✅ Repair prompt builder (`build_repair_prompt` + `_build_vision_repair_prompt`)
 - ✅ Failed attempt metadata saved
 - ✅ Final failure message surfaced to user
+- ✅ Early `model_ready` sent on success (user sees model while critique runs)
+- ✅ Failure type routing (syntax_error / execution_error / geometry_invalid / constraint_violation)
 - ❌ Escalation to cloud model after local retries exhausted
 - ❌ Partial success handling (show result with warning banner)
-- ❌ Critique-driven repair (no vision critique to trigger it)
-- ❌ Geometry-invalid-specific repair prompts
-- ❌ Constraint-violation-specific repair prompts
+- ✅ Geometry-invalid-specific repair prompts (failure_type = geometry_invalid)
+- ✅ Constraint-violation-specific repair prompts (failure_type = constraint_violation)
 
 ### Failure Taxonomy (Domain Models)
-- ✅ `syntax_error` enum defined
-- ✅ `execution_error` enum defined
-- ✅ `geometry_invalid` enum defined
-- ✅ `constraint_violation` enum defined
+- ✅ `syntax_error` enum defined and used
+- ✅ `execution_error` enum defined and used
+- ✅ `geometry_invalid` enum defined and used
+- ✅ `constraint_violation` enum defined and used
 - ✅ `critique_failed` enum defined
 - ✅ `timeout` enum defined
-- 🟡 Failure types used: only `execution_error` is actually set in pipeline
 
 ---
 
@@ -346,17 +359,17 @@ Generate CadQuery → Execute → Export GLB
 - ❌ LangGraph integration (dependency installed but not used)
 - ❌ Single-agent workflow graph (Planner → Generator → Executor → …)
 - ❌ State machine / checkpointing
-- 🟡 Pipeline implemented as imperative loop in `websocket.py` instead
+- 🟡 Pipeline implemented as imperative async loop in `websocket.py`
 
 ---
 
 ## 18. Backend — Persistent Structured State
 
-- ❌ `AgentState` Pydantic model (not implemented)
-- ❌ User goal tracking
-- ❌ Failure history accumulation
-- ❌ Agent state snapshots
-- 🟡 State managed implicitly via storage service (project config, model metadata, chat)
+- ✅ `AgentState` Pydantic model (added to domain/models.py)
+- ❌ User goal tracking (not wired into pipeline yet)
+- ❌ Failure history accumulation in AgentState
+- ❌ Agent state snapshots to disk
+- 🟡 State managed via storage service + model metadata + chat threads
 
 ---
 
@@ -370,10 +383,10 @@ Generate CadQuery → Execute → Export GLB
 - ✅ `model.step` saved per model
 - ✅ `model.stl` saved per model
 - ✅ `model.glb` saved per model
-- ✅ `metadata.json` saved per model
+- ✅ `metadata.json` saved per model (with critique + geometry_stats + vision_score)
 - ✅ `chat_history.json` — legacy chat storage
 - ✅ `chat_threads/` — per-thread JSON files
-- ❌ `render.png` — server-side render (no render service)
+- ✅ `renders/render_{view}.png` — server-side render images
 - ❌ `feature_manifest.json` per model
 - ❌ `parameters.json` per model
 - ❌ `analysis.json` per model
@@ -398,16 +411,17 @@ Generate CadQuery → Execute → Export GLB
 - ✅ `HardConstraints`
 - ✅ `SoftConstraints`
 - ✅ `GeometryIssue`
-- ✅ `CritiqueReport`
-- ✅ `ModelMetadata`
+- ✅ `CritiqueReport` (with `matches_intent`, `repair_prompt` fields)
+- ✅ `GeometryStats` (bbox, volume, surface area, mass, face/edge count, is_closed)
+- ✅ `ModelMetadata` (with critique, geometry_stats, render_paths, vision_score)
 - ✅ `ProjectConfig`
 - ✅ `ChatMessage`
-- ✅ WS message types (WSStatusMessage, WSModelReady, etc.)
+- ✅ `AgentState` (user_goal, iteration, failure_history, critique_results, etc.)
+- ✅ WS message types (WSStatusMessage, WSModelReady, WSCritiqueResult, etc.)
 - ❌ `Part` / `Assembly` / `Constraint` models
 - ❌ `GeometryArtifact` / `RenderArtifact` models
 - ❌ `RepairTask` / `ToolResult` models
 - ❌ `CadParameter` / `CadFeature` / `FeatureManifest` models
-- ❌ `GeometryStats` model
 - ❌ `ManufacturabilityIssue` / `ManufacturabilityReport` models
 - ❌ `AssemblyPart` / `AssemblyManifest` models
 - ❌ `SearchResult` / `WebSearchProvider` models
@@ -437,25 +451,26 @@ Generate CadQuery → Execute → Export GLB
 - ❌ Edit prompt with selected feature metadata
 
 ### 21.3 Model-Derived Analysis Tools
-- ❌ Bounding box dimensions analysis
-- ❌ Volume calculation
-- ❌ Surface area calculation
-- ❌ Center of mass
-- ❌ Body / face / edge count
-- ❌ Solid validity check
-- ❌ Watertightness check
-- ❌ Estimated mass / print weight
-- ❌ `analysis.json` persistence
-- ❌ Inject analysis into repair/critique prompts
+- ✅ Bounding box dimensions analysis (in validation module)
+- ✅ Volume calculation (OCC BRepGProp)
+- ✅ Surface area calculation (OCC BRepGProp)
+- ✅ Center of mass (OCC BRepGProp)
+- ✅ Body / face / edge count
+- ✅ Solid validity check
+- ✅ Watertightness check (OCC BRepCheck_Analyzer)
+- ✅ Estimated mass / print weight (PLA density)
+- ❌ `analysis.json` persistence (stats in metadata.json, not separate file)
+- ✅ Inject analysis into vision critique prompt (geometry_stats dict)
+- ✅ Geometry stats in chat response (size + mass shown to user)
 
 ### 21.4 Manufacturability & Design Review
-- ❌ Three-layer validation pipeline (deterministic → heuristics → vision)
-- ❌ Build volume check (deterministic) — exists in geometry validation but not as separate layer
-- ❌ Degenerate dimension check
+- 🟡 Three-layer validation pipeline (deterministic → heuristics; vision = 3rd layer ✅)
+- ✅ Build volume check (deterministic)
+- ✅ Degenerate dimension check
 - ❌ Small feature detection
 - ❌ File size check
-- ❌ Minimum wall thickness (approximate)
-- ❌ Unsupported overhang detection
+- 🟡 Minimum wall thickness (heuristic approximation)
+- ✅ Unsupported overhang detection (via vision critique)
 - ❌ Tiny face detection
 - ❌ Sharp internal corner detection
 - ❌ Thin pin/tab detection
@@ -463,16 +478,13 @@ Generate CadQuery → Execute → Export GLB
 - ❌ `manufacturability.json` persistence
 
 ### 21.5 Vision-Based Validation
-
-> Default model: `qwen3.6:27b`. Swap to `qwen3-vl`, `gemma3`, or cloud if quality is insufficient.
-
-- ❌ Server-side PNG render generation (iso, front, right, top views)
-- ❌ Local Ollama vision model integration (`qwen3.6:27b` default)
+- ✅ Server-side PNG render generation (iso, front, right, top views)
+- ✅ Local Ollama vision model integration (`qwen3.6:27b` default)
 - ❌ Vision capability smoke test at startup
-- ❌ Vision prompt contract (JSON critique format)
+- ✅ Vision prompt contract (JSON critique format)
 - ❌ Cloud vision fallback (Gemini, GPT-4o — user opt-in)
-- ❌ Vision critique → repair prompt pipeline
-- ❌ Independent `VISION_MODEL` config separate from `LLM_MODEL`
+- ✅ Vision critique → repair prompt pipeline
+- ✅ Independent `VISION_MODEL` config separate from `LLM_MODEL`
 - ❌ Section cut renders for internal geometry review
 
 ### 21.6 Assemblies & Multi-Part Workflows
@@ -495,14 +507,9 @@ Generate CadQuery → Execute → Export GLB
 ### 21.8 Internet-Aware Research
 - ❌ `backend/tools/web_research.py` module
 - ❌ `SearchResult` / `WebSearchProvider` schemas
-- ❌ OllamaSearchProvider
-- ❌ SearxngSearchProvider
-- ❌ DuckDuckGoSearchProvider
-- ❌ BraveSearchProvider
-- ❌ Web research env var config
+- ❌ Web search providers (DuckDuckGo, Brave, SearXNG)
 - ❌ Agent policy for when to search
 - ❌ Citation storage in model metadata
-- ❌ `research.json` persistence
 
 ---
 
@@ -530,25 +537,27 @@ Generate CadQuery → Execute → Export GLB
 | Category | Done | Partial | Not Started |
 |---|---|---|---|
 | Frontend Stack | 6 | 0 | 1 |
-| Backend Stack & Structure | 8 | 0 | 9 |
-| Chat Interface | 4 | 0 | 2 |
-| 3D Viewport | 3 | 0 | 9 |
+| Backend Stack & Structure | 10 | 0 | 7 |
+| Chat Interface | 6 | 1 | 0 |
+| 3D Viewport | 5 | 0 | 7 |
 | Geometry Interaction | 0 | 0 | 6 |
 | Design History | 0 | 2 | 3 |
 | Constraint Panel | 4 | 0 | 5 |
-| REST API | 16 | 0 | 1 |
-| WebSocket Protocol | 7 | 0 | 2 |
+| REST API | 17 | 0 | 1 |
+| WebSocket Protocol | 8 | 0 | 1 |
 | Code Generation | 17 | 0 | 2 |
-| Geometry Validation | 2 | 0 | 4 |
-| Rendering Service | 0 | 0 | 8 |
-| Vision Critique | 0 | 0 | 7 |
-| Repair Loop | 6 | 1 | 5 |
+| Geometry Validation | 6 | 0 | 1 |
+| Rendering Service | 5 | 2 | 1 |
+| Vision Critique | 14 | 0 | 4 |
+| Repair Loop | 10 | 0 | 2 |
 | AI Model Architecture | 6 | 0 | 5 |
 | LangGraph Workflow | 0 | 1 | 3 |
-| Structured State | 0 | 1 | 3 |
-| Storage | 16 | 0 | 5 |
-| Domain Models | 13 | 0 | 8 |
-| Zoo Gap Closure | 0 | 0 | 49 |
+| Structured State | 1 | 1 | 2 |
+| Storage | 17 | 0 | 4 |
+| Domain Models | 16 | 0 | 7 |
+| Zoo Gap Closure | 14 | 5 | 37 |
 | 3D Printing | 3 | 0 | 2 |
 | Testing | 0 | 0 | 4 |
-| **Total** | **111** | **5** | **143** |
+| **Total** | **165** | **12** | **82** |
+
+**Net progress this session: +54 Done items, +7 Partial items**

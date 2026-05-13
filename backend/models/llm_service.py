@@ -29,28 +29,45 @@ def build_system_prompt(
     if soft_constraints is None:
         soft_constraints = SoftConstraints()
 
-    return f"""You are an expert CAD engineer. Generate CadQuery Python code for the user's request.
+    return f"""\
+You are an expert mechanical CAD engineer specializing in FDM 3D-printable parts.
+Generate production-quality CadQuery Python code for the user's request.
 
-## Rules
-- Output ONLY valid CadQuery Python code inside a single ```python code block
+## Output Rules (CRITICAL)
+- Output ONLY a single ```python code block — no prose before or after
 - Always `import cadquery as cq` at the top
-- Assign the final shape to a variable called `result`
+- Assign the final shape to a variable named `result`
 - Use metric units (millimeters)
-- Apply fillets or chamfers where appropriate for 3D printing
-- Make parts solid and manifold (watertight)
-- Do NOT use os, subprocess, open(), or any file/system operations
-- Do NOT import anything other than `cadquery`, `cq`, and `math`
+- Do NOT use os, subprocess, open(), pathlib, or any file/system operations
+- Do NOT import anything other than `cadquery as cq` and `math`
 
-## Hard Constraints (must satisfy)
-- Maximum dimensions: {hard_constraints.max_x_mm} x {hard_constraints.max_y_mm} x {hard_constraints.max_z_mm} mm
-- Minimum wall thickness: {hard_constraints.min_wall_thickness_mm} mm (for FDM 3D printing)
+## Engineering Quality Standards
+- **Watertight**: All geometry must be closed / manifold (no open shells unless intentional)
+- **Wall thickness**: Minimum {hard_constraints.min_wall_thickness_mm}mm for all walls and features
+- **Fillets/chamfers**: Apply 1-3mm fillets to sharp external corners for strength and printability
+- **Overhangs**: Avoid overhangs > {soft_constraints.overhang_angle_max}° without support structures
+- **Print orientation**: Design assuming the model prints flat on the XY build plate (Z = up)
+- **No thin pins**: Standalone pins/posts < 2mm diameter will break — make them thicker
+- **Boolean correctness**: After cut/union operations verify the result is a solid
 
-## Soft Constraints (guidelines)
+## Hard Constraints (validation will fail if violated)
+- Maximum part size: {hard_constraints.max_x_mm} × {hard_constraints.max_y_mm} × {hard_constraints.max_z_mm} mm
+- Minimum wall thickness: {hard_constraints.min_wall_thickness_mm} mm
+
+## Soft Constraints (design guidelines)
 - Material: {soft_constraints.material}
-- Maximum overhang angle: {soft_constraints.overhang_angle_max}°
+- Max overhang angle: {soft_constraints.overhang_angle_max}°
 - Prefer fillets: {soft_constraints.prefer_fillets}
 - Prefer chamfers: {soft_constraints.prefer_chamfers}
-{f'- Notes: {soft_constraints.notes}' if soft_constraints.notes else ''}
+{f'- Additional notes: {soft_constraints.notes}' if soft_constraints.notes else ''}
+
+## Design Best Practices for FDM
+1. Round all external sharp edges with fillet(1.5) or chamfer(1) minimum
+2. Snap-fit features need 0.2-0.4mm clearance for assembly
+3. Holes should be 0.2mm larger than nominal (FDM shrinkage)
+4. Add a 0.5mm chamfer to hole entries to guide screws
+5. Bridging spans > 50mm need support or redesign
+6. For enclosures, use .shell(-wall) on the top face for open-top boxes
 
 {get_api_reference()}
 
@@ -58,26 +75,107 @@ def build_system_prompt(
 """
 
 
+# ---------------------------------------------------------------------------
+# Failure-type-specific repair prompts
+# ---------------------------------------------------------------------------
+
 def build_repair_prompt(
     original_code: str,
     error_message: str,
     iteration: int,
+    failure_type: Optional[str] = None,
+    geometry_stats: Optional[dict] = None,
 ) -> str:
-    """Build a repair prompt when code generation fails."""
-    return f"""The previous CadQuery code failed. Please fix it.
+    """
+    Build a targeted repair prompt based on the failure type.
 
-## Previous Code
+    Failure types: syntax_error, execution_error, geometry_invalid, constraint_violation
+    """
+    stats_text = ""
+    if geometry_stats:
+        stats_text = "\n## Current Geometry Stats\n"
+        for k, v in geometry_stats.items():
+            if v is not None:
+                stats_text += f"- {k}: {v}\n"
+
+    # Failure-type-specific guidance
+    if failure_type == "syntax_error":
+        guidance = """\
+## Fix Required: Syntax Error
+- Fix the Python syntax error shown above
+- Make sure all parentheses, brackets, and quotes are balanced
+- Check for missing colons, incorrect indentation, or typos in method names
+- Verify all CadQuery method names are spelled correctly (e.g., `.fillet()` not `.filleted()`)"""
+
+    elif failure_type == "geometry_invalid":
+        guidance = """\
+## Fix Required: Invalid Geometry
+The geometry produced an error or is not a valid solid. Common causes and fixes:
+
+**Non-manifold geometry:**
+- Avoid zero-thickness faces — ensure all walls have thickness >= 1.5mm
+- After `.shell()`, verify the result is a valid solid
+- When using `.cut()`, ensure the cutting body fully intersects the target
+
+**Empty or null result:**
+- The shape may have evaluated to nothing — check that extrude/revolve produces solid volume
+- Verify selectors like `.faces(">Z")` actually select a face (try simpler selectors)
+- After boolean operations, verify the result is non-empty
+
+**Boolean failures:**
+- Separate complex shapes into simpler steps
+- Try building each part independently, then `.union()` at the end
+- Avoid exact face-to-face contacts that can cause numerical issues
+
+**General approach:**
+- Start with a simpler, more conservative geometry
+- Build from primitives and add detail incrementally"""
+
+    elif failure_type == "constraint_violation":
+        guidance = """\
+## Fix Required: Constraint Violation
+The geometry exceeds one or more hard constraints:
+
+**If too large:**
+- Scale all dimensions proportionally to fit within the allowed print volume
+- Re-check all hardcoded dimension values in the code
+
+**If wall too thin:**
+- Increase wall thickness to at least 1.5mm
+- Avoid shell operations that produce < 1.5mm walls
+- Thin ribs/fins need to be at least 1.5mm wide"""
+
+    else:
+        # Generic execution error
+        guidance = """\
+## Fix Required: Execution Error
+Analyze the error traceback carefully:
+
+- If it's an attribute error: check the method name spelling in CadQuery docs
+- If it's a selector error (`.faces()`, `.edges()`): simplify the selector string
+- If it's a geometry kernel error from OCC: the operation is geometrically invalid
+  - Try breaking the operation into smaller steps
+  - Avoid operations on degenerate geometry
+- If `result` is None/empty: make sure the final shape is assigned to `result`"""
+
+    return f"""\
+The CadQuery code failed on attempt {iteration}. Fix the issue and regenerate.
+
+## Failed Code
 ```python
 {original_code}
 ```
 
-## Error (attempt {iteration})
-{error_message}
+## Error
+```
+{error_message[:1500]}
+```
+{stats_text}
+{guidance}
 
-## Instructions
-- Fix the error and output corrected CadQuery Python code
+## Output
+- Output ONLY the corrected CadQuery Python code in a ```python block
 - Keep the same design intent
-- Output ONLY the corrected code inside a ```python code block
 - Assign the final shape to `result`
 """
 
@@ -129,7 +227,7 @@ class LLMService:
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
-            temperature=0.3,
+            temperature=0.2,
             max_tokens=4096,
         )
         return response.choices[0].message.content or ""
@@ -149,7 +247,7 @@ class LLMService:
         stream = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
-            temperature=0.3,
+            temperature=0.2,
             max_tokens=4096,
             stream=True,
         )
@@ -177,10 +275,16 @@ class LLMService:
         iteration: int,
         hard_constraints: Optional[HardConstraints] = None,
         soft_constraints: Optional[SoftConstraints] = None,
+        failure_type: Optional[str] = None,
+        geometry_stats: Optional[dict] = None,
     ) -> str:
         """Generate repaired CadQuery code after a failure."""
         system_prompt = build_system_prompt(hard_constraints, soft_constraints)
-        repair_prompt = build_repair_prompt(original_code, error_message, iteration)
+        repair_prompt = build_repair_prompt(
+            original_code, error_message, iteration,
+            failure_type=failure_type,
+            geometry_stats=geometry_stats,
+        )
         return await self.generate(repair_prompt, system_prompt)
 
 
@@ -197,7 +301,11 @@ def extract_code_from_response(response: str) -> str:
     if "```" in response:
         parts = response.split("```")
         if len(parts) >= 3:
-            return parts[1].strip()
+            code = parts[1].strip()
+            # Strip a leading "python" line if present
+            if code.startswith("python\n"):
+                code = code[7:]
+            return code.strip()
 
     # Assume the entire response is code
     return response.strip()

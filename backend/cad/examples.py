@@ -1,8 +1,9 @@
 """
-Curated CadQuery examples for LLM few-shot prompting.
+Curated CadQuery examples and API reference for LLM few-shot prompting.
 
 Each example is a working CadQuery script that the LLM can learn from.
-These are injected into the system prompt to teach the model correct syntax.
+These are injected into the system prompt to teach the model correct syntax
+and 3D printing best practices.
 """
 
 EXAMPLES = {
@@ -10,7 +11,7 @@ EXAMPLES = {
         "description": "A simple box with rounded edges",
         "code": '''import cadquery as cq
 
-# Simple box with filleted edges
+# Simple box with filleted vertical edges — good for 3D printing
 result = (
     cq.Workplane("XY")
     .box(50, 30, 10)
@@ -50,7 +51,7 @@ result = (
         "description": "A hollow box enclosure with wall thickness",
         "code": '''import cadquery as cq
 
-# Hollow enclosure with 2mm wall thickness
+# Hollow enclosure with 2mm wall thickness, open top
 wall = 2.0
 outer_x, outer_y, outer_z = 60, 40, 25
 
@@ -67,29 +68,33 @@ result = (
         "code": '''import cadquery as cq
 
 # L-shaped bracket with mounting holes
-thickness = 3.0
+thickness = 4.0
+width = 40
+
+# Build L-profile via extrusion
+pts = [(0, 0), (width, 0), (width, thickness), (thickness, thickness),
+       (thickness, 30), (0, 30)]
 
 result = (
-    cq.Workplane("XY")
-    .box(40, thickness, 30)
+    cq.Workplane("XZ")
+    .polyline(pts)
+    .close()
+    .extrude(width)
+    .edges("|Y")
+    .fillet(1.5)
     .faces(">Z")
-    .workplane()
-    .box(40, 20, thickness, centered=(True, False, False))
-    .edges("|X")
-    .fillet(2)
-    .faces("<Y")
     .workplane()
     .pushPoints([(10, 10), (-10, 10)])
     .hole(4)
-    .faces(">Z")
+    .faces(">X")
     .workplane()
-    .pushPoints([(10, 5), (-10, 5)])
+    .pushPoints([(0, 10)])
     .hole(4)
 )
 ''',
     },
     "rounded_plate_with_holes": {
-        "description": "A plate with rounded corners and a bolt pattern",
+        "description": "A plate with rounded corners and a bolt hole pattern",
         "code": '''import cadquery as cq
 
 # Rounded plate with 4 corner mounting holes
@@ -107,10 +112,10 @@ result = (
 ''',
     },
     "cylindrical_container": {
-        "description": "A cylindrical container with a flat bottom",
+        "description": "A cylindrical container with flat bottom and wall thickness",
         "code": '''import cadquery as cq
 
-# Cylindrical container
+# Cylindrical container with 2mm wall and open top
 outer_radius = 25
 wall = 2.0
 height = 40
@@ -120,7 +125,7 @@ result = (
     .cylinder(height, outer_radius)
     .faces(">Z")
     .workplane()
-    .hole(outer_radius - wall, height - wall)
+    .hole((outer_radius - wall) * 2, height - wall)
 )
 ''',
     },
@@ -128,7 +133,7 @@ result = (
         "description": "A hexagonal nut shape",
         "code": '''import cadquery as cq
 
-# Hexagonal nut
+# Hexagonal nut with M10 center hole
 result = (
     cq.Workplane("XY")
     .polygon(6, 20)
@@ -142,58 +147,156 @@ result = (
 ''',
     },
     "phone_stand": {
-        "description": "A simple angled phone stand",
+        "description": "A simple angled phone stand with base and support",
+        "code": '''import cadquery as cq
+
+# Phone stand — solid base with angled support ledge
+base_w, base_d, base_h = 80, 60, 5
+support_h = 50
+thickness = 4
+
+base = cq.Workplane("XY").box(base_w, base_d, base_h).edges("|Z").fillet(3)
+
+support = (
+    cq.Workplane("XY")
+    .workplane(offset=base_h)
+    .center(0, -base_d / 2 + thickness / 2)
+    .box(base_w - 10, thickness, support_h)
+    .edges("|X").edges(">Z")
+    .fillet(2)
+)
+
+result = base.union(support)
+''',
+    },
+    "cable_clip": {
+        "description": "A snap-fit cable management clip for a 6mm cable",
         "code": '''import cadquery as cq
 import math
 
-# Phone stand with angled support
-base_width = 80
-base_depth = 60
-base_height = 5
-support_height = 50
-support_angle = 75  # degrees from horizontal
-thickness = 4
+# Snap-fit cable clip: C-shaped profile extruded
+cable_r = 3.5      # cable radius
+wall = 2.0
+gap_angle = 60     # opening angle in degrees (snap-fit gap)
+height = 12
+base_w = 20
+base_h = 3
 
+# Build C-ring via shell on a cylinder, then cut the snap gap
+ring = (
+    cq.Workplane("XY")
+    .cylinder(height, cable_r + wall)
+    .faces(">Z")
+    .workplane()
+    .hole(cable_r * 2)
+)
+
+# Cut snap-fit opening
+gap_w = (cable_r + wall) * 2 * math.sin(math.radians(gap_angle / 2))
+gap_cut = (
+    cq.Workplane("XY")
+    .box(gap_w, cable_r + wall + 2, height + 2)
+    .translate([0, cable_r + wall, 0])
+)
+
+ring = ring.cut(gap_cut)
+
+# Base plate
+base = (
+    cq.Workplane("XY")
+    .box(base_w, base_w, base_h)
+    .edges("|Z")
+    .fillet(2)
+    .faces(">Z")
+    .workplane()
+    .hole(3.5)  # screw hole
+)
+
+result = base.union(ring.translate([0, 0, base_h]))
+''',
+    },
+    "threaded_hole": {
+        "description": "A block with an M5 threaded through-hole (modeled as clearance hole with chamfer)",
+        "code": '''import cadquery as cq
+
+# Block with M5 thread-ready hole (5mm drill + 60° countersink)
+# For actual thread, use a tap — model represents the drill hole
 result = (
     cq.Workplane("XY")
-    .box(base_width, base_depth, base_height)
+    .box(30, 30, 20)
+    .edges("|Z")
+    .fillet(2)
+    .faces(">Z")
+    .workplane()
+    .cskHole(5.0, 9.0, 90)  # M5 clearance, 9mm csk, 90deg angle
+)
+''',
+    },
+    "multi_body_assembly": {
+        "description": "A two-part assembly: base plate and vertical post",
+        "code": '''import cadquery as cq
+
+# Base plate
+base = (
+    cq.Workplane("XY")
+    .box(60, 40, 5)
     .edges("|Z")
     .fillet(3)
     .faces(">Z")
     .workplane()
-    .center(0, -base_depth / 2 + thickness / 2)
-    .box(base_width - 10, thickness, support_height)
-    .edges("|X").edges(">Z")
-    .fillet(2)
+    .rect(40, 20, forConstruction=True)
+    .vertices()
+    .hole(4)
 )
+
+# Vertical post centered on base top
+post = (
+    cq.Workplane("XY")
+    .workplane(offset=5)
+    .cylinder(40, 6)
+    .edges()
+    .chamfer(1)
+)
+
+# Combine into a single result (union for printability)
+result = base.union(post)
 ''',
     },
-    "cable_clip": {
-        "description": "A snap-on cable management clip",
+    "living_hinge": {
+        "description": "A box with a thin flexible living hinge for lid attachment",
         "code": '''import cadquery as cq
 
-# Cable clip with screw hole
-cable_diameter = 8
-wall = 2.0
-base_width = 20
-base_height = 3
+# Box body
+box_w, box_d, box_h = 50, 40, 20
+wall = 2.5
+hinge_thickness = 0.8   # thin enough to flex in PETG/TPU
+hinge_width = 5
 
-# Base plate
-result = (
+body = (
     cq.Workplane("XY")
-    .box(base_width, base_width, base_height)
+    .box(box_w, box_d, box_h)
+    .faces(">Z")
+    .shell(-wall)
+)
+
+# Lid (separate, connected by hinge)
+lid = (
+    cq.Workplane("XY")
+    .workplane(offset=box_h + hinge_thickness)
+    .box(box_w, box_d, wall)
     .edges("|Z")
     .fillet(2)
-    .faces(">Z")
-    .workplane()
-    .cylinder(cable_diameter / 2 + wall, cable_diameter / 2 + wall)
-    .faces(">Z")
-    .workplane()
-    .hole(cable_diameter)
-    .faces("<Z[-2]")
-    .workplane()
-    .hole(3.5)
 )
+
+# Hinge strip connecting back edge of body to lid
+hinge = (
+    cq.Workplane("XZ")
+    .workplane(offset=box_d / 2)
+    .box(hinge_width, hinge_thickness, box_h + hinge_thickness + wall)
+    .translate([0, box_d / 2, (box_h + hinge_thickness + wall) / 2 - wall])
+)
+
+result = body.union(lid).union(hinge)
 ''',
     },
 }
@@ -201,64 +304,67 @@ result = (
 
 def get_examples_text() -> str:
     """Format all examples as a text block for the system prompt."""
-    parts = []
+    parts = ["## CadQuery Examples (use these as reference)"]
     for name, example in EXAMPLES.items():
-        parts.append(f"### Example: {example['description']}")
+        parts.append(f"\n### Example: {example['description']}")
         parts.append(f"```python\n{example['code'].strip()}\n```")
-        parts.append("")
     return "\n".join(parts)
 
 
 def get_api_reference() -> str:
     """Curated CadQuery API quick reference for the system prompt."""
-    return """### CadQuery API Quick Reference
+    return """\
+## CadQuery API Quick Reference
 
-**Creating Workplanes:**
-- `cq.Workplane("XY")` — start on XY plane
-- `.workplane()` — create workplane on selected face
+**Workplane setup:**
+- `cq.Workplane("XY")` — start on XY plane (Z points up — correct for printing)
+- `.workplane(offset=N)` — workplane at Z=N above current face
+- `.faces(">Z").workplane()` — workplane on top face
 
 **Primitives:**
-- `.box(length, width, height)` — centered box
-- `.cylinder(height, radius)` — centered cylinder
+- `.box(l, w, h)` — centered box
+- `.cylinder(height, radius)` — centered cylinder (axis=Z)
 - `.sphere(radius)` — sphere
-- `.polygon(n_sides, diameter)` — regular polygon
+- `.polygon(n_sides, diameter)` — regular polygon on workplane
 
-**2D to 3D:**
-- `.extrude(distance)` — extrude 2D sketch
-- `.revolve(angleDegrees)` — revolve sketch
-- `.loft()` — loft between sections
+**Sketch → Solid:**
+- `.extrude(dist)` — extrude sketch by distance
+- `.revolve(angle, (0,0,0), (0,1,0))` — revolve around axis
+- `.shell(thickness)` — hollow (negative = inward, open on selected face)
 
-**Hole Operations:**
-- `.hole(diameter)` — through hole
+**Holes:**
+- `.hole(diameter)` — through hole centered on workplane
 - `.hole(diameter, depth)` — blind hole
-- `.cboreHole(hole_d, cbore_d, cbore_depth)` — counterbore
-- `.cskHole(hole_d, csk_d, csk_angle)` — countersink
+- `.cboreHole(d, cbore_d, cbore_depth)` — counterbore
+- `.cskHole(d, csk_d, csk_angle)` — countersink
 
-**Edge Operations:**
-- `.fillet(radius)` — fillet selected edges
-- `.chamfer(distance)` — chamfer selected edges
+**Edge finishing (essential for FDM printing):**
+- `.edges("|Z").fillet(r)` — fillet vertical edges
+- `.edges(">Z").fillet(r)` — fillet top edges
+- `.edges().chamfer(d)` — chamfer all edges
+- `.fillet(r)` on selected edges
 
-**Shell:**
-- `.shell(thickness)` — hollow out (negative = inward)
-
-**Face/Edge Selectors:**
-- `.faces(">Z")` — top face
-- `.faces("<Z")` — bottom face
-- `.faces(">X")` — right face
-- `.edges("|Z")` — edges parallel to Z
-- `.edges(">Z")` — topmost edges
+**Face/Edge selectors:**
+- `">Z"` top, `"<Z"` bottom, `">X"` right, `"<X"` left, `">Y"` front, `"<Y"` back
+- `"|Z"` edges parallel to Z, `"#Z"` edges perpendicular to Z
+- Combine: `.faces(">Z").edges(">X")`
 
 **Positioning:**
-- `.center(x, y)` — move workplane center
-- `.pushPoints([(x1,y1), (x2,y2)])` — multiple points
-- `.rect(x, y, forConstruction=True)` — construction rectangle
-- `.vertices()` — select vertices of construction geometry
+- `.center(x, y)` — shift workplane origin
+- `.translate((x, y, z))` — move result
+- `.rotate((0,0,0), (0,0,1), angle)` — rotate around Z
+- `.pushPoints([(x1,y1), ...])` — multiple feature locations
 
 **Boolean:**
-- `.cut(other)` — subtract
-- `.union(other)` — add
-- `.intersect(other)` — intersect
+- `.cut(other)` — subtract another shape
+- `.union(other)` — add shapes
+- `.intersect(other)` — intersection
 
-**Export (handled by engine, not in user code):**
-- Result must be assigned to `result` variable
+**Mirror / Pattern:**
+- `.mirror("XZ")` — mirror about plane
+- `.rect(w, h, forConstruction=True).vertices().hole(d)` — bolt pattern
+
+**Multi-body:**
+- Work with separate Workplane objects then `.union()` to combine
+- Result must be a single merged solid for best printing results
 """

@@ -479,8 +479,11 @@ async def _run_generation_pipeline(
     last_code = ""
     last_error = ""
     last_critique: CritiqueReport | None = None
+    last_failure_type: str | None = None
+    last_geometry_stats: dict = {}
     best_model_id: str | None = None
     best_score: float = 0.0
+
 
     for iteration in range(1, MAX_REPAIR_ITERATIONS + 1):
         try:
@@ -534,6 +537,8 @@ async def _run_generation_pipeline(
                     iteration=iteration,
                     hard_constraints=config.hard_constraints,
                     soft_constraints=config.soft_constraints,
+                    failure_type=last_failure_type,
+                    geometry_stats=last_geometry_stats,
                 )
                 last_code = extract_code_from_response(repair_response)
 
@@ -576,12 +581,14 @@ async def _run_generation_pipeline(
             if not exec_result["success"]:
                 last_error = exec_result["message"]
                 last_critique = None  # reset vision critique for error repair
+                last_failure_type = exec_result.get("failure_type") or "execution_error"
+                last_geometry_stats = exec_result.get("geometry_stats", {})
 
                 metadata = ModelMetadata(
                     model_id=model_id,
                     prompt=user_message,
                     cad_source=last_code,
-                    failure_type=FailureType(exec_result.get("failure_type") or "execution_error"),
+                    failure_type=FailureType(last_failure_type),
                     failure_message=last_error,
                     iteration=iteration,
                 )
@@ -589,8 +596,9 @@ async def _run_generation_pipeline(
 
                 if iteration < MAX_REPAIR_ITERATIONS:
                     await _send_status(ws, "failed",
-                        f"Attempt {iteration} failed: {last_error[:200]}")
+                        f"Attempt {iteration} failed ({last_failure_type}): {last_error[:180]}")
                     continue
+
                 else:
                     await _send(ws, {
                         "type": "error",
@@ -656,6 +664,11 @@ async def _run_generation_pipeline(
                 vision_score=critique.overall_printability if critique else None,
             )
             storage.save_model_metadata(project_id, metadata)
+
+            # Persist geometry analysis as analysis.json for external tools
+            if geometry_stats:
+                storage.save_geometry_analysis(project_id, model_id, geometry_stats)
+
 
             # ── Step 6: Decide whether to repair via vision ───────────────────
             vision_score = critique.overall_printability if critique else 1.0
