@@ -163,8 +163,48 @@ def validate_cadquery_code(code: str) -> tuple[bool, str]:
 # Sandboxed execution
 # ---------------------------------------------------------------------------
 
+def _create_load_import(project_id: str, storage: Any):
+    """Create a scoped load_import function for a specific project."""
+    def load_import(import_name_or_id: str) -> cq.Workplane:
+        # 1. Resolve import
+        import_data = storage.get_import(project_id, import_name_or_id)
+        if not import_data:
+            # Try searching by name if ID fails
+            imports = storage.list_imports(project_id)
+            for i in imports:
+                if i["name"] == import_name_or_id:
+                    import_data = i
+                    break
+        
+        if not import_data:
+            raise ValueError(f"Import '{import_name_or_id}' not found in project")
 
-def execute_cadquery_code(code: str) -> tuple[bool, Any, str]:
+        import_id = import_data["import_id"]
+        filename = import_data["filename"]
+        ext = import_data["extension"].lower()
+        
+        project_dir = storage.get_project_dir(project_id)
+        file_path = project_dir / "imports" / import_id / filename
+        
+        if not file_path.exists():
+            raise FileNotFoundError(f"Import file not found at {file_path}")
+
+        # 2. Load based on extension
+        if ext in [".step", ".stp"]:
+            return cq.importers.importStep(str(file_path))
+        elif ext == ".stl":
+            return cq.Workplane("XY").add(cq.importers.importSTL(str(file_path)))
+        else:
+            raise ValueError(f"Format {ext} cannot be loaded into CadQuery for booleans")
+
+    return load_import
+
+
+def execute_cadquery_code(
+    code: str, 
+    project_id: Optional[str] = None, 
+    storage: Optional[Any] = None
+) -> tuple[bool, Any, str]:
     """
     Execute CadQuery code in a restricted namespace.
 
@@ -178,6 +218,10 @@ def execute_cadquery_code(code: str) -> tuple[bool, Any, str]:
         "cadquery": cq,
         "math": math,
     }
+
+    # Inject project-specific helpers if available
+    if project_id and storage:
+        safe_globals["load_import"] = _create_load_import(project_id, storage)
 
     local_vars: dict[str, Any] = {}
 
@@ -348,6 +392,8 @@ def process_cadquery_code(
     output_dir: Path,
     model_name: str = "part",
     constraints: Optional[HardConstraints] = None,
+    project_id: Optional[str] = None,
+    storage: Optional[Any] = None,
 ) -> dict:
     """
     Full pipeline: validate code → execute → validate geometry → export all formats.
@@ -383,7 +429,7 @@ def process_cadquery_code(
         return result
 
     # 2. Execute
-    success, shape, msg = execute_cadquery_code(code)
+    success, shape, msg = execute_cadquery_code(code, project_id=project_id, storage=storage)
     if not success:
         result["message"] = msg
         result["failure_type"] = "execution_error"

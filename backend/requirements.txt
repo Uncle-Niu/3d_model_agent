@@ -26,3 +26,4 @@ Pillow>=10.0.0                # Image I/O
 python-dotenv==1.1.0
 aiofiles==24.1.0
 uuid6==2024.7.10
+duckduckgo-search==7.3.2

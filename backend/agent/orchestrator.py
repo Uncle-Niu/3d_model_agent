@@ -232,6 +232,8 @@ class AgentOrchestrator:
                     model_dir,
                     "part",
                     config.hard_constraints,
+                    project_id,
+                    self.storage,
                 )
                 t_exec_elapsed = time.time() - t_exec_start
 

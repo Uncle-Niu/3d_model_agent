@@ -163,6 +163,24 @@ class ProjectConfig(BaseModel):
     soft_constraints: SoftConstraints = Field(default_factory=SoftConstraints)
 
 
+class ImportedFile(BaseModel):
+    """Metadata for an imported CAD file."""
+    import_id: str
+    name: str
+    filename: str
+    extension: str
+    size_bytes: int
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    has_glb: bool = False
+    glb_url: Optional[str] = None
+
+
+class ImportResponse(BaseModel):
+    success: bool
+    message: str
+    import_data: Optional[ImportedFile] = None
+
+
 # ---------------------------------------------------------------------------
 # Chat
 # ---------------------------------------------------------------------------
@@ -172,6 +190,19 @@ class ChatMessage(BaseModel):
     content: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     model_id: Optional[str] = None  # linked model if applicable
+
+
+class SearchResult(BaseModel):
+    title: str
+    url: str
+    snippet: str
+    source: str = "web"
+
+
+class WebSearchProvider(str, enum.Enum):
+    DUCKDUCKGO = "duckduckgo"
+    BRAVE = "brave"
+    SEARXNG = "searxng"
 
 
 # ---------------------------------------------------------------------------

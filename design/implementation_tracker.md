@@ -495,17 +495,18 @@ Generate CadQuery → Execute → Export GLB
 - ✅ Named parts + print orientation per part (partial)
 
 ### 21.7 Import & Conversion Workflows
-- ❌ `POST /api/projects/{id}/imports` endpoint
-- ❌ STEP import
-- ❌ STL import (view/measure only)
-- ❌ GLB import (view/measure only)
-- ❌ Import → detect format → convert → analyze pipeline
-- ❌ STEP modification strategy (reference geometry)
+- ✅ `POST /api/projects/{id}/imports` endpoint
+- ✅ STEP import
+- ✅ STL import (view/measure only)
+- ✅ GLB import (view/measure only)
+- ✅ Import → detect format → convert → analyze pipeline
+- ✅ STEP modification strategy (reference geometry via load_import)
 
 ### 21.8 Internet-Aware Research
-- ❌ `backend/tools/web_research.py` module
-- ❌ `SearchResult` / `WebSearchProvider` schemas
-- ❌ Web search providers (DuckDuckGo, Brave, SearXNG)
+- ✅ `backend/tools/web_research.py` module
+- ✅ `SearchResult` / `WebSearchProvider` schemas
+- ✅ Web search providers (DuckDuckGo)
+- ❌ Brave / SearXNG support
 - ❌ Agent policy for when to search
 - ❌ Citation storage in model metadata
 
@@ -523,9 +524,9 @@ Generate CadQuery → Execute → Export GLB
 
 ## 23. Testing
 
-- ✅ Backend unit tests (CAD engine, validation, storage, API, render)
+- ✅ Backend unit tests (CAD engine, validation, storage, API, render, research, importer)
 - ❌ Frontend unit tests (Partial coverage)
-- ❌ Integration tests
+- 🟡 Integration tests (REST API, WebSocket, Imports)
 - ❌ End-to-end tests
 
 ---
@@ -541,7 +542,7 @@ Generate CadQuery → Execute → Export GLB
 | Geometry Interaction | 0 | 0 | 6 |
 | Design History | 0 | 2 | 3 |
 | Constraint Panel | 4 | 0 | 5 |
-| REST API | 17 | 0 | 1 |
+| REST API | 19 | 0 | 1 |
 | WebSocket Protocol | 8 | 0 | 1 |
 | Code Generation | 17 | 0 | 2 |
 | Geometry Validation | 6 | 0 | 1 |
@@ -553,18 +554,18 @@ Generate CadQuery → Execute → Export GLB
 | Structured State | 1 | 1 | 2 |
 | Storage | 17 | 0 | 4 |
 | Domain Models | 16 | 0 | 7 |
-| Zoo Gap Closure | 17 | 5 | 34 |
+| Zoo Gap Closure | 25 | 5 | 26 |
 | 3D Printing | 3 | 0 | 2 |
-| Testing | 4 | 0 | 0 |
-| **Total** | **175** | **12** | **72** |
+| Testing | 5 | 1 | 2 |
+| **Total** | **186** | **13** | **61** |
 
-**Net progress this session: +8 Done items, +0 Partial items**
+**Net progress this session: +11 Done items, +1 Partial items**
 
 ---
 
 ## 24. Test Coverage Summary
 
-### Backend — 147 tests, all passing (`python -m pytest tests/backend/ -v`)
+### Backend — 161 tests, all passing (`python -m pytest tests/backend/ tests/integration/ -v`)
 
 | Test file | Count | Coverage |
 |---|---|---|
@@ -575,6 +576,9 @@ Generate CadQuery → Execute → Export GLB
 | `tests/backend/test_api.py` | 30 | Project/model/thread REST endpoints, file serving, execute_source, health check, assembly manifests, per-part download |
 | `tests/backend/test_render.py` | 3 | Multi-angle renders (ISO/Front/Right/Top), Section cuts (X/Y) |
 | `tests/backend/test_parameters.py` | 5 | Parameter extraction and injection |
+| `tests/backend/test_importer.py` | 4 | STEP/STL/GLB import and conversion |
+| `tests/backend/test_web_research.py` | 3 | DuckDuckGo search integration |
+| `tests/integration/test_imports.py` | 3 | Import API integration |
 
 ### Frontend — 71 tests, all passing (`npm test`)
 

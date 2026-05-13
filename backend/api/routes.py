@@ -15,18 +15,21 @@ import httpx
 import cadquery as cq
 import tempfile
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..cad.engine import process_cadquery_code, execute_cadquery_code, export_part_stl, export_part_step
 from ..cad.parameters import inject_parameters
+from ..cad.importer import import_file
 from ..domain.models import (
     FailureType,
     HardConstraints,
     ModelMetadata,
     ProjectConfig,
     SoftConstraints,
+    ImportResponse,
+    ImportedFile,
 )
 from ..storage import StorageService
 
@@ -285,6 +288,76 @@ async def update_constraints(
     return _project_response(storage, config)
 
 
+@router.post("/projects/{project_id}/imports", response_model=ImportResponse)
+async def import_cad_file(project_id: str, request: Request, file: UploadFile = File(...)):
+    """Import a STEP, STL, or GLB file into the project."""
+    storage = _get_storage(request)
+    config = storage.get_project(project_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Save to temp file first
+    with tempfile.NamedTemporaryFile(suffix=Path(file.filename or "").suffix, delete=False) as tmp:
+        content = await file.read()
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
+
+    try:
+        project_dir = storage.get_project_dir(project_id)
+        result = import_file(tmp_path, project_dir)
+        
+        if result["success"]:
+            import_id = result["import_id"]
+            import_data = ImportedFile(
+                import_id=import_id,
+                name=result["name"],
+                filename=result["filename"],
+                extension=result["extension"],
+                size_bytes=len(content),
+                has_glb=result["glb_path"] is not None,
+                glb_url=f"/api/projects/{project_id}/imports/{import_id}/glb" if result["glb_path"] else None
+            )
+            storage.save_import_metadata(project_id, import_data.model_dump(mode="json"))
+            return ImportResponse(success=True, message="File imported successfully", import_data=import_data)
+        else:
+            return ImportResponse(success=False, message=result["message"])
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+@router.get("/projects/{project_id}/imports")
+async def list_project_imports(project_id: str, request: Request):
+    """List all imported files for a project."""
+    storage = _get_storage(request)
+    return storage.list_imports(project_id)
+
+
+@router.get("/projects/{project_id}/imports/{import_id}/glb")
+async def get_import_glb(project_id: str, import_id: str, request: Request):
+    """Serve the GLB for an imported file."""
+    storage = _get_storage(request)
+    import_data = storage.get_import(project_id, import_id)
+    if not import_data:
+        raise HTTPException(status_code=404, detail="Import not found")
+    
+    project_dir = storage.get_project_dir(project_id)
+    glb_path = project_dir / "imports" / import_id / "view.glb"
+    
+    # Check if it was a GLB import originally
+    if import_data["extension"].lower() in [".glb", ".gltf"]:
+        glb_path = project_dir / "imports" / import_id / import_data["filename"]
+
+    if not glb_path.exists():
+        raise HTTPException(status_code=404, detail="GLB file not found")
+        
+    return FileResponse(
+        path=str(glb_path),
+        media_type="model/gltf-binary",
+        filename=f"{import_id}.glb",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Model endpoints
 # ---------------------------------------------------------------------------
@@ -498,6 +571,8 @@ async def execute_model_source(project_id: str, body: ExecuteSourceRequest, requ
         model_dir,
         "part",
         config.hard_constraints,
+        project_id,
+        storage,
     )
 
     metadata = ModelMetadata(
@@ -580,6 +655,8 @@ async def update_model_parameters(
         model_dir,
         "part",
         config.hard_constraints,
+        project_id,
+        storage,
     )
 
     metadata = ModelMetadata(

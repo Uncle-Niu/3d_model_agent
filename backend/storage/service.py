@@ -215,6 +215,45 @@ class StorageService:
             return {}
         return self._read_json(path)
 
+    # ------------------------------------------------------------------
+    # Imports
+    # ------------------------------------------------------------------
+
+    def save_import_metadata(self, project_id: str, import_data: dict) -> None:
+        """Save import metadata to project_imports.json."""
+        project_dir = self.projects_dir / project_id
+        imports_path = project_dir / "project_imports.json"
+        imports = []
+        if imports_path.exists():
+            imports = self._read_json(imports_path)
+        
+        # Update if exists, else append
+        found = False
+        for i, item in enumerate(imports):
+            if item["import_id"] == import_data["import_id"]:
+                imports[i] = import_data
+                found = True
+                break
+        if not found:
+            imports.append(import_data)
+            
+        self._write_json(imports_path, imports)
+
+    def list_imports(self, project_id: str) -> list[dict]:
+        """List all imports for a project."""
+        imports_path = self.projects_dir / project_id / "project_imports.json"
+        if not imports_path.exists():
+            return []
+        return self._read_json(imports_path)
+
+    def get_import(self, project_id: str, import_id: str) -> Optional[dict]:
+        """Get a specific import by ID."""
+        imports = self.list_imports(project_id)
+        for i in imports:
+            if i["import_id"] == import_id:
+                return i
+        return None
+
 
     # ------------------------------------------------------------------
     # Chat History
