@@ -881,9 +881,7 @@ Run via:
 
 ### Recommended Models
 
-- Qwen3 32B
-- Gemma 27B
-- DeepSeek
+- qwen3.6:27b
 
 ### Responsibilities
 
