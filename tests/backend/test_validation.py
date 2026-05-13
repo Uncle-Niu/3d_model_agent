@@ -156,5 +156,28 @@ class TestValidateGeometryEnhanced(unittest.TestCase):
         self.assertIsInstance(result.analysis, GeometryAnalysis)
 
 
+class TestManufacturabilityChecks(unittest.TestCase):
+    
+    def test_small_feature_detection(self):
+        # Create a box with a tiny 0.1mm peg on top
+        shape = cq.Workplane("XY").box(10, 10, 10).faces(">Z").workplane().circle(0.05).extrude(0.1)
+        analysis = compute_geometry_analysis(shape)
+        # The peg has edges of length 0.1mm (around the circle/extrusion)
+        self.assertGreater(analysis.small_feature_count, 0)
+    
+    def test_tiny_face_detection(self):
+        # Create a box with a very thin sliver extrude
+        shape = cq.Workplane("XY").box(10, 10, 10).faces(">Z").workplane().rect(0.1, 0.1).extrude(0.1)
+        analysis = compute_geometry_analysis(shape)
+        # The tiny extrude faces are 0.1 * 0.1 = 0.01 mm²
+        self.assertGreater(analysis.tiny_face_count, 0)
+
+    def test_validation_warnings_small_features(self):
+        constraints = HardConstraints()
+        shape = cq.Workplane("XY").box(10, 10, 10).faces(">Z").workplane().circle(0.05).extrude(0.1)
+        result = validate_geometry_enhanced(shape, constraints)
+        self.assertTrue(any("small features" in w for w in result.warnings))
+
+
 if __name__ == "__main__":
     unittest.main()

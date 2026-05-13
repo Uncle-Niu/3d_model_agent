@@ -241,5 +241,42 @@ result = cq.Workplane("XY").box(params["x"], params["y"], params["z"])"""
         self.assertIsNotNone(shape)
 
 
+class TestCadQueryPipeline(unittest.TestCase):
+    """Tests for the full process_cadquery_code pipeline."""
+
+    def test_pipeline_success(self):
+        import tempfile
+        from pathlib import Path
+        from backend.cad.engine import process_cadquery_code
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            code = "import cadquery as cq\nresult = cq.Workplane('XY').box(10, 10, 10)"
+            result = process_cadquery_code(code, tmp_path)
+            
+            self.assertTrue(result["success"])
+            self.assertIn("step", result["files"])
+            self.assertIn("stl", result["files"])
+            self.assertIn("glb", result["files"])
+            self.assertTrue(Path(result["files"]["step"]).exists())
+
+    def test_file_size_constraint_violation(self):
+        import tempfile
+        from pathlib import Path
+        from backend.cad.engine import process_cadquery_code
+        from backend.domain.models import HardConstraints
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            # Set a very small file size limit (0.0001 MB ≈ 100 bytes)
+            constraints = HardConstraints(max_file_size_mb=0.0001)
+            code = "import cadquery as cq\nresult = cq.Workplane('XY').box(10, 10, 10)"
+            result = process_cadquery_code(code, tmp_path, constraints=constraints)
+            
+            self.assertFalse(result["success"])
+            self.assertEqual(result["failure_type"], "constraint_violation")
+            self.assertTrue(any("file size" in v for v in result["violations"]))
+
+
 if __name__ == "__main__":
     unittest.main()

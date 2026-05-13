@@ -94,6 +94,8 @@ class GeometryStats(BaseModel):
     edge_count: int = 0
     is_closed: bool = False
     estimated_mass_g: Optional[float] = None
+    small_feature_count: int = 0
+    tiny_face_count: int = 0
 
 
 class ModelMetadata(BaseModel):

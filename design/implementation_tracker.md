@@ -464,11 +464,11 @@ Generate CadQuery → Execute → Export GLB
 - 🟡 Three-layer validation pipeline (deterministic → heuristics; vision = 3rd layer ✅)
 - ✅ Build volume check (deterministic)
 - ✅ Degenerate dimension check
-- ❌ Small feature detection
-- ❌ File size check
+- ✅ Small feature detection
+- ✅ File size check
 - 🟡 Minimum wall thickness (heuristic approximation)
 - ✅ Unsupported overhang detection (via vision critique)
-- ❌ Tiny face detection
+- ✅ Tiny face detection
 - ❌ Sharp internal corner detection
 - ❌ Thin pin/tab detection
 - ❌ `ManufacturabilityReport` schema
@@ -522,8 +522,8 @@ Generate CadQuery → Execute → Export GLB
 
 ## 23. Testing
 
-- ❌ Backend unit tests (tests/backend/cad/ exists but content unknown)
-- ❌ Frontend unit tests
+- ✅ Backend unit tests (CAD engine, validation, storage, API, render)
+- ❌ Frontend unit tests (Partial coverage)
 - ❌ Integration tests
 - ❌ End-to-end tests
 
@@ -552,27 +552,28 @@ Generate CadQuery → Execute → Export GLB
 | Structured State | 1 | 1 | 2 |
 | Storage | 17 | 0 | 4 |
 | Domain Models | 16 | 0 | 7 |
-| Zoo Gap Closure | 14 | 5 | 37 |
+| Zoo Gap Closure | 17 | 5 | 34 |
 | 3D Printing | 3 | 0 | 2 |
 | Testing | 4 | 0 | 0 |
-| **Total** | **172** | **12** | **75** |
+| **Total** | **175** | **12** | **72** |
 
-**Net progress this session: +58 Done items, +7 Partial items**
+**Net progress this session: +62 Done items, +7 Partial items**
 
 ---
 
 ## 24. Test Coverage Summary
 
-### Backend — 128 tests, all passing (`python -m pytest tests/backend/ -v`)
+### Backend — 140 tests, all passing (`python -m pytest tests/backend/ -v`)
 
 | Test file | Count | Coverage |
 |---|---|---|
-| `tests/backend/cad/test_engine.py` | 25 | Code execution sandbox, AST validation, all forbidden imports |
-| `tests/backend/test_validation.py` | 16 | Bounding box, volume/mass, face counts, constraint violations, heuristics |
+| `tests/backend/cad/test_engine.py` | 27 | Code execution sandbox, AST validation, forbidden imports, pipeline, file size limits |
+| `tests/backend/test_validation.py` | 18 | Bounding box, volume/mass, face counts, constraint violations, heuristics, small features |
 | `tests/backend/test_llm_service.py` | 27 | System prompt builder, repair prompt routing per failure type, code extraction |
 | `tests/backend/test_storage.py` | 32 | Project CRUD, model metadata, chat threads, analysis persistence, renders dir |
 | `tests/backend/test_api.py` | 28 | Project/model/thread REST endpoints, file serving, execute_source, health check |
 | `tests/backend/test_render.py` | 3 | Multi-angle renders (ISO/Front/Right/Top), Section cuts (X/Y) |
+| `tests/backend/test_parameters.py` | 5 | Parameter extraction and injection |
 
 ### Frontend — 63 tests, all passing (`npm test`)
 

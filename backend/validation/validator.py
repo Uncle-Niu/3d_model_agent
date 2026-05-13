@@ -56,6 +56,10 @@ class GeometryAnalysis:
     is_closed: bool = False
     has_solids: bool = False
 
+    # Manufacturability
+    small_feature_count: int = 0
+    tiny_face_count: int = 0
+
     def to_stats_dict(self) -> dict:
         """Convert to a flat dict for injection into vision/repair prompts."""
         d: dict = {}
@@ -71,6 +75,8 @@ class GeometryAnalysis:
         d["face_count"] = self.face_count
         d["edge_count"] = self.edge_count
         d["is_closed_shell"] = self.is_closed
+        d["small_feature_count"] = self.small_feature_count
+        d["tiny_face_count"] = self.tiny_face_count
         return d
 
 
@@ -234,6 +240,40 @@ def _estimate_min_wall_thickness(shape: cq.Workplane) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------
+# Small feature detection
+# ---------------------------------------------------------------------------
+
+def _detect_small_features(shape: cq.Workplane, threshold: float = 0.4) -> int:
+    """
+    Detect edges that are smaller than a threshold (e.g., nozzle size).
+    Returns count of such edges.
+    """
+    try:
+        small_edges = 0
+        for edge in shape.edges().vals():
+            if edge.Length() < threshold:
+                small_edges += 1
+        return small_edges
+    except Exception:
+        return 0
+
+
+def _detect_tiny_faces(shape: cq.Workplane, threshold: float = 1.0) -> int:
+    """
+    Detect faces with area smaller than a threshold (mm²).
+    Returns count of such faces.
+    """
+    try:
+        tiny_faces = 0
+        for face in shape.faces().vals():
+            if face.Area() < threshold:
+                tiny_faces += 1
+        return tiny_faces
+    except Exception:
+        return 0
+
+
+# ---------------------------------------------------------------------------
 # Main analysis function
 # ---------------------------------------------------------------------------
 
@@ -280,6 +320,10 @@ def compute_geometry_analysis(shape: cq.Workplane) -> GeometryAnalysis:
 
         # Closed shell check
         analysis.is_closed = _is_closed_shell(occ_shape)
+
+    # Manufacturability checks
+    analysis.small_feature_count = _detect_small_features(shape)
+    analysis.tiny_face_count = _detect_tiny_faces(shape)
 
     return analysis
 
@@ -366,6 +410,20 @@ def validate_geometry_enhanced(
             f"Estimated minimum wall thickness ({estimated_thickness:.2f}mm) may be below "
             f"the FDM minimum of {constraints.min_wall_thickness_mm}mm. "
             "Consider increasing wall thickness."
+        )
+
+    # Small features
+    if analysis.small_feature_count > 0:
+        result.warnings.append(
+            f"Detected {analysis.small_feature_count} small features/edges (< 0.4mm). "
+            "These may not be printable with a standard 0.4mm nozzle."
+        )
+
+    # Tiny faces
+    if analysis.tiny_face_count > 0:
+        result.warnings.append(
+            f"Detected {analysis.tiny_face_count} tiny faces (< 1.0mm²). "
+            "These might be degenerate geometry or indicate very thin details."
         )
 
     # Determine overall validity

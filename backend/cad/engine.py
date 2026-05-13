@@ -440,6 +440,17 @@ def process_cadquery_code(
     except Exception as e:
         result["warnings"].append(f"Parameter extraction failed: {e}")
 
+    # 7. File Size Check
+    max_size_bytes = constraints.max_file_size_mb * 1024 * 1024
+    for fmt, path_str in result["files"].items():
+        path = Path(path_str)
+        if path.exists():
+            size_mb = path.stat().st_size / (1024 * 1024)
+            if path.stat().st_size > max_size_bytes:
+                msg = f"{fmt.upper()} file size ({size_mb:.2f}MB) exceeds limit of {constraints.max_file_size_mb}MB"
+                result["violations"].append(msg)
+                result["failure_type"] = "constraint_violation"
+
     if result["violations"]:
         # Geometry had violations but we exported anyway
         result["success"] = False
