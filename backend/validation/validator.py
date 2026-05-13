@@ -18,7 +18,12 @@ from typing import Optional
 
 import cadquery as cq
 
-from ..domain.models import HardConstraints
+from ..domain.models import (
+    HardConstraints, 
+    ManufacturabilityIssue, 
+    ManufacturabilityReport,
+    GeometryStats
+)
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +64,8 @@ class GeometryAnalysis:
     # Manufacturability
     small_feature_count: int = 0
     tiny_face_count: int = 0
+    sharp_corner_count: int = 0
+    thin_pin_count: int = 0
 
     def to_stats_dict(self) -> dict:
         """Convert to a flat dict for injection into vision/repair prompts."""
@@ -77,6 +84,8 @@ class GeometryAnalysis:
         d["is_closed_shell"] = self.is_closed
         d["small_feature_count"] = self.small_feature_count
         d["tiny_face_count"] = self.tiny_face_count
+        d["sharp_corner_count"] = self.sharp_corner_count
+        d["thin_pin_count"] = self.thin_pin_count
         return d
 
 
@@ -95,6 +104,7 @@ class AnalysisResult:
 
     # Analysis
     analysis: Optional[GeometryAnalysis] = None
+    manufacturability: Optional[ManufacturabilityReport] = None
 
     # Failure types for repair routing
     has_geometry_errors: bool = False    # non-manifold, open shell, zero volume
@@ -274,8 +284,80 @@ def _detect_tiny_faces(shape: cq.Workplane, threshold: float = 1.0) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Main analysis function
+# Sharp internal corner detection
 # ---------------------------------------------------------------------------
+
+def _detect_sharp_internal_corners(shape: cq.Workplane, threshold_deg: float = 45.0) -> int:
+    """
+    Detect internal (concave) corners that are sharper than the threshold.
+    Returns count of such edges.
+    """
+    # This is a heuristic: check if an edge is concave and has a sharp angle.
+    # We look for edges where the faces meet at a steep angle.
+    try:
+        sharp_corners = 0
+        for edge in shape.edges().vals():
+            # Only check linear edges for simplicity
+            if edge.geomType() != "LINE":
+                continue
+            
+            # Find faces sharing this edge
+            faces = [f for f in shape.faces().vals() if any(e.isSame(edge) for e in f.Edges())]
+            if len(faces) < 2:
+                continue
+            
+            f1, f2 = faces[0], faces[1]
+            pnt = edge.Center()
+            try:
+                n1 = f1.normalAt(pnt)
+                n2 = f2.normalAt(pnt)
+            except Exception:
+                continue
+            
+            # Dihedral angle between outward normals
+            dot = n1.dot(n2)
+            dot = max(-1.0, min(1.0, dot))
+            angle_deg = math.degrees(math.acos(dot))
+            
+            # If the angle between normals is very sharp (e.g. > 135 deg)
+            # this indicates an acute corner (either convex or concave).
+            if angle_deg > (180.0 - threshold_deg):
+                sharp_corners += 1
+                    
+        return sharp_corners
+    except Exception:
+        return 0
+
+
+# ---------------------------------------------------------------------------
+# Thin pin / fragile feature detection
+# ---------------------------------------------------------------------------
+
+def _detect_thin_pins(shape: cq.Workplane, threshold_mm: float = 1.0) -> int:
+    """
+    Detect features that are thin and relatively long (fragile pins/tabs).
+    Returns count of such features.
+    """
+    try:
+        thin_pins = 0
+        solids = shape.solids().vals()
+        for solid in solids:
+            bb = solid.BoundingBox()
+            dx = bb.xmax - bb.xmin
+            dy = bb.ymax - bb.ymin
+            dz = bb.zmax - bb.zmin
+            
+            # Sort dimensions to find the smallest cross-section
+            dims = sorted([dx, dy, dz])
+            
+            # If the two smallest dimensions are below threshold, it's a 'pin' or 'thin part'
+            if dims[0] < threshold_mm and dims[1] < threshold_mm:
+                # And the longest dimension is significant
+                if dims[2] > threshold_mm * 3:
+                    thin_pins += 1
+        return thin_pins
+    except Exception:
+        return 0
 
 def compute_geometry_analysis(shape: cq.Workplane) -> GeometryAnalysis:
     """
@@ -324,6 +406,8 @@ def compute_geometry_analysis(shape: cq.Workplane) -> GeometryAnalysis:
     # Manufacturability checks
     analysis.small_feature_count = _detect_small_features(shape)
     analysis.tiny_face_count = _detect_tiny_faces(shape)
+    analysis.sharp_corner_count = _detect_sharp_internal_corners(shape)
+    analysis.thin_pin_count = _detect_thin_pins(shape)
 
     return analysis
 
@@ -405,26 +489,76 @@ def validate_geometry_enhanced(
 
     # Wall thickness heuristic
     estimated_thickness = _estimate_min_wall_thickness(shape)
+
+    # Deterministic printability score
+    # Start at 1.0, subtract for issues
+    score = 1.0
+    issues = []
+
+    # Wall thickness
     if estimated_thickness is not None and estimated_thickness < constraints.min_wall_thickness_mm:
-        result.warnings.append(
-            f"Estimated minimum wall thickness ({estimated_thickness:.2f}mm) may be below "
-            f"the FDM minimum of {constraints.min_wall_thickness_mm}mm. "
-            "Consider increasing wall thickness."
-        )
+        msg = f"Estimated minimum wall thickness ({estimated_thickness:.2f}mm) may be below the FDM minimum of {constraints.min_wall_thickness_mm}mm."
+        result.warnings.append(msg)
+        issues.append(ManufacturabilityIssue(
+            issue_type="thin_wall",
+            severity="warning",
+            description=msg
+        ))
+        score -= 0.2
 
     # Small features
     if analysis.small_feature_count > 0:
-        result.warnings.append(
-            f"Detected {analysis.small_feature_count} small features/edges (< 0.4mm). "
-            "These may not be printable with a standard 0.4mm nozzle."
-        )
+        msg = f"Detected {analysis.small_feature_count} small features/edges (< 0.4mm). These may not be printable with a standard 0.4mm nozzle."
+        result.warnings.append(msg)
+        issues.append(ManufacturabilityIssue(
+            issue_type="small_feature",
+            severity="warning",
+            description=msg
+        ))
+        score -= 0.1
 
     # Tiny faces
     if analysis.tiny_face_count > 0:
-        result.warnings.append(
-            f"Detected {analysis.tiny_face_count} tiny faces (< 1.0mm²). "
-            "These might be degenerate geometry or indicate very thin details."
-        )
+        msg = f"Detected {analysis.tiny_face_count} tiny faces (< 1.0mm²). These might be degenerate geometry."
+        result.warnings.append(msg)
+        issues.append(ManufacturabilityIssue(
+            issue_type="tiny_face",
+            severity="warning",
+            description=msg
+        ))
+        score -= 0.1
+
+    # Sharp internal corners
+    if analysis.sharp_corner_count > 0:
+        msg = f"Detected {analysis.sharp_corner_count} sharp internal corners. Consider adding fillets."
+        result.warnings.append(msg)
+        issues.append(ManufacturabilityIssue(
+            issue_type="sharp_corner",
+            severity="warning",
+            description=msg
+        ))
+        score -= 0.1
+
+    # Thin pins
+    if analysis.thin_pin_count > 0:
+        msg = f"Detected {analysis.thin_pin_count} potentially fragile thin pins/vertical features."
+        result.warnings.append(msg)
+        issues.append(ManufacturabilityIssue(
+            issue_type="thin_pin",
+            severity="warning",
+            description=msg
+        ))
+        score -= 0.2
+
+    # Closed shell check
+    if not analysis.is_closed:
+        score -= 0.5 # Major issue for printability
+
+    result.manufacturability = ManufacturabilityReport(
+        issues=issues,
+        is_printable=analysis.is_closed and score > 0.4,
+        score=max(0.0, score)
+    )
 
     # Determine overall validity
     if result.violations:

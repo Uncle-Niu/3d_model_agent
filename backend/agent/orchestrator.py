@@ -274,6 +274,7 @@ class AgentOrchestrator:
 
                 # Vision Critique
                 geometry_stats = exec_result.get("geometry_stats", {})
+                manufacturability = exec_result.get("manufacturability")
                 critique = None
                 if render_paths:
                     critique = await self._run_vision_critique(
@@ -299,6 +300,7 @@ class AgentOrchestrator:
                     render_paths=render_paths,
                     critique=critique,
                     geometry_stats=geo_stats_model,
+                    manufacturability=manufacturability,
                     iteration=iteration,
                     vision_score=critique.overall_printability if critique else None,
                 )
@@ -471,12 +473,19 @@ Issues:
     def _build_final_response(self, mid, iter, res, critique, score) -> str:
         stats = res.get("geometry_stats", {})
         size_text = f"\n📐 Size: {stats.get('bounding_box', 'Unknown')}"
+        
+        manufacturability = res.get("manufacturability")
+        m_text = ""
+        if manufacturability:
+            m_emoji = "✅" if manufacturability.score >= 0.9 else "🟡" if manufacturability.score >= 0.7 else "🔴"
+            m_text = f"\n{m_emoji} Printability score: **{manufacturability.score:.2f}**/1.0"
+
         critique_text = ""
         if critique:
             emoji = "✅" if score >= 0.8 else "🟡" if score >= 0.65 else "🔴"
-            critique_text = f"\n{emoji} Vision score: **{score:.2f}**/1.0"
+            critique_text = f"\n{emoji} Vision critique score: **{score:.2f}**/1.0"
         
-        return f"✓ Model generated (`{mid}`, attempt {iter}).{size_text}{critique_text}"
+        return f"✓ Model generated (`{mid}`, attempt {iter}).{size_text}{m_text}{critique_text}"
 
     def _save_failure_chat(self, pid, tid, mid):
         self.storage.append_chat_thread_message(

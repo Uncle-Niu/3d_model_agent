@@ -178,6 +178,42 @@ class TestManufacturabilityChecks(unittest.TestCase):
         result = validate_geometry_enhanced(shape, constraints)
         self.assertTrue(any("small features" in w for w in result.warnings))
 
+    def test_sharp_internal_corner_detection(self):
+        # Create a block with a sharp 45-degree internal cutout
+        # A 90-degree internal corner (normal dot product 0) shouldn't trigger default 45 threshold
+        # unless it's very sharp.
+        # Let's create an L-shape block. Internal corner is 90 deg.
+        shape = cq.Workplane("XY").box(20, 20, 10).faces(">Z").workplane().rect(10, 10, centered=False).cutThruAll()
+        analysis = compute_geometry_analysis(shape)
+        # Default threshold is 45. 90 deg (dot=0) is sharper than 45?
+        # angle_deg = math.degrees(acos(dot))
+        # If dot = 0, angle = 90. 90 > (180 - 45) = 135? No.
+        # Wait, if angle_deg > 180 - threshold.
+        # For 90 deg corner, normals are (1,0,0) and (0,1,0). Dot is 0. acos(0) = 90.
+        # 90 is NOT > 135.
+        self.assertEqual(analysis.sharp_corner_count, 0)
+        
+        # Now 30 degree internal corner (very sharp)
+        # Normals will have angle 150 deg. 150 > 135.
+        # We can simulate this by a wedge cut.
+        shape = (cq.Workplane("XY").box(20, 20, 10)
+                 .faces(">Z").workplane()
+                 .moveTo(0,0).lineTo(10, 0).lineTo(10, 2).close()
+                 .cutThruAll())
+        analysis = compute_geometry_analysis(shape)
+        self.assertGreater(analysis.sharp_corner_count, 0)
+
+    def test_thin_pin_detection(self):
+        # Create a tall thin peg, DON'T combine with base so it stays as a separate solid
+        # for our heuristic to catch it easily.
+        base = cq.Workplane("XY").box(20, 20, 2)
+        pin = base.faces(">Z").workplane().circle(0.4).extrude(10, combine=False)
+        analysis = compute_geometry_analysis(pin)
+        # height 10, radius 0.4 (width 0.8). 
+        # Thickness t approx 2*V/A = 2*(pi*r^2*h) / (2*pi*r*h + 2*pi*r^2) ≈ 2*r/2 = r = 0.4.
+        # 0.4 < 1.0 (default threshold).
+        self.assertGreater(analysis.thin_pin_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -96,6 +96,21 @@ class GeometryStats(BaseModel):
     estimated_mass_g: Optional[float] = None
     small_feature_count: int = 0
     tiny_face_count: int = 0
+    sharp_corner_count: int = 0
+    thin_pin_count: int = 0
+
+
+class ManufacturabilityIssue(BaseModel):
+    issue_type: str  # "thin_wall", "sharp_corner", "thin_pin", etc.
+    severity: str    # "error", "warning"
+    description: str
+    location_hint: str = ""
+
+
+class ManufacturabilityReport(BaseModel):
+    issues: list[ManufacturabilityIssue] = Field(default_factory=list)
+    is_printable: bool = True
+    score: float = 1.0  # 0.0 - 1.0
 
 
 class ModelMetadata(BaseModel):
@@ -111,6 +126,7 @@ class ModelMetadata(BaseModel):
     render_paths: dict[str, str] = Field(default_factory=dict)  # view_name → file_path
     critique: Optional[CritiqueReport] = None
     geometry_stats: Optional[GeometryStats] = None
+    manufacturability: Optional[ManufacturabilityReport] = None
     failure_type: Optional[FailureType] = None
     failure_message: str = ""
     iteration: int = 0

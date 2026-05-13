@@ -230,7 +230,7 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - ✅ Manifold / closed shell check (OCC BRepCheck_Analyzer)
 - ✅ Minimum wall thickness heuristic (fill-ratio based estimate)
 - ✅ Degenerate dimension check (near-zero dims)
-- ❌ File size check
+- ✅ File size check
 - ✅ Separate `backend/validation/` module with `validate_geometry_enhanced()`
 - ✅ Geometry analysis: volume, surface area, face/edge count, center of mass, estimated mass
 
@@ -469,10 +469,10 @@ Generate CadQuery → Execute → Export GLB
 - 🟡 Minimum wall thickness (heuristic approximation)
 - ✅ Unsupported overhang detection (via vision critique)
 - ✅ Tiny face detection
-- ❌ Sharp internal corner detection
-- ❌ Thin pin/tab detection
-- ❌ `ManufacturabilityReport` schema
-- ❌ `manufacturability.json` persistence
+- ✅ Sharp internal corner detection
+- ✅ Thin pin/tab detection
+- ✅ `ManufacturabilityReport` schema
+- ✅ `manufacturability.json` persistence
 
 ### 21.5 Vision-Based Validation
 - ✅ Server-side PNG render generation (iso, front, right, top views)
@@ -557,25 +557,25 @@ Generate CadQuery → Execute → Export GLB
 | Testing | 4 | 0 | 0 |
 | **Total** | **175** | **12** | **72** |
 
-**Net progress this session: +62 Done items, +7 Partial items**
+**Net progress this session: +8 Done items, +0 Partial items**
 
 ---
 
 ## 24. Test Coverage Summary
 
-### Backend — 140 tests, all passing (`python -m pytest tests/backend/ -v`)
+### Backend — 147 tests, all passing (`python -m pytest tests/backend/ -v`)
 
 | Test file | Count | Coverage |
 |---|---|---|
 | `tests/backend/cad/test_engine.py` | 27 | Code execution sandbox, AST validation, forbidden imports, pipeline, file size limits |
-| `tests/backend/test_validation.py` | 18 | Bounding box, volume/mass, face counts, constraint violations, heuristics, small features |
+| `tests/backend/test_validation.py` | 20 | Bounding box, volume/mass, face counts, constraint violations, heuristics, small features, sharp corners, thin pins |
 | `tests/backend/test_llm_service.py` | 27 | System prompt builder, repair prompt routing per failure type, code extraction |
 | `tests/backend/test_storage.py` | 32 | Project CRUD, model metadata, chat threads, analysis persistence, renders dir |
 | `tests/backend/test_api.py` | 28 | Project/model/thread REST endpoints, file serving, execute_source, health check |
 | `tests/backend/test_render.py` | 3 | Multi-angle renders (ISO/Front/Right/Top), Section cuts (X/Y) |
 | `tests/backend/test_parameters.py` | 5 | Parameter extraction and injection |
 
-### Frontend — 63 tests, all passing (`npm test`)
+### Frontend — 71 tests, all passing (`npm test`)
 
 | Test file | Count | Coverage |
 |---|---|---|
