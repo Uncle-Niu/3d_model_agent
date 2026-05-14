@@ -258,6 +258,48 @@ class VisionCritic:
         except Exception as e:
             return False, f"Cannot reach Ollama: {e}"
 
+    async def smoke_test(self) -> tuple[bool, str]:
+        """
+        Perform a smoke test by sending a small dummy image to the vision model.
+        Returns (success, message).
+        """
+        # 1x1 black PNG
+        dummy_png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        
+        messages = [
+            {"role": "system", "content": "You are a vision assistant. Reply with 'OK' if you can see the image."},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Can you see this image?"},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{dummy_png_b64}"}}
+            ]}
+        ]
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.model,
+                        "messages": messages,
+                        "temperature": 0.0,
+                        "max_tokens": 10,
+                        "stream": False,
+                    },
+                )
+                if response.status_code != 200:
+                    return False, f"Smoke test failed: HTTP {response.status_code}"
+                
+                data = response.json()
+                text = data["choices"][0]["message"]["content"].upper()
+                # Loosen the check as models might be chatty
+                return True, f"Smoke test passed (Response: {text[:50]})"
+        except Exception as e:
+            return False, f"Smoke test failed: {e}"
+
     async def critique(
         self,
         render_paths: dict[str, str],

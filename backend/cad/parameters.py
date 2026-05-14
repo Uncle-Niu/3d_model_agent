@@ -4,16 +4,7 @@ Module for extracting and injecting editable parameters from CadQuery source cod
 
 import ast
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel
-
-
-class CadParameter(BaseModel):
-    name: str
-    value: Union[float, int, str, bool]
-    type: str  # 'float', 'int', 'str', 'bool'
-    description: Optional[str] = None
-    min_value: Optional[float] = None
-    max_value: Optional[float] = None
+from ..domain.models import CadParameter, CadFeature
 
 
 def extract_parameters(code: str) -> List[CadParameter]:
@@ -100,3 +91,47 @@ def inject_parameters(code: str, param_values: Dict[str, Any]) -> str:
                         lines[line_idx] = f"{prefix} = {val_str}"
 
     return "\n".join(lines)
+
+
+def extract_features(code: str) -> List[CadFeature]:
+    """
+    Extracts CadQuery features (method calls) and their line numbers.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+
+    features = []
+    feature_id_counter = 0
+
+    class FeatureVisitor(ast.NodeVisitor):
+        def visit_Call(self, node):
+            # We look for method calls on 'cq' or chaining
+            if isinstance(node.func, ast.Attribute):
+                method_name = node.func.attr
+                # Common CQ methods
+                cq_methods = {
+                    "box", "sphere", "cylinder", "cone", "torus", "wedge",
+                    "extrude", "revolve", "loft", "sweep",
+                    "fillet", "chamfer", "hole", "rect", "circle", "poly",
+                    "cut", "union", "intersect", "shell", "offset", "workplane"
+                }
+                
+                if method_name in cq_methods:
+                    nonlocal feature_id_counter
+                    feature_id_counter += 1
+                    fid = f"feat_{feature_id_counter}"
+                    
+                    features.append(CadFeature(
+                        id=fid,
+                        name=f"{method_name}_{feature_id_counter}",
+                        type=method_name,
+                        line_start=node.lineno,
+                        line_end=getattr(node, "end_lineno", node.lineno)
+                    ))
+            
+            self.generic_visit(node)
+
+    FeatureVisitor().visit(tree)
+    return features

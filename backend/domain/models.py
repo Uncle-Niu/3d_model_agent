@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import enum
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -43,6 +43,14 @@ class RepairStage(str, enum.Enum):
 # ---------------------------------------------------------------------------
 # Constraints
 # ---------------------------------------------------------------------------
+
+class CadParameter(BaseModel):
+    name: str
+    value: Union[float, int, str, bool]
+    type: str  # 'float', 'int', 'str', 'bool'
+    description: Optional[str] = None
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
 
 class HardConstraints(BaseModel):
     """Deterministic constraints validated post-generation."""
@@ -205,6 +213,21 @@ class WebSearchProvider(str, enum.Enum):
     BRAVE = "brave"
     SEARXNG = "searxng"
 
+
+class CadFeature(BaseModel):
+    """Represents a specific CAD operation/feature in the source code."""
+    id: str
+    name: str
+    type: str  # "box", "fillet", "hole", etc.
+    line_start: int
+    line_end: int
+    parent_id: Optional[str] = None
+    center: Optional[list[float]] = None
+
+class FeatureManifest(BaseModel):
+    """Collection of all features and parameters for a model."""
+    features: list[CadFeature] = Field(default_factory=list)
+    parameters: list[CadParameter] = Field(default_factory=list)
 
 # ---------------------------------------------------------------------------
 # Interaction Context

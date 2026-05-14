@@ -277,6 +277,42 @@ class TestCadQueryPipeline(unittest.TestCase):
             self.assertEqual(result["failure_type"], "constraint_violation")
             self.assertTrue(any("file size" in v for v in result["violations"]))
 
+    def test_pipeline_feature_manifest(self):
+        import tempfile
+        import json
+        from pathlib import Path
+        from backend.cad.engine import process_cadquery_code
+        
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            code = """import cadquery as cq
+length = 50
+result = cq.Workplane('XY').box(length, 10, 10).fillet(1)"""
+            result = process_cadquery_code(code, tmp_path)
+            
+            self.assertTrue(result["success"])
+            self.assertIn("feature_manifest", result["files"])
+            
+            manifest_path = Path(result["files"]["feature_manifest"])
+            self.assertTrue(manifest_path.exists())
+            
+            with open(manifest_path, "r") as f:
+                data = json.load(f)
+            
+            # Should have features and parameters
+            self.assertIn("features", data)
+            self.assertIn("parameters", data)
+            
+            # Check parameter
+            params = data["parameters"]
+            self.assertTrue(any(p["name"] == "length" for p in params))
+            
+            # Check features
+            features = data["features"]
+            feat_types = {f["type"] for f in features}
+            self.assertIn("box", feat_types)
+            self.assertIn("fillet", feat_types)
+
 
 if __name__ == "__main__":
     unittest.main()

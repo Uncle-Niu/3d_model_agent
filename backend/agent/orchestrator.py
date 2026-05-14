@@ -129,7 +129,15 @@ class AgentOrchestrator:
         if not available:
             await self._emit_debug("vision_warning", f"Vision model not available: {error}")
             return False
-        await self._emit_debug("vision", "Vision model is available")
+            
+        # Perform smoke test to ensure image processing works
+        await self._emit_debug("vision", "Performing vision smoke test...")
+        ok, msg = await critic.smoke_test()
+        if not ok:
+            await self._emit_debug("vision_warning", f"Vision smoke test failed: {msg}")
+            return False
+
+        await self._emit_debug("vision", "Vision model is fully operational")
         return True
 
     async def run_pipeline(
@@ -197,6 +205,7 @@ class AgentOrchestrator:
         last_critique: Optional[CritiqueReport] = None
         last_failure_type: Optional[str] = None
         last_geometry_stats: Dict = {}
+        repair_notes: List[str] = []
 
         # 3. Iterative Loop
         for iteration in range(1, self.MAX_REPAIR_ITERATIONS + 1):
@@ -229,6 +238,7 @@ class AgentOrchestrator:
                         hard_constraints=config.hard_constraints,
                         soft_constraints=config.soft_constraints,
                     )
+                    repair_notes.append(f"Vision critique identified {len(last_critique.issues)} issues (score: {last_critique.overall_printability:.2f})")
                     last_code = extract_code_from_response(repair_response)
                 else:
                     # Execution-error repair
@@ -246,6 +256,7 @@ class AgentOrchestrator:
                         failure_type=last_failure_type,
                         geometry_stats=last_geometry_stats,
                     )
+                    repair_notes.append(f"Fixed {last_failure_type.replace('_', ' ')}: {last_error.splitlines()[0][:60]}...")
                     last_code = extract_code_from_response(repair_response)
 
                 if not last_code.strip():
@@ -360,7 +371,7 @@ class AgentOrchestrator:
                     continue
 
                 # Final Success Response
-                response_text = self._build_final_response(model_id, iteration, exec_result, critique, vision_score)
+                response_text = self._build_final_response(model_id, iteration, exec_result, critique, vision_score, repair_notes)
                 self.storage.append_chat_thread_message(
                     project_id, thread_id,
                     ChatMessage(role="assistant", content=response_text, model_id=model_id),
@@ -510,7 +521,7 @@ Issues:
 {critique.repair_prompt}
 """
 
-    def _build_final_response(self, mid, iter, res, critique, score) -> str:
+    def _build_final_response(self, mid, iter, res, critique, score, repair_notes: List[str] = None) -> str:
         stats = res.get("geometry_stats", {})
         size_text = f"\n📐 Size: {stats.get('bounding_box', 'Unknown')}"
         
@@ -525,7 +536,11 @@ Issues:
             emoji = "✅" if score >= 0.8 else "🟡" if score >= 0.65 else "🔴"
             critique_text = f"\n{emoji} Vision critique score: **{score:.2f}**/1.0"
         
-        return f"✓ Model generated (`{mid}`, attempt {iter}).{size_text}{m_text}{critique_text}"
+        repair_text = ""
+        if repair_notes:
+            repair_text = "\n\n**Repair History:**\n" + "\n".join(f"- {n}" for n in repair_notes)
+        
+        return f"✓ Model generated (`{mid}`, attempt {iter}).{size_text}{m_text}{critique_text}{repair_text}"
 
     def _save_failure_chat(self, pid, tid, mid):
         self.storage.append_chat_thread_message(

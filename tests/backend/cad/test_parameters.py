@@ -2,7 +2,7 @@
 Unit tests for CAD parameter extraction and injection.
 """
 
-from backend.cad.parameters import extract_parameters, inject_parameters
+from backend.cad.parameters import extract_parameters, inject_parameters, extract_features
 
 
 def test_extract_parameters_basic():
@@ -83,3 +83,27 @@ width = 50
     assert "length = 120" in new_code
     assert "# another comment" in new_code
     assert "width = 50" in new_code
+
+
+def test_extract_features_basic():
+    code = """
+import cadquery as cq
+result = cq.Workplane("XY").box(10, 20, 30).fillet(2)
+result = result.faces(">Z").hole(5)
+"""
+    features = extract_features(code)
+    # Expected features: box, fillet, hole, workplane (maybe?)
+    # Method calls: Workplane, box, fillet, faces, hole
+    # My cq_methods has: box, fillet, hole, workplane (lowercase)
+    
+    types = {f.type for f in features}
+    assert "box" in types
+    assert "fillet" in types
+    assert "hole" in types
+    
+    # Check line numbers
+    box_feat = next(f for f in features if f.type == "box")
+    assert box_feat.line_start == 3
+    
+    hole_feat = next(f for f in features if f.type == "hole")
+    assert hole_feat.line_start == 4

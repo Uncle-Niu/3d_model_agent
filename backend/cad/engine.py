@@ -21,7 +21,7 @@ from typing import Any, Optional
 import cadquery as cq
 
 from ..domain.models import HardConstraints
-from .parameters import extract_parameters
+from .parameters import extract_parameters, extract_features
 
 
 FORBIDDEN_MODULES = {
@@ -572,15 +572,24 @@ def process_cadquery_code(
         feature_path.write_text(json.dumps(feature_manifest, indent=2), encoding="utf-8")
         result["files"]["features"] = str(feature_path)
 
-    # 6. Extract Editable Parameters
+    # 6. Extract Editable Parameters and Features
     try:
+        from ..domain.models import FeatureManifest
         params = extract_parameters(code)
-        param_path = output_dir / "parameters.json"
-        param_path.write_text(json.dumps([p.model_dump() for p in params], indent=2), encoding="utf-8")
-        result["files"]["parameters"] = str(param_path)
+        features = extract_features(code)
+        
+        manifest = FeatureManifest(
+            features=features,
+            parameters=params
+        )
+        
+        manifest_path = output_dir / "feature_manifest.json"
+        manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
+        result["files"]["feature_manifest"] = str(manifest_path)
         result["parameters"] = params
+        result["features"] = features
     except Exception as e:
-        result["warnings"].append(f"Parameter extraction failed: {e}")
+        result["warnings"].append(f"Feature/Parameter extraction failed: {e}")
 
     # 7. File Size Check
     max_size_bytes = constraints.max_file_size_mb * 1024 * 1024

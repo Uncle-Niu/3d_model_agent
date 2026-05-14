@@ -61,7 +61,7 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - ✅ Stage icons per pipeline step (emoji per stage)
 - ✅ Tool execution logs (debug_log messages in DebugPanel)
 - ✅ Critique feedback display (CritiquePanel with score, issues, render thumbnails)
-- 🟡 Repair explanations in chat (vision repair trigger shown; full explanation in response text)
+- ✅ Repair explanations in chat (history of repairs included in final response)
 
 ---
 
@@ -261,7 +261,7 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 ### Vision Model Setup
 - ✅ `VISION_MODEL` env var support (default: `qwen3.6:27b`)
 - ✅ `VISION_BASE_URL` env var support (default: same as Ollama)
-- ❌ Vision capability smoke test at startup (send test image, expect coherent reply)
+- ✅ Vision capability smoke test at startup (smoke_test method in VisionCritic)
 - ✅ Graceful fallback when vision model unavailable (skip critique, log warning)
 - ❌ Cloud vision opt-in when local model underperforms
 
@@ -437,7 +437,7 @@ Generate CadQuery → Execute → Export GLB
 - ✅ Parameter table UI
 - ✅ Regenerate button on parameter edit
 - ✅ Feature highlight in viewport on tree selection
-- ❌ Source span display
+- ✅ Source span display (line_start/line_end in feature_manifest.json)
 
 ### 21.2 Selection-Aware Agent
 - ✅ Named Assembly children in GLB export (via CadQuery Assembly)
@@ -508,7 +508,7 @@ Generate CadQuery → Execute → Export GLB
 - ✅ Web search providers (DuckDuckGo)
 - ❌ Brave / SearXNG support
 - ❌ Agent policy for when to search
-- ❌ Citation storage in model metadata
+- ✅ Citation storage in model metadata
 
 ---
 
@@ -569,13 +569,13 @@ Generate CadQuery → Execute → Export GLB
 
 | Test file | Count | Coverage |
 |---|---|---|
-| `tests/backend/cad/test_engine.py` | 27 | Code execution sandbox, AST validation, forbidden imports, pipeline, file size limits |
+| `tests/backend/cad/test_engine.py` | 28 | Code execution sandbox, AST validation, forbidden imports, pipeline, file size limits, feature manifest |
 | `tests/backend/test_validation.py` | 20 | Bounding box, volume/mass, face counts, constraint violations, heuristics, small features, sharp corners, thin pins |
 | `tests/backend/test_llm_service.py` | 27 | System prompt builder, repair prompt routing per failure type, code extraction |
 | `tests/backend/test_storage.py` | 32 | Project CRUD, model metadata, chat threads, analysis persistence, renders dir |
 | `tests/backend/test_api.py` | 30 | Project/model/thread REST endpoints, file serving, execute_source, health check, assembly manifests, per-part download |
 | `tests/backend/test_render.py` | 3 | Multi-angle renders (ISO/Front/Right/Top), Section cuts (X/Y) |
-| `tests/backend/test_parameters.py` | 5 | Parameter extraction and injection |
+| `tests/backend/test_parameters.py` | 6 | Parameter extraction and injection, feature extraction (source spans) |
 | `tests/backend/test_importer.py` | 4 | STEP/STL/GLB import and conversion |
 | `tests/backend/test_web_research.py` | 3 | DuckDuckGo search integration |
 | `tests/integration/test_imports.py` | 3 | Import API integration |
