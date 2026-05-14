@@ -12,7 +12,7 @@
  */
 
 import { Canvas, useThree } from '@react-three/fiber';
-import { OrbitControls, Environment, Grid, Center, useGLTF, Box } from '@react-three/drei';
+import { OrbitControls, Environment, Grid, Center, useGLTF, Box, ContactShadows } from '@react-three/drei';
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { useViewportStore, useSelectionStore, useAssemblyStore } from '../stores';
@@ -76,9 +76,20 @@ function Model({ url, wireframe, selectedMeshName, onMeshClick, partsVisibility,
             originalColors.current.set(mesh.uuid, mat.color.clone());
           }
         }
-        // Set cadName in userData for raycasting readout
+
+        // Robust name resolution: ignore generic names, look up hierarchy
         if (!mesh.userData.cadName) {
-          mesh.userData.cadName = mesh.name || `mesh_${mesh.uuid.slice(0, 6)}`;
+          const isGeneric = (n: string) => !n || n.toLowerCase().startsWith('mesh') || n.toLowerCase().startsWith('buffer');
+          
+          let name = mesh.name;
+          if (isGeneric(name)) name = '';
+          
+          let p = mesh.parent;
+          while (!name && p && p !== scene) {
+            if (!isGeneric(p.name)) name = p.name;
+            p = p.parent;
+          }
+          mesh.userData.cadName = name || `mesh_${mesh.uuid.slice(0, 6)}`;
         }
         
         // Calculate part center for exploded view
@@ -88,26 +99,33 @@ function Model({ url, wireframe, selectedMeshName, onMeshClick, partsVisibility,
            box.getCenter(center);
            partCenters.current.set(mesh.userData.cadName, center);
         }
+
+        // Enable shadows for depth
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
       }
     });
   }, [scene]);
 
   // Apply material settings + selection highlight + visibility + exploded view
   useEffect(() => {
+    const selName = selectedMeshName?.toLowerCase().trim();
+
     scene.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
-        const cadName = mesh.userData.cadName;
+        const cadName = (mesh.userData.cadName as string || '').toLowerCase().trim();
         const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        const isSelected = cadName === selectedMeshName;
+        
+        // STRICT equality to avoid partial matches (e.g. "part" matching "small_part")
+        const isSelected = !!selName && !!cadName && cadName === selName;
         
         // Visibility
-        mesh.visible = partsVisibility[cadName] !== false;
+        mesh.visible = partsVisibility[mesh.userData.cadName] !== false;
 
         // Exploded View
-        if (explodedFactor > 0 && partCenters.current.has(cadName)) {
-          const center = partCenters.current.get(cadName)!;
-          // Move part away from origin based on its center vector
+        if (explodedFactor > 0 && partCenters.current.has(mesh.userData.cadName)) {
+          const center = partCenters.current.get(mesh.userData.cadName)!;
           mesh.position.copy(center).multiplyScalar(explodedFactor);
         } else {
           mesh.position.set(0, 0, 0);
@@ -115,17 +133,26 @@ function Model({ url, wireframe, selectedMeshName, onMeshClick, partsVisibility,
 
         mats.forEach((mat) => {
           if (mat instanceof THREE.MeshStandardMaterial) {
-            mat.roughness = 0.4;
-            mat.metalness = 0.1;
+            mat.roughness = 0.6; 
+            mat.metalness = 0.2;
             mat.wireframe = wireframe;
 
             if (isSelected) {
-              mat.color.set('#ff9020');
-              mat.emissive.set('#331800');
+              // Ultra-vibrant Magenta highlight
+              mat.color.set('#ff00ff'); 
+              mat.emissive.set('#440044');
+              mat.emissiveIntensity = 1.5;
             } else {
               const orig = originalColors.current.get(mesh.uuid);
-              if (orig) mat.color.copy(orig);
+              if (orig) {
+                if (orig.r > 0.9 && orig.g > 0.9 && orig.b > 0.9) {
+                  mat.color.setRGB(0.8, 0.8, 0.85);
+                } else {
+                  mat.color.copy(orig);
+                }
+              }
               mat.emissive.set('#000000');
+              mat.emissiveIntensity = 0;
             }
             mat.needsUpdate = true;
           }
@@ -268,10 +295,11 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
         style={{ background: '#0a0a12' }}
       >
         {/* Lighting */}
-        <ambientLight intensity={0.4} />
-        <directionalLight position={[10, 15, 10]} intensity={1.0} castShadow />
-        <directionalLight position={[-10, 10, -5]} intensity={0.3} />
-        <Environment preset="studio" />
+        <ambientLight intensity={0.2} />
+        <hemisphereLight intensity={0.5} groundColor="#000000" />
+        <directionalLight position={[20, 30, 20]} intensity={1.5} castShadow shadow-mapSize={[1024, 1024]} />
+        <directionalLight position={[-15, 10, -10]} intensity={0.5} />
+        <Environment preset="city" />
 
         {/* Grid */}
         <Grid
@@ -300,6 +328,13 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
                 explodedFactor={explodedFactor}
               />
               {showBbox && <BoundingBoxOverlay url={glbUrl} />}
+              <ContactShadows 
+                position={[0, -0.01, 0]} 
+                opacity={0.6} 
+                scale={150} 
+                blur={2.5} 
+                far={20} 
+              />
             </>
           ) : (
             <EmptyState />
@@ -351,19 +386,17 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
       {glbUrl && !isLoading && (
         <div className="viewport-toolbar">
           {/* View preset buttons */}
-          <div className="viewport-view-presets">
-            {(['iso', 'front', 'right', 'top'] as CameraPreset[]).map((preset) => (
-              <button
-                key={preset}
-                className="viewport-tool-btn viewport-preset-btn"
-                onClick={() => handlePreset(preset)}
-                title={`${preset.charAt(0).toUpperCase() + preset.slice(1)} view`}
-              >
-                {preset === 'iso' ? '◈' : preset === 'front' ? '↕' : preset === 'right' ? '↔' : '⊕'}
-                {' '}{preset}
-              </button>
-            ))}
-          </div>
+          {(['iso', 'front', 'right', 'top'] as CameraPreset[]).map((preset) => (
+            <button
+              key={preset}
+              className="viewport-tool-btn viewport-preset-btn"
+              onClick={() => handlePreset(preset)}
+              title={`${preset.charAt(0).toUpperCase() + preset.slice(1)} view`}
+            >
+              {preset === 'iso' ? '◈' : preset === 'front' ? '↕' : preset === 'right' ? '↔' : '⊕'}
+              {' '}{preset}
+            </button>
+          ))}
 
           <div className="viewport-toolbar-divider" />
 

@@ -35,6 +35,7 @@ export interface GlobalSettings {
 
 export interface ModelInfo {
   model_id: string;
+  parent_model_id?: string;
   created_at: string;
   prompt: string;
   has_step: boolean;
@@ -43,11 +44,20 @@ export interface ModelInfo {
   iteration: number;
 }
 
+export interface PipelineStep {
+  stage: string;
+  message: string;
+  details?: string;
+  data?: Record<string, unknown>;
+  timestamp: string;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: string;
   model_id?: string;
+  steps?: PipelineStep[];
 }
 
 export interface ChatThreadSummary {
@@ -72,6 +82,8 @@ export interface WSStatus {
   type: 'status';
   stage: string;
   message: string;
+  details?: string;
+  data?: Record<string, unknown>;
 }
 
 export interface WSModelReady {

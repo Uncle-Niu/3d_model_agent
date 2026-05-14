@@ -25,6 +25,7 @@ from ..domain.models import (
     HardConstraints,
     SoftConstraints,
     SearchResult,
+    PipelineStep,
 )
 from ..models.llm_service import LLMService, build_system_prompt, extract_code_from_response
 from ..storage import StorageService
@@ -42,7 +43,7 @@ class AgentOrchestrator:
         self,
         storage: StorageService,
         llm: Optional[LLMService] = None,
-        on_status: Optional[Callable[[str, str], Any]] = None,
+        on_status: Optional[Callable[[str, str, Optional[str], Optional[Dict]], Any]] = None,
         on_chunk: Optional[Callable[[str], Any]] = None,
         on_debug: Optional[Callable[[str, str, Optional[Dict]], Any]] = None,
         on_model_ready: Optional[Callable[[str, str], Any]] = None,
@@ -60,13 +61,17 @@ class AgentOrchestrator:
         self.on_critique = on_critique
         self.on_error = on_error
 
+        self.current_steps: List[PipelineStep] = []
+
         # Constants
         self.MAX_REPAIR_ITERATIONS = 5
         self.VISION_SCORE_THRESHOLD = 0.65
 
-    async def _emit_status(self, stage: str, message: str):
+    async def _emit_status(self, stage: str, message: str, details: Optional[str] = None, data: Optional[Dict] = None):
+        step = PipelineStep(stage=stage, message=message, details=details, data=data)
+        self.current_steps.append(step)
         if self.on_status:
-            await self.on_status(stage, message)
+            await self.on_status(stage, message, details, data)
 
     async def _emit_debug(self, category: str, message: str, data: Optional[Dict] = None):
         if self.on_debug:
@@ -157,6 +162,8 @@ class AgentOrchestrator:
             await self._emit_error("Project not found")
             return None
 
+        self.current_steps = []
+
         # 1. Connectivity Check
         ollama_ok = await self.check_ollama_connectivity()
         vision_ok = await self.check_vision_connectivity()
@@ -181,7 +188,8 @@ class AgentOrchestrator:
         research_context = ""
         search_query = await self.llm.decide_research(user_message, chat_ctx)
         if search_query:
-            await self._emit_status("researching", f"Searching the web for: {search_query}...")
+            await self._emit_status("researching", f"Searching the web for: {search_query}...", 
+                                  details=f"The agent determined that external technical standards or dimensions are required for '{user_message}'.")
             citations = await search_web(search_query)
             if citations:
                 research_context = get_research_prompt_extension(citations)
@@ -212,7 +220,8 @@ class AgentOrchestrator:
             try:
                 # ── Step A: Generate or Repair code ──────────────────────────
                 if iteration == 1:
-                    await self._emit_status("generating", "Generating CadQuery code...")
+                    await self._emit_status("generating", "Generating CadQuery code...", 
+                                          details="Synthesizing Python code using CadQuery API based on your description and project constraints.")
                     last_code = await self._generate_code_streaming(
                         user_message, system_prompt, chat_ctx,
                         current_source, current_model_id, selection,
@@ -222,7 +231,8 @@ class AgentOrchestrator:
                 elif last_critique and last_critique.issues:
                     # Vision-driven repair
                     await self._emit_status("repairing", 
-                        f"Vision-driven repair (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS})...")
+                        f"Vision-driven repair (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS})...",
+                        details=f"The vision AI identified {len(last_critique.issues)} issues in the previous rendering. Attempting to fix geometry or printability faults.")
                     repair_prompt = self._build_vision_repair_prompt(
                         last_code, last_critique, user_message, iteration
                     )
@@ -243,7 +253,8 @@ class AgentOrchestrator:
                 else:
                     # Execution-error repair
                     await self._emit_status("repairing", 
-                        f"Repairing code (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS})...")
+                        f"Repairing code (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS})...",
+                        details=f"The previous code failed with an execution error. Analyzing traceback to correct the logic.")
                     await self._emit_debug("repair_request", f"Error repair attempt {iteration}", {
                         "original_code": last_code, "error_message": last_error[:500],
                     })
@@ -264,7 +275,8 @@ class AgentOrchestrator:
                     continue
 
                 # ── Step B: Execute CadQuery ──────────────────────────────────
-                await self._emit_status("executing", "Running CadQuery code...")
+                await self._emit_status("executing", "Running CadQuery code...",
+                                      details="Executing the generated Python script in a sandboxed CadQuery environment to produce 3D geometry.")
                 
                 model_id = self.storage.next_model_id(project_id)
                 model_dir = self.storage.create_model_dir(project_id, model_id)
@@ -298,6 +310,7 @@ class AgentOrchestrator:
 
                     metadata = ModelMetadata(
                         model_id=model_id,
+                        parent_model_id=base_model_id,
                         prompt=user_message,
                         cad_source=last_code,
                         failure_type=FailureType(last_failure_type),
@@ -309,7 +322,22 @@ class AgentOrchestrator:
                     continue
 
                 # ── Step C: Success! Render and Critique ──────────────────────
-                await self._emit_status("tessellating", "Preparing 3D preview...")
+                await self._emit_status("tessellating", "Preparing 3D preview...",
+                                      details="Tessellating the B-Rep geometry into a GLB mesh for real-time 3D viewing in the browser.")
+                
+                preliminary_metadata = ModelMetadata(
+                    model_id=model_id,
+                    parent_model_id=base_model_id,
+                    prompt=user_message,
+                    cad_source=last_code,
+                    has_step="step" in exec_result["files"],
+                    has_stl="stl" in exec_result["files"],
+                    has_glb="glb" in exec_result["files"],
+                    iteration=iteration,
+                    citations=citations,
+                )
+                self.storage.save_model_metadata(project_id, preliminary_metadata)
+
                 glb_url = f"/api/projects/{project_id}/models/{model_id}/glb"
                 if self.on_model_ready:
                     await self.on_model_ready(model_id, glb_url)
@@ -339,6 +367,7 @@ class AgentOrchestrator:
 
                 metadata = ModelMetadata(
                     model_id=model_id,
+                    parent_model_id=base_model_id,
                     prompt=user_message,
                     cad_source=last_code,
                     has_step="step" in exec_result["files"],
@@ -374,7 +403,12 @@ class AgentOrchestrator:
                 response_text = self._build_final_response(model_id, iteration, exec_result, critique, vision_score, repair_notes)
                 self.storage.append_chat_thread_message(
                     project_id, thread_id,
-                    ChatMessage(role="assistant", content=response_text, model_id=model_id),
+                    ChatMessage(
+                        role="assistant", 
+                        content=response_text, 
+                        model_id=model_id,
+                        steps=self.current_steps
+                    ),
                 )
                 return model_id
 
@@ -461,7 +495,8 @@ class AgentOrchestrator:
         return extract_code_from_response(full_response)
 
     async def _run_render(self, shape, model_dir) -> Dict[str, str]:
-        await self._emit_status("rendering", "Generating multi-angle renders...")
+        await self._emit_status("rendering", "Generating multi-angle renders...",
+                              details="Capturing high-resolution snapshots from multiple angles (ISO, Top, Front, Side) for vision analysis.")
         try:
             from ..render.renderer import render_shape_multiangle
             result = await asyncio.get_event_loop().run_in_executor(
@@ -478,7 +513,8 @@ class AgentOrchestrator:
         self, render_paths: Dict[str, str], user_intent: str, 
         geometry_stats: Dict, project_id: str, model_id: str
     ) -> Optional[CritiqueReport]:
-        await self._emit_status("critiquing", "Analyzing geometry with vision AI...")
+        await self._emit_status("critiquing", "Analyzing geometry with vision AI...",
+                              details="Running a multi-modal LLM over the rendered images to evaluate design intent and FDM printability.")
         try:
             critic = VisionCritic()
             available, _ = await critic.is_available()
@@ -545,5 +581,10 @@ Issues:
     def _save_failure_chat(self, pid, tid, mid):
         self.storage.append_chat_thread_message(
             pid, tid,
-            ChatMessage(role="assistant", content="Failed to generate valid model after retries.", model_id=mid)
+            ChatMessage(
+                role="assistant", 
+                content="Failed to generate valid model after retries.", 
+                model_id=mid,
+                steps=self.current_steps
+            )
         )

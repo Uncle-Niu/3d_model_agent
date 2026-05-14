@@ -132,10 +132,16 @@ class StorageService:
         return model_dir
 
     def save_model_metadata(self, project_id: str, metadata: ModelMetadata) -> None:
-        """Save model metadata to disk."""
+        """Save model metadata to disk and update project last save time."""
         model_dir = self.projects_dir / project_id / "models" / metadata.model_id
         model_dir.mkdir(parents=True, exist_ok=True)
         self._write_json(model_dir / "metadata.json", metadata.model_dump(mode="json"))
+
+        # Update project timestamp
+        config = self.get_project(project_id)
+        if config:
+            config.updated_at = datetime.now(timezone.utc)
+            self.update_project(config)
 
     def get_model_metadata(self, project_id: str, model_id: str) -> Optional[ModelMetadata]:
         """Load model metadata from disk."""

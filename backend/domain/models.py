@@ -149,6 +149,7 @@ class AssemblyManifest(BaseModel):
 class ModelMetadata(BaseModel):
     """Metadata stored alongside each model revision."""
     model_id: str
+    parent_model_id: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     prompt: str = ""
     cad_source: str = ""
@@ -200,11 +201,21 @@ class ImportResponse(BaseModel):
 # Chat
 # ---------------------------------------------------------------------------
 
+class PipelineStep(BaseModel):
+    """A discrete step in the generation/repair pipeline."""
+    stage: str
+    message: str
+    details: Optional[str] = None
+    data: Optional[dict[str, Any]] = None
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class ChatMessage(BaseModel):
     role: str  # "user" or "assistant"
     content: str
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     model_id: Optional[str] = None  # linked model if applicable
+    steps: list[PipelineStep] = Field(default_factory=list)
 
 
 class SearchResult(BaseModel):
@@ -272,6 +283,8 @@ class WSStatusMessage(BaseModel):
     type: str = "status"
     stage: str
     message: str
+    details: Optional[str] = None
+    data: Optional[dict[str, Any]] = None
 
 
 class WSModelReady(BaseModel):

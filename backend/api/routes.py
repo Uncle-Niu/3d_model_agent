@@ -103,6 +103,7 @@ class UpdateConstraintsRequest(BaseModel):
 
 class ModelResponse(BaseModel):
     model_id: str
+    parent_model_id: Optional[str] = None
     created_at: datetime
     prompt: str
     has_step: bool
@@ -405,6 +406,7 @@ async def list_models(project_id: str, request: Request):
     return [
         ModelResponse(
             model_id=m.model_id,
+            parent_model_id=m.parent_model_id,
             created_at=m.created_at,
             prompt=m.prompt,
             has_step=m.has_step,
@@ -623,6 +625,7 @@ async def execute_model_source(project_id: str, body: ExecuteSourceRequest, requ
 
     model = ModelResponse(
         model_id=metadata.model_id,
+        parent_model_id=metadata.parent_model_id,
         created_at=metadata.created_at,
         prompt=metadata.prompt,
         has_step=metadata.has_step,
@@ -692,6 +695,7 @@ async def update_model_parameters(
 
     metadata = ModelMetadata(
         model_id=new_model_id,
+        parent_model_id=model_id,
         prompt=f"Parameter update for {model_id}",
         cad_source=new_source,
         has_step="step" in result.get("files", {}),
@@ -707,6 +711,7 @@ async def update_model_parameters(
 
     model = ModelResponse(
         model_id=metadata.model_id,
+        parent_model_id=metadata.parent_model_id,
         created_at=metadata.created_at,
         prompt=metadata.prompt,
         has_step=metadata.has_step,

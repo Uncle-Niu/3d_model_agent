@@ -7,7 +7,11 @@ import { api } from '../api';
 import { useViewportStore, useSelectionStore } from '../stores';
 import type { FeatureManifest } from '../types';
 
-export default function FeaturePanel() {
+interface FeaturePanelProps {
+  insideDock?: boolean;
+}
+
+export default function FeaturePanel({ insideDock }: FeaturePanelProps = {}) {
   const { currentModelId, currentProjectId } = useViewportStore();
   const { selectedFeatureName, setSelection } = useSelectionStore();
   const [isOpen, setIsOpen] = useState(false);
@@ -41,15 +45,8 @@ export default function FeaturePanel() {
 
   if (!currentModelId) return null;
 
-  return (
-    <div className={`feature-panel ${isOpen ? 'open' : 'closed'}`}>
-      <div className="panel-header" onClick={() => setIsOpen(!isOpen)}>
-        <h3>Features</h3>
-        <span className="toggle-icon">{isOpen ? '−' : '+'}</span>
-      </div>
-      
-      {isOpen && (
-        <div className="panel-content">
+  const content = (
+    <div className={insideDock ? "docked-panel-content" : "panel-content"}>
           {isLoading ? (
             <div className="loading">Loading...</div>
           ) : features.length === 0 ? (
@@ -71,8 +68,20 @@ export default function FeaturePanel() {
               ))}
             </ul>
           )}
-        </div>
-      )}
+    </div>
+  );
+
+  if (insideDock) {
+    return content;
+  }
+
+  return (
+    <div className={`feature-panel ${isOpen ? 'open' : 'closed'}`}>
+      <div className="panel-header" onClick={() => setIsOpen(!isOpen)}>
+        <h3>Features</h3>
+        <span className="toggle-icon">{isOpen ? '−' : '+'}</span>
+      </div>
+      {isOpen && content}
     </div>
   );
 }

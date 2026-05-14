@@ -42,6 +42,14 @@ const HistorySidebar: React.FC<HistorySidebarProps> = ({ versions, onSelect }) =
                 {v.prompt || (v.iteration ? `Repair iteration ${v.iteration}` : 'Checkpoint')}
               </div>
 
+              {v.parent_model_id && (
+                <div className="history-lineage" title={`Branched from #${v.parent_model_id}`}>
+                  <span className="history-lineage-icon">↳</span>
+                  <span className="history-lineage-label">from</span>
+                  <span className="history-lineage-id">#{v.parent_model_id.slice(-4)}</span>
+                </div>
+              )}
+
               <div className="history-stats">
                 {v.failure_type ? (
                   <span className="history-status failed">

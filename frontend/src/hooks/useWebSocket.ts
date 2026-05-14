@@ -79,7 +79,7 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
     switch (msg.type) {
       case 'status':
         console.log(`[WS] Status: ${msg.stage} — ${msg.message}`);
-        chat.setStage(msg.stage, msg.message);
+        chat.setStage(msg.stage, msg.message, msg.details, msg.data);
         break;
 
       case 'llm_chunk':

@@ -7,6 +7,7 @@ import type { FormEvent } from 'react';
 import { useChatStore } from '../stores';
 import { formatLocalDateTime } from '../time';
 import CritiquePanel from './CritiquePanel';
+import PipelineProgress from './PipelineProgress';
 
 interface ChatProps {
   onSend: (message: string) => void;
@@ -24,6 +25,7 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
     isGenerating,
     currentStage,
     currentStatus,
+    currentSteps,
   } = useChatStore();
 
   // Auto-scroll to bottom
@@ -95,6 +97,9 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
                 <time dateTime={msg.timestamp}>{formatLocalDateTime(msg.timestamp)}</time>
               </div>
               <pre className="chat-message-text">{msg.content}</pre>
+              {msg.steps && msg.steps.length > 0 && (
+                <PipelineProgress steps={msg.steps} />
+              )}
             </div>
           </div>
         ))}
@@ -110,13 +115,13 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
           </div>
         )}
 
-        {/* Status indicator */}
-        {isGenerating && currentStatus && (
-          <div className="chat-status">
-            <div className="chat-status-dot" />
-            <span className="chat-status-stage-icon">{STAGE_ICONS[currentStage] || '⏳'}</span>
-            <span className="chat-status-stage">{currentStage}</span>
-            <span className="chat-status-message">{currentStatus}</span>
+        {/* Live Progress */}
+        {isGenerating && (
+          <div className="chat-message chat-message-assistant">
+            <div className="chat-message-avatar">🤖</div>
+            <div className="chat-message-content">
+              <PipelineProgress steps={currentSteps} isLive={true} />
+            </div>
           </div>
         )}
 

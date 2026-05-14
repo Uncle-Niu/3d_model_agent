@@ -15,7 +15,11 @@ type ExecuteSourceResponse = {
   violations: string[];
 };
 
-export default function ParameterPanel() {
+interface ParameterPanelProps {
+  insideDock?: boolean;
+}
+
+export default function ParameterPanel({ insideDock }: ParameterPanelProps = {}) {
   const { currentModelId, currentProjectId } = useViewportStore();
   const viewport = useViewportStore();
   const [isOpen, setIsOpen] = useState(true);
@@ -108,15 +112,8 @@ export default function ParameterPanel() {
 
   if (!currentModelId) return null;
 
-  return (
-    <div className={`parameter-panel ${isOpen ? 'open' : 'closed'}`}>
-      <div className="panel-header" onClick={() => setIsOpen(!isOpen)}>
-        <h3>Parameters</h3>
-        <span className="toggle-icon">{isOpen ? '−' : '+'}</span>
-      </div>
-      
-      {isOpen && (
-        <div className="panel-content">
+  const content = (
+    <div className={insideDock ? "docked-panel-content" : "panel-content"}>
           {isLoading ? (
             <div className="loading">Loading...</div>
           ) : parameters.length === 0 ? (
@@ -161,8 +158,20 @@ export default function ParameterPanel() {
               {error && <div className="error-msg">{error}</div>}
             </div>
           )}
-        </div>
-      )}
+    </div>
+  );
+
+  if (insideDock) {
+    return content;
+  }
+
+  return (
+    <div className={`parameter-panel ${isOpen ? 'open' : 'closed'}`}>
+      <div className="panel-header" onClick={() => setIsOpen(!isOpen)}>
+        <h3>Parameters</h3>
+        <span className="toggle-icon">{isOpen ? '−' : '+'}</span>
+      </div>
+      {isOpen && content}
     </div>
   );
 }

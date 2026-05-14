@@ -9,9 +9,6 @@ import DebugPanel from './components/DebugPanel';
 import HistorySidebar from './components/HistorySidebar';
 import SourcePanel from './components/SourcePanel';
 import Viewport from './components/Viewport';
-import ParameterPanel from './components/ParameterPanel';
-import FeaturePanel from './components/FeaturePanel';
-import AssemblyPanel from './components/AssemblyPanel';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useChatStore, useProjectStore, useSelectionStore, useViewportStore } from './stores';
 import { api } from './api';
@@ -67,9 +64,19 @@ function App() {
   }, [project?.project_id]);
 
   useEffect(() => {
-    function handleModelReady(event: Event) {
+    async function handleModelReady(event: Event) {
       const detail = (event as CustomEvent<{ projectId: string; modelId: string }>).detail;
       if (!project || detail.projectId !== project.project_id) return;
+      
+      // Refresh project to get new updated_at timestamp
+      try {
+        const updated = await api.get<Project>(`/api/projects/${project.project_id}`);
+        setProject(updated);
+        setProjects(current => current.map(p => p.project_id === updated.project_id ? updated : p));
+      } catch (err) {
+        console.error('Failed to refresh project after model ready:', err);
+      }
+
       loadModelVersions(project.project_id, detail.modelId);
     }
 
@@ -136,6 +143,7 @@ function App() {
         );
       } else {
         viewport.reset();
+        viewport.setProjectId(projectId);
       }
     } catch (err) {
       console.error('Failed to load model versions:', err);
@@ -473,9 +481,6 @@ function App() {
             }}
             sendWsMessage={sendRawMessage}
           />
-          <AssemblyPanel />
-          <FeaturePanel />
-          <ParameterPanel />
         </div>
 
         {/* Chat Panel */}

@@ -7,6 +7,9 @@ import { api } from '../api';
 import { useViewportStore } from '../stores';
 import { formatLocalDateTime } from '../time';
 import type { ModelInfo } from '../types';
+import AssemblyPanel from './AssemblyPanel';
+import FeaturePanel from './FeaturePanel';
+import ParameterPanel from './ParameterPanel';
 
 type DiffLine = {
   type: 'same' | 'added' | 'removed';
@@ -141,6 +144,7 @@ export default function SourcePanel() {
   const [rightModelId, setRightModelId] = useState('');
   const [leftSource, setLeftSource] = useState('');
   const [rightSource, setRightSource] = useState('');
+  const [activeTab, setActiveTab] = useState<'source' | 'assembly' | 'features' | 'parameters'>('source');
   const [viewMode, setViewMode] = useState<'source' | 'diff'>('source');
   const [error, setError] = useState('');
   const [executionMessage, setExecutionMessage] = useState('');
@@ -152,7 +156,16 @@ export default function SourcePanel() {
   });
 
   useEffect(() => {
-    if (!isOpen || !currentProjectId || !currentModelId) return;
+    if (!isOpen || !currentProjectId) return;
+
+    if (!currentModelId) {
+      const defaultSource = 'import cadquery as cq\n\n# Start a new CAD model from scratch\nresult = cq.Workplane("XY").box(10, 10, 10)\n';
+      setSource(defaultSource);
+      setSavedSource(defaultSource);
+      setExecutionMessage('');
+      setError('');
+      return;
+    }
 
     let cancelled = false;
     setIsLoading(true);
@@ -345,8 +358,15 @@ export default function SourcePanel() {
       )}
       <div className="source-toggle-bar" onClick={() => setIsOpen((open) => !open)}>
         <span className="source-toggle-icon">{isOpen ? 'v' : '>'}</span>
-        <span className="source-toggle-label">{label}</span>
-        {isOpen && source && (
+        
+        <div className="source-tabs">
+          <button className={`source-tab ${activeTab === 'source' ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); setActiveTab('source'); setIsOpen(true); }}>Source</button>
+          <button className={`source-tab ${activeTab === 'assembly' ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); setActiveTab('assembly'); setIsOpen(true); }}>Assembly</button>
+          <button className={`source-tab ${activeTab === 'features' ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); setActiveTab('features'); setIsOpen(true); }}>Features</button>
+          <button className={`source-tab ${activeTab === 'parameters' ? 'active' : ''}`} onClick={(e) => { e.stopPropagation(); setActiveTab('parameters'); setIsOpen(true); }}>Parameters</button>
+        </div>
+
+        {isOpen && source && activeTab === 'source' && (
           <div className="source-toolbar" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
@@ -375,10 +395,16 @@ export default function SourcePanel() {
       </div>
 
       {isOpen && (
-        <div className="source-content">
-          {!currentModelId || !currentProjectId ? (
-            <div className="source-empty">No generated model selected.</div>
-          ) : isLoading ? (
+        <div className="source-content" style={activeTab !== 'source' ? { padding: 0 } : undefined}>
+          {activeTab === 'assembly' && <AssemblyPanel insideDock />}
+          {activeTab === 'features' && <FeaturePanel insideDock />}
+          {activeTab === 'parameters' && <ParameterPanel insideDock />}
+          
+          {activeTab === 'source' && (
+            <>
+              {!currentProjectId ? (
+            <div className="source-empty">No project selected.</div>
+          ) : isLoading && currentModelId ? (
             <div className="source-empty">Loading source...</div>
           ) : error ? (
             <div className="source-error">{error}</div>
@@ -457,6 +483,8 @@ export default function SourcePanel() {
                 aria-label="Editable CadQuery source code"
               />
             </div>
+          )}
+            </>
           )}
         </div>
       )}

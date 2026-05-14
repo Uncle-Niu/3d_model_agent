@@ -7,7 +7,11 @@ import { api } from '../api';
 import { useViewportStore, useSelectionStore, useAssemblyStore } from '../stores';
 import type { AssemblyManifest } from '../types';
 
-export default function AssemblyPanel() {
+interface AssemblyPanelProps {
+  insideDock?: boolean;
+}
+
+export default function AssemblyPanel({ insideDock }: AssemblyPanelProps = {}) {
   const { currentModelId, currentProjectId } = useViewportStore();
   const { selectedFeatureName, setSelection } = useSelectionStore();
   const { partsVisibility, toggleVisibility, explodedFactor, setExplodedFactor, setParts } = useAssemblyStore();
@@ -62,15 +66,8 @@ export default function AssemblyPanel() {
 
   if (!currentModelId) return null;
 
-  return (
-    <div className={`assembly-panel ${isOpen ? 'open' : 'closed'}`}>
-      <div className="panel-header" onClick={() => setIsOpen(!isOpen)}>
-        <h3>Assembly</h3>
-        <span className="toggle-icon">{isOpen ? '−' : '+'}</span>
-      </div>
-      
-      {isOpen && (
-        <div className="panel-content">
+  const content = (
+    <div className={insideDock ? "docked-panel-content" : "panel-content"}>
           <div className="exploded-view-control">
             <label>Exploded View</label>
             <input 
@@ -132,8 +129,20 @@ export default function AssemblyPanel() {
               ))}
             </ul>
           )}
-        </div>
-      )}
+    </div>
+  );
+
+  if (insideDock) {
+    return content;
+  }
+
+  return (
+    <div className={`assembly-panel ${isOpen ? 'open' : 'closed'}`}>
+      <div className="panel-header" onClick={() => setIsOpen(!isOpen)}>
+        <h3>Assembly</h3>
+        <span className="toggle-icon">{isOpen ? '−' : '+'}</span>
+      </div>
+      {isOpen && content}
     </div>
   );
 }

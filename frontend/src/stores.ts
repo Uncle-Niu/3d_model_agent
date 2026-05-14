@@ -31,12 +31,13 @@ interface ChatState {
   isGenerating: boolean;
   currentStage: string;
   currentStatus: string;
+  currentSteps: PipelineStep[];
   setMessages: (messages: ChatMessage[]) => void;
   addMessage: (msg: ChatMessage) => void;
   appendStreamChunk: (chunk: string) => void;
   clearStream: () => void;
   setGenerating: (generating: boolean) => void;
-  setStage: (stage: string, status: string) => void;
+  setStage: (stage: string, status: string, details?: string, data?: any) => void;
   reset: () => void;
 }
 
@@ -46,6 +47,7 @@ export const useChatStore = create<ChatState>((set) => ({
   isGenerating: false,
   currentStage: '',
   currentStatus: '',
+  currentSteps: [],
 
   setMessages: (messages) => set({ messages }),
 
@@ -58,10 +60,17 @@ export const useChatStore = create<ChatState>((set) => ({
   clearStream: () => set({ streamingContent: '' }),
 
   setGenerating: (generating) =>
-    set({ isGenerating: generating, ...(generating ? {} : { currentStage: '', currentStatus: '' }) }),
+    set({ isGenerating: generating, ...(generating ? { currentSteps: [] } : { currentStage: '', currentStatus: '', currentSteps: [] }) }),
 
-  setStage: (stage, status) =>
-    set({ currentStage: stage, currentStatus: status }),
+  setStage: (stage, status, details, data) =>
+    set((s) => ({ 
+      currentStage: stage, 
+      currentStatus: status,
+      currentSteps: [
+        ...s.currentSteps, 
+        { stage, message: status, details, data, timestamp: new Date().toISOString() }
+      ]
+    })),
 
   reset: () =>
     set({
@@ -70,6 +79,7 @@ export const useChatStore = create<ChatState>((set) => ({
       isGenerating: false,
       currentStage: '',
       currentStatus: '',
+      currentSteps: [],
     }),
 }));
 
@@ -84,6 +94,7 @@ interface ViewportState {
   isLoading: boolean;
   setModel: (modelId: string, glbUrl: string, projectId: string) => void;
   setLoading: (loading: boolean) => void;
+  setProjectId: (projectId: string | null) => void;
   reset: () => void;
 }
 
@@ -97,6 +108,8 @@ export const useViewportStore = create<ViewportState>((set) => ({
     set({ currentModelId: modelId, glbUrl, currentProjectId: projectId, isLoading: false }),
 
   setLoading: (loading) => set({ isLoading: loading }),
+
+  setProjectId: (projectId) => set({ currentProjectId: projectId }),
 
   reset: () =>
     set({ glbUrl: null, currentModelId: null, currentProjectId: null, isLoading: false }),
