@@ -151,6 +151,7 @@ class ModelMetadata(BaseModel):
     iteration: int = 0
     vision_score: Optional[float] = None  # latest vision critique score
     assembly: Optional[AssemblyManifest] = None
+    citations: list[SearchResult] = Field(default_factory=list)
 
 
 class ProjectConfig(BaseModel):

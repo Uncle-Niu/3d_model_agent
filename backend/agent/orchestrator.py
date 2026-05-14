@@ -24,9 +24,12 @@ from ..domain.models import (
     SelectionContext,
     HardConstraints,
     SoftConstraints,
+    SearchResult,
 )
 from ..models.llm_service import LLMService, build_system_prompt, extract_code_from_response
 from ..storage import StorageService
+from ..tools.web_research import search_web, get_research_prompt_extension
+from ..vision.critic import VisionCritic
 
 
 class AgentOrchestrator:
@@ -117,6 +120,18 @@ class AgentOrchestrator:
             await self._emit_error(f"Ollama check failed: {e}")
             return False
 
+    async def check_vision_connectivity(self) -> bool:
+        """Check if the vision model is available and working."""
+        from ..vision.critic import VisionCritic
+        critic = VisionCritic()
+        await self._emit_debug("vision", f"Checking vision model availability...")
+        available, error = await critic.is_available()
+        if not available:
+            await self._emit_debug("vision_warning", f"Vision model not available: {error}")
+            return False
+        await self._emit_debug("vision", "Vision model is available")
+        return True
+
     async def run_pipeline(
         self,
         project_id: str,
@@ -135,7 +150,10 @@ class AgentOrchestrator:
             return None
 
         # 1. Connectivity Check
-        if not await self.check_ollama_connectivity():
+        ollama_ok = await self.check_ollama_connectivity()
+        vision_ok = await self.check_vision_connectivity()
+
+        if not ollama_ok:
             self.storage.append_chat_thread_message(
                 project_id, thread_id,
                 ChatMessage(role="assistant", content=(
@@ -149,6 +167,20 @@ class AgentOrchestrator:
         system_prompt = build_system_prompt(config.hard_constraints, config.soft_constraints)
         history = self.storage.get_chat_thread_messages(project_id, thread_id)
         chat_ctx = [{"role": m.role, "content": m.content} for m in history[-10:]]
+
+        # 2.1 Research step
+        citations = []
+        research_context = ""
+        search_query = await self.llm.decide_research(user_message, chat_ctx)
+        if search_query:
+            await self._emit_status("researching", f"Searching the web for: {search_query}...")
+            citations = await search_web(search_query)
+            if citations:
+                research_context = get_research_prompt_extension(citations)
+                await self._emit_debug("research_result", f"Found {len(citations)} results", {
+                    "query": search_query,
+                    "citations": [c.model_dump() for c in citations]
+                })
 
         current_source = ""
         current_model_id = base_model_id
@@ -175,6 +207,8 @@ class AgentOrchestrator:
                     last_code = await self._generate_code_streaming(
                         user_message, system_prompt, chat_ctx,
                         current_source, current_model_id, selection,
+                        research_context=research_context,
+                        project_id=project_id,
                     )
                 elif last_critique and last_critique.issues:
                     # Vision-driven repair
@@ -258,6 +292,7 @@ class AgentOrchestrator:
                         failure_type=FailureType(last_failure_type),
                         failure_message=last_error,
                         iteration=iteration,
+                        citations=citations,
                     )
                     self.storage.save_model_metadata(project_id, metadata)
                     continue
@@ -306,6 +341,7 @@ class AgentOrchestrator:
                     assembly=exec_result.get("assembly"),
                     iteration=iteration,
                     vision_score=critique.overall_printability if critique else None,
+                    citations=citations,
                 )
                 self.storage.save_model_metadata(project_id, metadata)
                 
@@ -351,6 +387,8 @@ class AgentOrchestrator:
         current_source: str,
         current_model_id: Optional[str],
         selection: Optional[SelectionContext] = None,
+        research_context: str = "",
+        project_id: str = "",
     ) -> str:
         effective_user_message = user_message
         
@@ -381,7 +419,7 @@ class AgentOrchestrator:
 
         if current_source:
             effective_user_message = (
-                f"{selection_context}"
+                f"{selection_context}{research_context}"
                 "The project has one model with versioned checkpoints. "
                 f"Use checkpoint `{current_model_id}` as the current base model and edit it for this request.\n\n"
                 "## Current CadQuery Source\n"
@@ -391,8 +429,8 @@ class AgentOrchestrator:
                 "## Requested Change\n"
                 f"{user_message}"
             )
-        elif selection_context:
-             effective_user_message = f"{selection_context}## Requested Change\n{user_message}"
+        else:
+             effective_user_message = f"{selection_context}{research_context}## Requested Change\n{user_message}"
 
         await self._emit_debug("llm_request", "Sending request to LLM", {
             "model": self.llm.model,
@@ -431,7 +469,6 @@ class AgentOrchestrator:
     ) -> Optional[CritiqueReport]:
         await self._emit_status("critiquing", "Analyzing geometry with vision AI...")
         try:
-            from ..vision.critic import VisionCritic
             critic = VisionCritic()
             available, _ = await critic.is_available()
             if not available: return None

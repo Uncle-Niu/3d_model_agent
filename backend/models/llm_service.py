@@ -288,6 +288,27 @@ class LLMService:
         )
         return await self.generate(repair_prompt, system_prompt)
 
+    async def decide_research(self, user_message: str, chat_history: Optional[list[dict]] = None) -> Optional[str]:
+        """
+        Decide if web research is needed for the user's request.
+        Returns a search query if research is needed, otherwise None.
+        """
+        prompt = f"""\
+You are an expert mechanical engineer. Analyze the following user request and decide if you need to search the web for technical specifications, dimensions, or standards (e.g., bolt sizes, motor mounting patterns, material properties, standard connector dimensions).
+
+User Request: {user_message}
+
+If you need to search, output ONLY the search query in a single line. 
+If no search is needed, output ONLY "NONE".
+
+Search Query:"""
+        
+        response = await self.generate(prompt, "You are a technical research assistant.")
+        query = response.strip().strip('"').strip("'")
+        if query.upper() == "NONE":
+            return None
+        return query
+
 
 def extract_code_from_response(response: str) -> str:
     """Extract Python code from an LLM response that may contain markdown."""
