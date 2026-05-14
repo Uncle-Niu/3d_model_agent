@@ -6,6 +6,7 @@ reusable, structured generation workflow.
 """
 
 import asyncio
+import inspect
 import json
 import time
 import traceback
@@ -183,13 +184,47 @@ class AgentOrchestrator:
         history = self.storage.get_chat_thread_messages(project_id, thread_id)
         chat_ctx = [{"role": m.role, "content": m.content} for m in history[-10:]]
 
+        await self._emit_status(
+            "planning",
+            "Preparing turn context...",
+            details=(
+                "The agent is gathering the request, recent chat history, project constraints, "
+                "and any selected or existing model context before choosing the next action."
+            ),
+            data={
+                "why": "Keep generation grounded in the current project instead of treating this as an isolated prompt.",
+                "used": [
+                    f"{len(chat_ctx)} recent chat message(s)",
+                    "project hard constraints",
+                    "project soft constraints",
+                ],
+                "skipped": [],
+            },
+        )
+
         # 2.1 Research step
         citations = []
         research_context = ""
+        await self._emit_status(
+            "planning",
+            "Deciding whether web research is needed...",
+            details=(
+                "A lightweight LLM planning call checks if the request depends on current "
+                "standards, vendor dimensions, material data, or hardware specifications."
+            ),
+            data={
+                "why": "Search only when external facts would materially affect the CAD dimensions or design.",
+                "used": ["user request", "recent chat context"],
+            },
+        )
         search_query = await self.llm.decide_research(user_message, chat_ctx)
         if search_query:
             await self._emit_status("researching", f"Searching the web for: {search_query}...", 
-                                  details=f"The agent determined that external technical standards or dimensions are required for '{user_message}'.")
+                                  details=f"The agent determined that external technical standards or dimensions are required for '{user_message}'.",
+                                  data={
+                                      "why": "External reference data may be needed for correct sizing or standards compliance.",
+                                      "used": [search_query],
+                                  })
             citations = await search_web(search_query)
             if citations:
                 research_context = get_research_prompt_extension(citations)
@@ -197,6 +232,19 @@ class AgentOrchestrator:
                     "query": search_query,
                     "citations": [c.model_dump() for c in citations]
                 })
+        else:
+            await self._emit_status(
+                "planning",
+                "Skipping web research.",
+                details=(
+                    "The planner did not find a need for outside specifications; the request can be handled "
+                    "from the prompt, chat context, and project constraints."
+                ),
+                data={
+                    "why": "Avoid adding unrelated or stale web facts when the design does not require them.",
+                    "skipped": ["web search", "page fetching"],
+                },
+            )
 
         current_source = ""
         current_model_id = base_model_id
@@ -207,6 +255,29 @@ class AgentOrchestrator:
             if latest_model:
                 current_model_id = latest_model.model_id
                 current_source = self.storage.get_model_source_text(project_id, latest_model.model_id)
+
+        context_used = []
+        if current_source:
+            context_used.append(f"base model `{current_model_id}` source")
+        else:
+            context_used.append("new model from scratch")
+        if selection:
+            context_used.append(f"active selection `{selection.feature_name}`")
+        if citations:
+            context_used.append(f"{len(citations)} research citation(s)")
+        await self._emit_status(
+            "planning",
+            "Selected modeling context.",
+            details=(
+                "The agent chose whether to edit an existing checkpoint or generate a new model, "
+                "then assembled the prompt inputs for code generation."
+            ),
+            data={
+                "why": "Use the most relevant geometry context while keeping unrelated state out of the CAD prompt.",
+                "used": context_used,
+                "skipped": [] if current_source else ["source-code edit path"],
+            },
+        )
 
         last_code = ""
         last_error = ""
@@ -221,7 +292,11 @@ class AgentOrchestrator:
                 # ── Step A: Generate or Repair code ──────────────────────────
                 if iteration == 1:
                     await self._emit_status("generating", "Generating CadQuery code...", 
-                                          details="Synthesizing Python code using CadQuery API based on your description and project constraints.")
+                                          details="Synthesizing Python code using CadQuery API based on your description and project constraints.",
+                                          data={
+                                              "why": "CadQuery source is the editable canonical representation for this CAD-first workflow.",
+                                              "used": context_used + ["CadQuery examples", "constraint prompt"],
+                                          })
                     last_code = await self._generate_code_streaming(
                         user_message, system_prompt, chat_ctx,
                         current_source, current_model_id, selection,
@@ -232,7 +307,14 @@ class AgentOrchestrator:
                     # Vision-driven repair
                     await self._emit_status("repairing", 
                         f"Vision-driven repair (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS})...",
-                        details=f"The vision AI identified {len(last_critique.issues)} issues in the previous rendering. Attempting to fix geometry or printability faults.")
+                        details=f"The vision AI identified {len(last_critique.issues)} issues in the previous rendering. Attempting to fix geometry or printability faults.",
+                        data={
+                            "why": "The rendered model passed execution but did not meet the visual/printability quality threshold.",
+                            "used": [
+                                f"vision score {last_critique.overall_printability:.2f}",
+                                f"{len(last_critique.issues)} critique issue(s)",
+                            ],
+                        })
                     repair_prompt = self._build_vision_repair_prompt(
                         last_code, last_critique, user_message, iteration
                     )
@@ -254,7 +336,11 @@ class AgentOrchestrator:
                     # Execution-error repair
                     await self._emit_status("repairing", 
                         f"Repairing code (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS})...",
-                        details=f"The previous code failed with an execution error. Analyzing traceback to correct the logic.")
+                        details=f"The previous code failed with an execution error. Analyzing traceback to correct the logic.",
+                        data={
+                            "why": "The previous generated source did not produce valid geometry, so the next LLM call is constrained by the failure.",
+                            "used": [last_failure_type or "execution_error", last_error.splitlines()[0] if last_error else "previous failure"],
+                        })
                     await self._emit_debug("repair_request", f"Error repair attempt {iteration}", {
                         "original_code": last_code, "error_message": last_error[:500],
                     })
@@ -267,7 +353,9 @@ class AgentOrchestrator:
                         failure_type=last_failure_type,
                         geometry_stats=last_geometry_stats,
                     )
-                    repair_notes.append(f"Fixed {last_failure_type.replace('_', ' ')}: {last_error.splitlines()[0][:60]}...")
+                    failure_label = (last_failure_type or "execution_error").replace("_", " ")
+                    error_summary = last_error.splitlines()[0][:60] if last_error else "previous attempt failed"
+                    repair_notes.append(f"Fixed {failure_label}: {error_summary}...")
                     last_code = extract_code_from_response(repair_response)
 
                 if not last_code.strip():
@@ -276,7 +364,11 @@ class AgentOrchestrator:
 
                 # ── Step B: Execute CadQuery ──────────────────────────────────
                 await self._emit_status("executing", "Running CadQuery code...",
-                                      details="Executing the generated Python script in a sandboxed CadQuery environment to produce 3D geometry.")
+                                      details="Executing the generated Python script in a sandboxed CadQuery environment to produce 3D geometry.",
+                                      data={
+                                          "why": "Only actual OpenCascade geometry can confirm whether the generated source is usable.",
+                                          "used": ["generated CadQuery source", "project constraints"],
+                                      })
                 
                 model_id = self.storage.next_model_id(project_id)
                 model_dir = self.storage.create_model_dir(project_id, model_id)
@@ -323,7 +415,11 @@ class AgentOrchestrator:
 
                 # ── Step C: Success! Render and Critique ──────────────────────
                 await self._emit_status("tessellating", "Preparing 3D preview...",
-                                      details="Tessellating the B-Rep geometry into a GLB mesh for real-time 3D viewing in the browser.")
+                                      details="Tessellating the B-Rep geometry into a GLB mesh for real-time 3D viewing in the browser.",
+                                      data={
+                                          "why": "The browser displays GLB meshes while STEP remains the canonical CAD export.",
+                                          "used": ["validated geometry", "generated model files"],
+                                      })
                 
                 preliminary_metadata = ModelMetadata(
                     model_id=model_id,
@@ -346,15 +442,35 @@ class AgentOrchestrator:
                 shape = exec_result.get("_shape")
                 render_paths = {}
                 if shape is not None:
-                    render_paths = await self._run_render(shape, model_dir)
+                    render_result = await self._run_render(shape, model_dir)
+                    if isinstance(render_result, dict):
+                        render_paths = render_result
+                    elif render_result:
+                        await self._emit_debug(
+                            "render_warning",
+                            "Render step returned a non-dictionary result; using placeholder paths for downstream handling.",
+                            {"result_type": type(render_result).__name__},
+                        )
+                        render_paths = {"unknown": str(render_result)}
 
                 # Vision Critique
                 geometry_stats = exec_result.get("geometry_stats", {})
                 manufacturability = exec_result.get("manufacturability")
                 critique = None
-                if render_paths:
+                if render_paths and vision_ok:
                     critique = await self._run_vision_critique(
                         render_paths, user_message, geometry_stats, project_id, model_id
+                    )
+                elif render_paths:
+                    await self._emit_status(
+                        "critiquing",
+                        "Skipping vision critique.",
+                        details="The vision model was unavailable during the preflight check, so deterministic validation results are used for this turn.",
+                        data={
+                            "why": "Avoid blocking a successful CAD result on an unavailable optional reviewer.",
+                            "skipped": ["vision critique"],
+                            "used": ["deterministic execution and geometry checks"],
+                        },
                     )
 
                 # Save metadata
@@ -485,7 +601,10 @@ class AgentOrchestrator:
 
         full_response = ""
         t_start = time.time()
-        async for chunk in self.llm.generate_stream(effective_user_message, system_prompt, chat_ctx):
+        stream = self.llm.generate_stream(effective_user_message, system_prompt, chat_ctx)
+        if inspect.isawaitable(stream):
+            stream = await stream
+        async for chunk in stream:
             full_response += chunk
             await self._emit_chunk(chunk)
 

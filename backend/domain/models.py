@@ -301,6 +301,8 @@ class WSChatChunk(BaseModel):
 class WSChatResponse(BaseModel):
     type: str = "chat_response"
     content: str
+    model_id: Optional[str] = None
+    steps: list[PipelineStep] = Field(default_factory=list)
 
 
 class WSError(BaseModel):

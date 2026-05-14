@@ -42,13 +42,20 @@ export interface ModelInfo {
   has_stl: boolean;
   has_glb: boolean;
   iteration: number;
+  failure_type?: string | null;
+  vision_score?: number | null;
 }
 
 export interface PipelineStep {
   stage: string;
   message: string;
   details?: string;
-  data?: Record<string, unknown>;
+  data?: {
+    why?: string;
+    used?: string[];
+    skipped?: string[];
+    [key: string]: unknown;
+  };
   timestamp: string;
 }
 
@@ -100,6 +107,8 @@ export interface WSLLMChunk {
 export interface WSChatResponse {
   type: 'chat_response';
   content: string;
+  model_id?: string;
+  steps?: PipelineStep[];
 }
 
 export interface WSError {

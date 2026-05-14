@@ -338,7 +338,6 @@ export default function SourcePanel() {
     window.addEventListener('pointerup', handleEnd);
   }
 
-  const label = currentModelId ? `Source CAD Code - ${currentModelId}` : 'Source CAD Code';
   const diffRows = buildSideBySideDiff(leftSource, rightSource);
   const addedCount = diffRows.filter((line) => line.type === 'added' || line.type === 'changed').length;
   const removedCount = diffRows.filter((line) => line.type === 'removed' || line.type === 'changed').length;

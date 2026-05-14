@@ -23,7 +23,6 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
     messages,
     streamingContent,
     isGenerating,
-    currentStage,
     currentStatus,
     currentSteps,
   } = useChatStore();
@@ -46,18 +45,6 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
       e.preventDefault();
       handleSubmit(e);
     }
-  };
-
-  // Stage → icon/label
-  const STAGE_ICONS: Record<string, string> = {
-    generating:  '✍️',
-    executing:   '⚙️',
-    tessellating:'🔺',
-    rendering:   '📷',
-    critiquing:  '👁',
-    repairing:   '🔧',
-    failed:      '❌',
-    validating:  '✅',
   };
 
   return (

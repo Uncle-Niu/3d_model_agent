@@ -144,9 +144,15 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
 
                 messages = storage.get_chat_thread_messages(project_id, thread_id)
                 if messages and messages[-1].role == "assistant":
+                    assistant_message = messages[-1]
                     await ws.send_text(json.dumps({
                         "type": "chat_response",
-                        "content": messages[-1].content
+                        "content": assistant_message.content,
+                        "model_id": assistant_message.model_id,
+                        "steps": [
+                            step.model_dump(mode="json")
+                            for step in assistant_message.steps
+                        ],
                     }))
 
             elif msg_type == "selection":

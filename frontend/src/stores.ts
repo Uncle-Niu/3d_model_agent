@@ -3,7 +3,7 @@
  */
 
 import { create } from 'zustand';
-import type { ChatMessage, CritiqueState, DebugEntry, GeometryIssue, Project } from './types';
+import type { ChatMessage, CritiqueState, DebugEntry, PipelineStep, Project } from './types';
 import type { Vector3 } from 'three';
 
 
@@ -236,4 +236,3 @@ export const useAssemblyStore = create<AssemblyState>((set) => ({
 
   reset: () => set({ partsVisibility: {}, explodedFactor: 0 }),
 }));
-

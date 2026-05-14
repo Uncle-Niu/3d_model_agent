@@ -101,6 +101,8 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
           role: 'assistant',
           content: msg.content,
           timestamp: new Date().toISOString(),
+          model_id: msg.model_id,
+          steps: msg.steps ?? chat.currentSteps,
         });
         chat.setGenerating(false);
         break;

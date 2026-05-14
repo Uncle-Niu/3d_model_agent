@@ -667,6 +667,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .pipeline-count {
@@ -682,6 +683,15 @@ body {
   color: var(--accent);
   font-weight: 500;
   animation: pulse 1.5s infinite;
+}
+
+.pipeline-latest-step {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .pipeline-toggle-btn {
@@ -781,6 +791,33 @@ body {
   line-height: 1.5;
   border-left: 2px solid var(--accent-dim);
   animation: fadeIn 0.2s ease-out;
+}
+
+.pipeline-step-details p {
+  margin: 0;
+}
+
+.pipeline-detail-row {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pipeline-detail-label {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.pipeline-detail-list {
+  margin: 0;
+  padding-left: 14px;
+}
+
+.pipeline-detail-list li + li {
+  margin-top: 4px;
 }
 
 @keyframes fadeIn {
