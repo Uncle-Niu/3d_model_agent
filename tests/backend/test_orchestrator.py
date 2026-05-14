@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from backend.agent.orchestrator import AgentOrchestrator
 from backend.domain.models import (
     ProjectConfig, ChatMessage, ModelMetadata, CritiqueReport, GeometryIssue,
-    FailureType, SearchResult
+    DesignPlan, FailureType, SearchResult
 )
 
 class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
@@ -20,7 +20,8 @@ class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
         self.mock_llm.base_url = "http://localhost:11434/v1"
         self.mock_llm.model = "qwen3.6:27b"
         self.mock_llm.decide_research.return_value = None
-        
+        self.mock_llm.plan_design.return_value = DesignPlan(summary="Test plan", key_features=["a feature"])
+
         async def mock_generate_stream(*args, **kwargs):
             chunks = ["```python\n", "result = cq.Workplane().box(10,10,10)\n", "```"]
             for chunk in chunks:

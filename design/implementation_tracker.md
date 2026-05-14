@@ -1,9 +1,59 @@
 # Implementation Tracker
 
 > Auto-generated from `design/main_design.md` vs current codebase.
-> Last updated: 2026-05-13
+> Last updated: 2026-05-14
 
 Legend: ✅ Done | 🟡 Partial | ❌ Not started
+
+## Known limitations after 2026-05-14 change set
+
+- **qwen3.6 reasoning loops** on complex multi-component prompts (e.g. an
+  angled-support phone stand). The model has improved at producing valid code
+  thanks to plan + reasoning-channel recovery, but it can still take 100s+ and
+  may emit malformed code on the first try. The repair loop fixes most cases.
+  If the issue persists, switch to `LLM_MODEL=gemma4:31b` which doesn't use a
+  thinking channel.
+- **Local matplotlib fallback renderer** has depth-sort artifacts (visible
+  back faces through transparent surfaces). VTK is now the default; matplotlib
+  only fires if VTK fails to load.
+- **Vision critique** can produce a low score (0.2-0.4) on perfectly correct
+  geometry if the renders are aesthetically unusual. The plan checklist
+  mitigates this but does not eliminate it.
+
+## Recent change set (2026-05-14)
+
+Focus: make the agent reliably build complex shapes and expose its reasoning.
+
+- ✅ Added explicit **plan-then-code** pipeline. `LLMService.plan_design` produces
+  a structured `DesignPlan` (components, dimensions, key-features checklist,
+  assumptions, risks) before code generation. The plan is streamed live as
+  visible reasoning and saved into model metadata.
+- ✅ Plan text is injected into every code-gen and repair prompt so the
+  generator and the vision verifier evaluate against the SAME explicit goal,
+  not just the user's free-form prompt.
+- ✅ Vision critique now receives the plan's key-features checklist and is
+  required to mark each feature present/partial/missing. Unchecked features are
+  auto-promoted to `error`-severity issues, and `matches_intent=false` triggers
+  repair (previously ignored).
+- ✅ Switched server-side renders to a VTK off-screen renderer with proper
+  Z-buffering, opaque matte plastic, and feature-edge overlay. Replaces the
+  matplotlib path which had transparent depth-sort artifacts that confused the
+  vision model.
+- ✅ Render annotations: each PNG now has a view label, real-world bbox
+  dimensions, axis triad, and ~10mm scale bar overlaid so the VLM can read
+  scale and orientation without measuring pixels.
+- ✅ Vision smoke test now uses a real 16×16 red square (a true content-image
+  test), retries once on transient HTTP 500 (VRAM swap), supports
+  `VISION_DISABLE_SMOKE_TEST=1` to skip, and auto-falls back to another
+  vision-capable model if the configured one is missing.
+- ✅ Qwen3.x "thinking" channel handling: `LLMService.generate_stream` now reads
+  both `delta.content` and `delta.reasoning`. Code generation appends
+  `/no_think` so the entire token budget produces fixed code; the planner keeps
+  thinking on and surfaces it to the UI as `reasoning_chunk` WebSocket events.
+- ✅ New WebSocket message types: `design_plan` and `reasoning_chunk` carry the
+  plan and live planner/verifier reasoning to the frontend.
+- ✅ `scripts/smoke_pipeline.py` exercises the full pipeline against a live
+  Ollama with no UI — useful for debugging future regressions.
 
 ---
 
@@ -182,8 +232,10 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - ✅ `selection` message type (feature selection context)
 
 ### Server → Client Messages
-- ✅ `status` (stage + message) — all stages: generating, executing, tessellating, rendering, critiquing, repairing
-- ✅ `llm_chunk` (streaming tokens)
+- ✅ `status` (stage + message) — stages: planning, researching, generating, executing, tessellating, rendering, critiquing, repairing
+- ✅ `llm_chunk` (streaming tokens — final code stream)
+- ✅ **`reasoning_chunk`** (NEW: visible planner/verifier reasoning with `channel` field)
+- ✅ **`design_plan`** (NEW: structured plan with components, key-features checklist, assumptions, risks)
 - ✅ `model_ready` (model_id + glb_url) — sent early so user sees model while critique runs
 - ✅ `chat_response` (final text with geometry stats + critique summary)
 - ✅ `error` (message + failure_type)
@@ -193,6 +245,21 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 ---
 
 ## 11. Backend — CadQuery Code Generation
+
+### Planner (NEW)
+- ✅ `LLMService.plan_design()` — produces a structured `DesignPlan` before any code is generated
+- ✅ Plan schema: `summary`, `overall_dimensions_mm`, `components[]` (name/primitive/dims/position/operation), `key_features[]`, `assumptions[]`, `risks[]`, `parameters{}`
+- ✅ Plan is streamed live to the UI via `reasoning_chunk` WebSocket events
+- ✅ Plan is injected into the code-gen prompt and every repair prompt
+- ✅ Plan is given to the vision verifier as the ground-truth checklist
+- ✅ Plan persisted in `ModelMetadata.plan` so users can inspect what the agent intended
+
+### Thinking-mode model support (NEW)
+- ✅ Qwen3.x `reasoning` channel handled — combined with `content` for parsing
+- ✅ Code generation appends `/no_think` so token budget is spent on code
+- ✅ Planning step explicitly allows thinking and streams it as visible reasoning
+- ✅ Code recovery from reasoning channel when content is empty
+- ✅ Consecutive empty-code guard — abort instead of looping 5 attempts on a stuck model
 
 ### System Prompt
 - ✅ CadQuery API quick reference injected
@@ -245,16 +312,19 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 ## 13. Backend — Rendering Service
 
 - ❌ OpenCascade offscreen rendering
-- ❌ VTK rendering
+- ✅ **VTK offscreen rendering — primary renderer** (proper Z-buffer, opaque solids, MSAA)
 - ❌ pygfx rendering
-- 🟡 Headless matplotlib 3D rendering (primary renderer — no display required)
-- 🟡 pyrender offscreen rendering (optional, higher quality — requires OSMesa/EGL)
+- 🟡 Headless matplotlib 3D rendering (fallback only — depth-sort artifacts)
+- 🟡 pyrender offscreen rendering (fallback — requires OSMesa/EGL on Windows)
+- ✅ Feature-edge overlay (15° crease angle) on top of shaded surfaces
+- ✅ Per-render PIL annotations: view label, real-world bbox, axis triad, ~10mm scale bar
 - ✅ Perspective/isometric render generation (iso, front, right, top views)
 - ✅ Orthographic-equivalent render generation (elevation/azimuth angles)
 - ✅ Section cut renders
 - ✅ `backend/render/` module with `RenderService` and `render_shape_multiangle()`
 - ✅ Renders saved to `model-NNN/renders/` directory
 - ✅ Render PNG served via `GET .../renders/{view_name}` REST endpoint
+- ✅ 768×768 default resolution (up from 512×512) for VLM clarity
 
 ---
 
@@ -267,12 +337,21 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 ### Vision Model Setup
 - ✅ `VISION_MODEL` env var support (default: `qwen3.6:27b`)
 - ✅ `VISION_BASE_URL` env var support (default: same as Ollama)
-- ✅ Vision capability smoke test at startup (smoke_test method in VisionCritic)
+- ✅ Vision capability smoke test at startup with **real content image** (16×16 red square)
+- ✅ Smoke test retry on transient HTTP 500 (Ollama VRAM swap)
+- ✅ `VISION_DISABLE_SMOKE_TEST=1` env var to skip when capability metadata is trusted
+- ✅ Auto-fallback to another vision-capable model (gemma4:31b, gemma3:27b) when the configured one is missing
 - ✅ Graceful fallback when vision model unavailable (skip critique, log warning)
 - ❌ Cloud vision opt-in when local model underperforms
 
 ### Critique Pipeline
 - ✅ Multimodal AI model integration for geometry critique (`VisionCritic` class)
+- ✅ **Plan-aware critique**: vision verifier receives the same DesignPlan checklist the generator was given, so it can verify each key feature explicitly
+- ✅ Per-feature checklist (`present | partial | missing` with view-level evidence) — missing/partial entries auto-promoted to `error`-severity issues
+- ✅ `matches_intent=false` from vision now triggers repair (previously ignored)
+- ✅ Vision response `max_tokens` raised to 4096 (was 2048 — checklist responses were getting truncated)
+- ✅ Vision content/reasoning channel combine (qwen3.x sometimes puts JSON in reasoning)
+- ✅ Truncated-JSON fallback parser scrapes `matches_intent`, `score`, and missing-feature entries so a cut-off response still surfaces a "must repair" signal
 - ✅ Printability evaluation
 - ✅ Thin wall detection (vision)
 - ✅ Overhang detection (vision)

@@ -13,7 +13,7 @@ from typing import Optional
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..agent.orchestrator import AgentOrchestrator
-from ..domain.models import ChatMessage, SelectionContext
+from ..domain.models import ChatMessage, DesignPlan, SelectionContext
 from ..models.llm_service import LLMService
 from ..storage import StorageService
 
@@ -90,6 +90,28 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
             payload["failure_type"] = failure_type
         await ws.send_text(json.dumps(payload))
 
+    async def on_plan(plan: DesignPlan):
+        await ws.send_text(json.dumps({
+            "type": "design_plan",
+            "summary": plan.summary,
+            "overall_dimensions_mm": plan.overall_dimensions_mm,
+            "components": [c.model_dump() for c in plan.components],
+            "key_features": plan.key_features,
+            "assumptions": plan.assumptions,
+            "risks": plan.risks,
+            "parameters": plan.parameters,
+            "raw_reasoning": plan.raw_reasoning,
+        }))
+
+    async def on_reasoning(channel: str, text: str):
+        # Stream the planner / verifier thoughts as their own channel so the UI can
+        # show them next to the code stream instead of mixed in with chat tokens.
+        await ws.send_text(json.dumps({
+            "type": "reasoning_chunk",
+            "channel": channel,
+            "content": text,
+        }))
+
     # Instantiate orchestrator
     orchestrator = AgentOrchestrator(
         storage=storage,
@@ -100,6 +122,8 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
         on_model_ready=on_model_ready,
         on_critique=on_critique,
         on_error=on_error,
+        on_plan=on_plan,
+        on_reasoning=on_reasoning,
     )
 
     await on_debug("init", "WebSocket connected", {

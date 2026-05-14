@@ -38,7 +38,7 @@ from typing import Optional
 
 import httpx
 
-from ..domain.models import CritiqueReport, GeometryIssue
+from ..domain.models import CritiqueReport, DesignPlan, GeometryIssue
 
 logger = logging.getLogger(__name__)
 
@@ -61,63 +61,106 @@ class VisionCritiqueResult:
 # ---------------------------------------------------------------------------
 
 VISION_SYSTEM_PROMPT = """\
-You are an expert 3D CAD and 3D printing engineer reviewing a CAD model.
-You will be shown rendered images of the model from multiple angles (isometric, front, right, top).
+You are an expert 3D CAD and 3D printing engineer verifying a generated model
+against an explicit design plan and the user's intent.
 
-Your task: Critique the model for:
-1. Printability (overhangs, wall thickness, bridges)
-2. Structural integrity (thin features, sharp corners, fragile pins)
-3. Symmetry and aesthetic quality
-4. Whether the model matches the user's intent
-5. Any missing features or clear geometry errors
+You will be shown rendered images from multiple angles (isometric, front, right, top)
+plus a checklist of "key features" that must be visible. Treat the checklist as
+GROUND TRUTH — every entry must be checked individually.
 
-IMPORTANT: You must respond ONLY with a valid JSON object matching this schema:
+## Inspection procedure (do this internally before you write JSON)
+1. For each "key feature" in the checklist, look across all four views and decide:
+   present, partially present, or missing. Cite which view(s) show it.
+2. Look for shape-level mismatches: wrong overall form, wrong proportions, missing
+   sub-shapes, extra sub-shapes that the plan did not call for.
+3. Look for printability problems: overhangs, thin walls, fragile pins, sharp
+   internal corners, geometry that is clearly non-manifold (visible holes).
+4. Only mark `matches_intent=true` if the result looks like the plan AND no required
+   feature is missing.
+
+## Output (STRICT)
+Respond with ONLY a JSON object, no markdown fences, no preamble:
+
 {
   "matches_intent": <bool>,
   "score": <float 0.0-1.0>,
+  "feature_checklist": [
+    {"feature": "<from the key-feature checklist>", "present": <true|false|"partial">, "evidence": "<which view + what you saw>"}
+  ],
   "issues": [
     {
-      "issue_type": "<thin_wall|overhang|non_manifold|symmetry|intent_mismatch|fragile_feature|missing_feature|geometry_error|other>",
-      "severity": "<error|warning|info>",
-      "description": "<clear description>",
-      "location_hint": "<which part of the model, e.g. 'bottom edge', 'left side', 'top surface'>"
+      "issue_type": "missing_feature|wrong_shape|wrong_proportion|thin_wall|overhang|fragile_feature|non_manifold|symmetry|intent_mismatch|geometry_error|other",
+      "severity": "error|warning|info",
+      "description": "<concrete, specific — name the feature and what is wrong>",
+      "location_hint": "<view + region, e.g. 'front view, lower-left'>"
     }
   ],
-  "repair_prompt": "<actionable CadQuery code repair instructions for the LLM>",
+  "repair_prompt": "<actionable CadQuery instructions, naming the components/parameters to change>",
   "confidence": <float 0.0-1.0>
 }
 
-Rules:
-- score 0.8-1.0 = good/excellent, 0.5-0.8 = acceptable with warnings, below 0.5 = needs repair
-- If no issues found, return empty issues array and score >= 0.9
-- repair_prompt must be specific CadQuery instructions, not vague suggestions
-- Do NOT wrap your response in markdown code blocks
-- Output ONLY the JSON object
+## Scoring rules
+- ANY missing key feature → severity=error, matches_intent=false, score <= 0.4.
+- Wrong overall shape → matches_intent=false, score <= 0.3.
+- All features present, only printability concerns → matches_intent=true, score 0.7-0.95.
+- Perfect match with no concerns → matches_intent=true, score 0.95-1.0.
+
+## Do NOT
+- Do NOT invent dimensions you cannot measure from the renders.
+- Do NOT mark `matches_intent=true` just because the renders look like *a* CAD model.
+- Do NOT wrap your response in ```json fences.
 """
 
 
 def _build_vision_user_prompt(
     user_intent: str,
     geometry_stats: Optional[dict] = None,
+    plan: Optional[DesignPlan] = None,
 ) -> str:
     """Build the user message for the vision critique."""
     stats_text = ""
     if geometry_stats:
-        stats_text = "\n\n## Geometry Statistics\n"
+        stats_text = "\n## Measured Geometry Statistics (deterministic, from OCCT)\n"
         for k, v in geometry_stats.items():
             if v is not None:
                 stats_text += f"- {k}: {v}\n"
 
+    plan_text = ""
+    if plan and (plan.summary or plan.key_features or plan.components):
+        parts = ["\n## Design Plan (ground truth — verify the result against this)"]
+        if plan.summary:
+            parts.append(f"**Goal:** {plan.summary}")
+        if plan.overall_dimensions_mm:
+            x, y, z = plan.overall_dimensions_mm
+            parts.append(f"**Target size:** {x:.1f} × {y:.1f} × {z:.1f} mm")
+        if plan.components:
+            parts.append("**Expected components:**")
+            for c in plan.components:
+                dims = ", ".join(f"{k}={v}" for k, v in c.dimensions.items())
+                pos = f" at {c.position}" if c.position else ""
+                op = f" [{c.operation}]" if c.operation else ""
+                parts.append(f"- `{c.name}`{op}: {c.primitive} ({dims}){pos} — {c.description}")
+        if plan.key_features:
+            parts.append("**Key features checklist — verify EACH explicitly:**")
+            for f in plan.key_features:
+                parts.append(f"- {f}")
+        if plan.assumptions:
+            parts.append("**Assumptions made by the planner:**")
+            for a in plan.assumptions:
+                parts.append(f"- {a}")
+        plan_text = "\n".join(parts) + "\n"
+
     return f"""\
-Please critique this 3D CAD model.
+Verify this generated 3D CAD model against the user's intent and the plan below.
 
-## User's Original Intent
+## User's Original Request
 {user_intent}
-{stats_text}
+{plan_text}{stats_text}
+You are looking at four rendered views of the model: isometric, front, right, and top.
+Inspect each key feature in the checklist individually. Only return `matches_intent=true`
+if every feature in the checklist is actually visible and the overall shape matches.
 
-I'm attaching rendered images of the model from 4 angles: isometric, front, right, and top views.
-
-Evaluate the model and return your critique as a JSON object following the schema in your instructions.
+Return only the JSON object specified in your instructions — no fences, no preamble.
 """
 
 
@@ -163,6 +206,72 @@ def _build_image_content_items(render_paths: dict[str, str]) -> list[dict]:
 # JSON parsing (robust — handle model wrapping JSON in markdown)
 # ---------------------------------------------------------------------------
 
+def _fallback_parse_critique(raw_text: str) -> dict:
+    """Recover a partial critique from a truncated or malformed response.
+
+    Vision models sometimes run out of tokens mid-JSON. Rather than dropping
+    the whole critique (which silently turns off the repair loop), scrape the
+    raw text for the must-have signals — `matches_intent`, `score`, and the
+    feature_checklist's `present:false` entries — and synthesize a minimal
+    critique that still triggers repair when the verifier saw a problem.
+    """
+    text = raw_text or ""
+    if not text:
+        return {}
+
+    out: dict = {}
+
+    m = re.search(r'"matches_intent"\s*:\s*(true|false)', text, re.IGNORECASE)
+    if m:
+        out["matches_intent"] = m.group(1).lower() == "true"
+
+    m = re.search(r'"score"\s*:\s*([0-9.]+)', text)
+    if m:
+        try:
+            out["score"] = float(m.group(1))
+        except ValueError:
+            pass
+
+    m = re.search(r'"confidence"\s*:\s*([0-9.]+)', text)
+    if m:
+        try:
+            out["confidence"] = float(m.group(1))
+        except ValueError:
+            pass
+
+    # Pull issues / missing checklist entries that we can identify by name
+    issues = []
+    for match in re.finditer(
+        r'"feature"\s*:\s*"([^"]{1,200})"\s*,\s*"present"\s*:\s*(?:false|"false"|"missing"|"no")',
+        text,
+        re.IGNORECASE,
+    ):
+        issues.append({
+            "issue_type": "missing_feature",
+            "severity": "error",
+            "description": f"Key feature absent: {match.group(1)}",
+            "location_hint": "",
+        })
+    if issues:
+        out["issues"] = issues
+
+    # If nothing useful was recovered, return empty so caller can mark as failure
+    if "matches_intent" not in out and "score" not in out and not issues:
+        return {}
+
+    # Defaults to ensure downstream code has something to work with
+    out.setdefault("score", 0.4)
+    out.setdefault("matches_intent", out["score"] >= 0.6)
+    out.setdefault("issues", [])
+    out.setdefault(
+        "repair_prompt",
+        "The vision verifier's response was truncated before completing the JSON. "
+        "Treat this as a failed verification: re-check every key feature in the plan, "
+        "and fix any that are missing, miss-positioned, or wrong shape.",
+    )
+    return out
+
+
 def _parse_json_response(response: str) -> dict:
     """Extract and parse JSON from a potentially markdown-wrapped response."""
     text = response.strip()
@@ -195,6 +304,27 @@ def _json_to_critique_report(data: dict) -> CritiqueReport:
             description=issue_data.get("description", ""),
             location_hint=issue_data.get("location_hint", ""),
         ))
+
+    # Promote unchecked checklist items into explicit missing_feature issues so the
+    # repair loop reasons about them even if the model forgot to list them in `issues`.
+    for entry in data.get("feature_checklist", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        present = entry.get("present")
+        if present in (False, "false", "missing", "no"):
+            issues.append(GeometryIssue(
+                issue_type="missing_feature",
+                severity="error",
+                description=f"Key feature absent: {entry.get('feature', '(unnamed)')}",
+                location_hint=str(entry.get("evidence", "")),
+            ))
+        elif present in ("partial", "partially"):
+            issues.append(GeometryIssue(
+                issue_type="missing_feature",
+                severity="warning",
+                description=f"Key feature only partially present: {entry.get('feature', '(unnamed)')}",
+                location_hint=str(entry.get("evidence", "")),
+            ))
 
     return CritiqueReport(
         issues=issues,
@@ -239,8 +369,9 @@ class VisionCritic:
 
     async def is_available(self) -> tuple[bool, str]:
         """
-        Check if the vision model is available.
-        Returns (available, message).
+        Check if the configured vision model is registered with Ollama. If not,
+        and at least one other vision-capable model IS, auto-swap to it (so the
+        pipeline keeps working when e.g. qwen3.6 is unavailable but gemma4 is).
         """
         ollama_base = self.base_url.replace("/v1", "")
         try:
@@ -251,31 +382,78 @@ class VisionCritic:
 
                 data = resp.json()
                 models = [m["name"] for m in data.get("models", [])]
-                if self.model not in models:
-                    return False, f"Vision model '{self.model}' not found in Ollama. Available: {models}"
+                if self.model in models:
+                    return True, f"Vision model '{self.model}' is available"
 
-                return True, f"Vision model '{self.model}' is available"
+                # Fall back to another known-vision-capable model already on the host
+                preferred_fallbacks = ["gemma4:31b", "gemma3:27b", "qwen3.6:27b"]
+                for candidate in preferred_fallbacks:
+                    if candidate in models and candidate != self.model:
+                        old = self.model
+                        self.model = candidate
+                        return True, f"Vision model '{old}' not found; falling back to '{candidate}'"
+
+                return False, f"Vision model '{self.model}' not found in Ollama. Available: {models}"
         except Exception as e:
             return False, f"Cannot reach Ollama: {e}"
 
-    async def smoke_test(self) -> tuple[bool, str]:
+    async def smoke_test(self, attempts: int = 2) -> tuple[bool, str]:
         """
-        Perform a smoke test by sending a small dummy image to the vision model.
-        Returns (success, message).
+        Perform a smoke test with a small content image so we can tell the
+        difference between a vision-capable model and a text-only one.
+
+        Vision-capable Ollama models occasionally fail the first call after a
+        long idle (model swap, VRAM contention). We retry once with a short
+        wait so a transient HTTP 500 doesn't disable critique for the run.
+        Override with VISION_DISABLE_SMOKE_TEST=1 to skip entirely (trust the
+        capability metadata reported by Ollama).
         """
-        # 1x1 black PNG
-        dummy_png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-        
+        if os.environ.get("VISION_DISABLE_SMOKE_TEST", "").lower() in ("1", "true", "yes"):
+            return True, "Smoke test skipped (VISION_DISABLE_SMOKE_TEST set)"
+
+        last_msg = ""
+        for attempt in range(1, attempts + 1):
+            ok, msg = await self._smoke_test_once()
+            last_msg = msg
+            if ok:
+                if attempt > 1:
+                    return True, f"{msg} (succeeded on attempt {attempt})"
+                return True, msg
+            # Brief wait before retry — gives Ollama time to recover from VRAM swap
+            import asyncio as _asyncio
+            await _asyncio.sleep(1.5)
+        return False, last_msg
+
+    async def _smoke_test_once(self) -> tuple[bool, str]:
+        """Single smoke-test attempt.
+
+        Sends a 16x16 red square and asks for the color. A model that genuinely
+        sees the image will say something close to "red". A non-vision model will
+        either refuse or guess randomly.
+        """
+        # 16x16 solid red PNG (PIL-generated, base64-encoded once)
+        red_png_b64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAI0lEQVR4nGO8"
+            "IyfHQApgIkk1w6gG4gATkergYFQDMYDkUAIAjEsBOCOwN18AAAAASUVORK5CYII="
+        )
         messages = [
-            {"role": "system", "content": "You are a vision assistant. Reply with 'OK' if you can see the image."},
-            {"role": "user", "content": [
-                {"type": "text", "text": "Can you see this image?"},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{dummy_png_b64}"}}
-            ]}
+            {
+                "role": "system",
+                "content": (
+                    "You are a vision assistant. Look at the image and answer the question literally in one word."
+                ),
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What color is this square? One word."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{red_png_b64}"}},
+                ],
+            },
         ]
-        
+
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
                     f"{self.base_url}/chat/completions",
                     headers={
@@ -286,17 +464,22 @@ class VisionCritic:
                         "model": self.model,
                         "messages": messages,
                         "temperature": 0.0,
-                        "max_tokens": 10,
+                        "max_tokens": 20,
                         "stream": False,
                     },
                 )
                 if response.status_code != 200:
-                    return False, f"Smoke test failed: HTTP {response.status_code}"
-                
+                    return False, f"Smoke test failed: HTTP {response.status_code} - {response.text[:200]}"
+
                 data = response.json()
-                text = data["choices"][0]["message"]["content"].upper()
-                # Loosen the check as models might be chatty
-                return True, f"Smoke test passed (Response: {text[:50]})"
+                text = (data["choices"][0]["message"]["content"] or "").lower()
+                # Accept anything that names red. Treat refusals / "I can't see images" / unrelated answers as failure.
+                if any(token in text for token in ("red", "crimson", "scarlet", "ruby")):
+                    return True, f"Smoke test passed (model identified red square): '{text.strip()[:80]}'"
+                if any(token in text for token in ("can't see", "cannot see", "no image", "don't see", "not able")):
+                    return False, f"Smoke test failed: model says it cannot see images — '{text.strip()[:120]}'"
+                # Ambiguous response — still allow but flag
+                return True, f"Smoke test ambiguous (allowing): '{text.strip()[:120]}'"
         except Exception as e:
             return False, f"Smoke test failed: {e}"
 
@@ -305,6 +488,7 @@ class VisionCritic:
         render_paths: dict[str, str],
         user_intent: str,
         geometry_stats: Optional[dict] = None,
+        plan: Optional[DesignPlan] = None,
     ) -> VisionCritiqueResult:
         """
         Send renders to the vision model and get back a structured critique.
@@ -330,8 +514,8 @@ class VisionCritic:
                 message="No valid render images found on disk",
             )
 
-        # Build user message with images
-        user_text = _build_vision_user_prompt(user_intent, geometry_stats)
+        # Build user message with images (plan included so the verifier checks the same checklist the generator was given)
+        user_text = _build_vision_user_prompt(user_intent, geometry_stats, plan=plan)
         user_content = [{"type": "text", "text": user_text}] + image_items
 
         messages = [
@@ -352,7 +536,10 @@ class VisionCritic:
                         "model": self.model,
                         "messages": messages,
                         "temperature": 0.1,
-                        "max_tokens": 2048,
+                        # Larger budget — the feature checklist alone can be 1k tokens
+                        # for multi-component designs, and we'd rather waste a few
+                        # tokens than silently drop a critique because of truncation.
+                        "max_tokens": 4096,
                         "stream": False,
                     },
                 )
@@ -364,7 +551,16 @@ class VisionCritic:
                     )
 
                 data = response.json()
-                raw_text = data["choices"][0]["message"]["content"]
+                msg_obj = data["choices"][0]["message"]
+                raw_text = msg_obj.get("content") or ""
+                # Same channel-confusion as code generation: vision models built on
+                # qwen3.x sometimes emit JSON in the reasoning channel. Fall back
+                # to combining channels so the parser can recover.
+                reasoning_text = msg_obj.get("reasoning") or msg_obj.get("reasoning_content") or ""
+                if reasoning_text and not raw_text:
+                    raw_text = reasoning_text
+                elif reasoning_text:
+                    raw_text = raw_text + "\n" + reasoning_text
 
         except httpx.TimeoutException:
             return VisionCritiqueResult(
@@ -377,15 +573,20 @@ class VisionCritic:
                 message=f"Vision model call failed: {e}\n{traceback.format_exc()}",
             )
 
-        # Parse JSON response
+        # Parse JSON response — primary path is strict JSON; fallback path scrapes
+        # the (possibly truncated) text for the must-have signals so we still
+        # trigger repair when the verifier saw something wrong but ran out of
+        # tokens before finishing the JSON.
         try:
             parsed = _parse_json_response(raw_text)
-        except (json.JSONDecodeError, ValueError) as e:
-            return VisionCritiqueResult(
-                success=False,
-                message=f"Failed to parse vision model JSON response: {e}",
-                raw_response=raw_text,
-            )
+        except (json.JSONDecodeError, ValueError):
+            parsed = _fallback_parse_critique(raw_text)
+            if not parsed:
+                return VisionCritiqueResult(
+                    success=False,
+                    message=f"Failed to parse vision model response (no usable signal recovered)",
+                    raw_response=raw_text,
+                )
 
         report = _json_to_critique_report(parsed)
         repair_prompt = parsed.get("repair_prompt", "")

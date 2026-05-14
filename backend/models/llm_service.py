@@ -6,13 +6,20 @@ Supports OpenAI-compatible APIs (Ollama, vLLM, OpenAI, etc.).
 
 from __future__ import annotations
 
+import json
 import os
-from typing import AsyncIterator, Optional
+import re
+from typing import Any, AsyncIterator, Callable, Optional
 
 from openai import AsyncOpenAI
 
 from ..cad.examples import get_api_reference, get_examples_text
-from ..domain.models import HardConstraints, SoftConstraints
+from ..domain.models import (
+    DesignComponent,
+    DesignPlan,
+    HardConstraints,
+    SoftConstraints,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -213,50 +220,105 @@ class LLMService:
             api_key=self.api_key,
         )
 
+    def _is_thinking_model(self) -> bool:
+        """Return True for models that emit a separate `reasoning` stream channel.
+
+        Qwen3.x (including qwen3.6) and some Gemma variants put internal thinking
+        in a `reasoning` field rather than `content`. We need to either disable
+        that mode (for code generation, where thinking eats max_tokens) or
+        surface it as visible reasoning (for planning).
+        """
+        name = (self.model or "").lower()
+        return ("qwen3" in name) or ("qwen-3" in name)
+
+    def _suffix_no_think(self, text: str) -> str:
+        """Append the conventional `/no_think` directive for Qwen3 models.
+
+        For non-thinking models the suffix is harmless filler so we always add it.
+        """
+        if not self._is_thinking_model():
+            return text
+        if "/no_think" in text or "/no-think" in text:
+            return text
+        return text.rstrip() + "\n\n/no_think"
+
     async def generate(
         self,
         user_message: str,
         system_prompt: str,
         chat_history: Optional[list[dict]] = None,
+        allow_thinking: bool = False,
+        max_tokens: int = 4096,
     ) -> str:
-        """Generate a complete response (non-streaming)."""
+        """Generate a complete response (non-streaming).
+
+        For thinking-mode models we disable thinking by default — `generate` is
+        used for repair/research where we want the final answer immediately and
+        the model would otherwise burn the whole token budget on internal monolog.
+        Pass `allow_thinking=True` if you do want to keep thinking on.
+        """
+        user_msg = user_message if allow_thinking else self._suffix_no_think(user_message)
         messages = [{"role": "system", "content": system_prompt}]
         if chat_history:
             messages.extend(chat_history)
-        messages.append({"role": "user", "content": user_message})
+        messages.append({"role": "user", "content": user_msg})
 
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             temperature=0.2,
-            max_tokens=4096,
+            max_tokens=max_tokens,
         )
-        return response.choices[0].message.content or ""
+        msg = response.choices[0].message
+        content = msg.content or ""
+        # qwen3.x sometimes places the answer in `reasoning` when `/no_think`
+        # doesn't fully suppress thinking. Combine both so downstream parsers
+        # can find the code block regardless of which channel the model used.
+        reasoning = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", None) or ""
+        if reasoning and not content:
+            return reasoning
+        if reasoning:
+            return content + "\n" + reasoning
+        return content
 
     async def generate_stream(
         self,
         user_message: str,
         system_prompt: str,
         chat_history: Optional[list[dict]] = None,
+        allow_thinking: bool = False,
+        max_tokens: int = 4096,
+        on_reasoning: Optional[Callable[[str], Any]] = None,
     ) -> AsyncIterator[str]:
-        """Generate a streaming response, yielding chunks."""
+        """Stream the model response, yielding content chunks.
+
+        - Thinking-mode models (qwen3.x) emit internal thinking in `delta.reasoning`
+          instead of `delta.content`. By default we disable thinking via `/no_think`
+          for code generation so the token budget goes to the actual answer.
+        - If `on_reasoning` is provided, reasoning chunks are forwarded to it.
+        """
+        user_msg = user_message if allow_thinking else self._suffix_no_think(user_message)
         messages = [{"role": "system", "content": system_prompt}]
         if chat_history:
             messages.extend(chat_history)
-        messages.append({"role": "user", "content": user_message})
+        messages.append({"role": "user", "content": user_msg})
 
         stream = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             temperature=0.2,
-            max_tokens=4096,
+            max_tokens=max_tokens,
             stream=True,
         )
 
         async for chunk in stream:
             delta = chunk.choices[0].delta
-            if delta.content:
-                yield delta.content
+            content = getattr(delta, "content", None)
+            reasoning = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
+            if reasoning and on_reasoning:
+                await on_reasoning(reasoning)
+            if content:
+                yield content
 
     async def generate_cadquery(
         self,
@@ -286,7 +348,138 @@ class LLMService:
             failure_type=failure_type,
             geometry_stats=geometry_stats,
         )
-        return await self.generate(repair_prompt, system_prompt)
+        # Disable thinking so the whole token budget produces fixed code, and
+        # give the model enough headroom for a complete rewrite if needed.
+        return await self.generate(repair_prompt, system_prompt, max_tokens=6144)
+
+    async def plan_design(
+        self,
+        user_message: str,
+        chat_history: Optional[list[dict]] = None,
+        current_source: str = "",
+        current_model_id: Optional[str] = None,
+        research_context: str = "",
+        hard_constraints: Optional[HardConstraints] = None,
+        soft_constraints: Optional[SoftConstraints] = None,
+        on_chunk: Optional[Callable[[str], Any]] = None,
+    ) -> DesignPlan:
+        """Generate a structured design plan for the request *before* writing code.
+
+        The plan is streamed (if `on_chunk` is provided) so the user can see the
+        agent's reasoning. The result is a parsed `DesignPlan`; the raw text is
+        preserved in `plan.raw_text` for debugging.
+        """
+        hc = hard_constraints or HardConstraints()
+        sc = soft_constraints or SoftConstraints()
+
+        system_prompt = (
+            "You are an expert mechanical CAD engineer planning an FDM 3D-printable part "
+            "before writing any code.\n\n"
+            "## Your task\n"
+            "Decompose the request into concrete sub-shapes with explicit dimensions. "
+            "Think carefully about geometry, orientation, joinery, and printability. "
+            "Be specific — never say things like 'reasonable size' — pick numbers in mm.\n\n"
+            "## Output format (STRICT)\n"
+            "1. First, a short `<thinking>` section with your free-form reasoning (1-3 paragraphs). "
+            "   Use this to consider proportions, references, ambiguities, and risks.\n"
+            "2. Then a single ```json``` block with this schema (no other code blocks):\n"
+            "```json\n"
+            "{\n"
+            "  \"summary\": \"one-sentence description of the final part\",\n"
+            "  \"overall_dimensions_mm\": [X, Y, Z],\n"
+            "  \"components\": [\n"
+            "    {\n"
+            "      \"name\": \"unique_snake_case_name\",\n"
+            "      \"description\": \"what this sub-shape is and why\",\n"
+            "      \"primitive\": \"box|cylinder|sphere|extrude|revolve|polygon|cone|torus|custom\",\n"
+            "      \"dimensions\": {\"length\": 50, \"width\": 30, \"height\": 10},\n"
+            "      \"position\": [x, y, z],\n"
+            "      \"orientation\": \"axis=Z|free-form description\",\n"
+            "      \"operation\": \"base|union|cut|intersect|fillet|chamfer|shell|pattern\"\n"
+            "    }\n"
+            "  ],\n"
+            "  \"key_features\": [\"feature 1 that must be visible in the result\", ...],\n"
+            "  \"assumptions\": [\"specific assumption with chosen value\", ...],\n"
+            "  \"risks\": [\"a thing that can go wrong in CadQuery, with mitigation\", ...],\n"
+            "  \"parameters\": {\"param_name_in_mm\": 10.0}\n"
+            "}\n"
+            "```\n\n"
+            "## Constraints\n"
+            f"- Max print volume: {hc.max_x_mm} × {hc.max_y_mm} × {hc.max_z_mm} mm\n"
+            f"- Minimum wall thickness: {hc.min_wall_thickness_mm} mm\n"
+            f"- Material: {sc.material}; max overhang {sc.overhang_angle_max}°\n"
+            "- Z is the print direction (up); design parts to print flat on XY.\n\n"
+            "## Quality rules\n"
+            "- The component list MUST be enough that an experienced engineer could implement it "
+            "  in CadQuery from the plan alone, without seeing the original prompt.\n"
+            "- For each cut/hole, list it as a separate component with operation=cut and its own dimensions.\n"
+            "- For multi-part assemblies, name parts so the names match the final cq.Assembly children.\n"
+            "- `key_features` is a checklist used by the vision verifier — list every distinct visible feature.\n"
+        )
+
+        user_parts = []
+        if research_context:
+            user_parts.append(research_context)
+        if current_source:
+            user_parts.append(
+                f"## Current CadQuery source (checkpoint `{current_model_id}`)\n"
+                "Use this as the base; describe the *change* needed.\n"
+                f"```python\n{current_source}\n```\n"
+            )
+        user_parts.append(f"## Request\n{user_message}")
+        user_msg = "\n\n".join(user_parts)
+
+        messages = [{"role": "system", "content": system_prompt}]
+        if chat_history:
+            messages.extend(chat_history)
+        messages.append({"role": "user", "content": user_msg})
+
+        # Thinking-mode models (qwen3.x) stream their reasoning in a separate
+        # `reasoning` field. We forward that to the UI as visible thinking and
+        # combine reasoning + content for parsing in case the model put the JSON
+        # in the reasoning stream (some Qwen3 servers do that).
+        full_content = ""
+        full_reasoning = ""
+        try:
+            stream = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=8192,
+                stream=True,
+            )
+            async for chunk in stream:
+                delta = chunk.choices[0].delta
+                content = getattr(delta, "content", None)
+                reasoning = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
+                if reasoning:
+                    full_reasoning += reasoning
+                    if on_chunk:
+                        await on_chunk(reasoning)
+                if content:
+                    full_content += content
+                    if on_chunk:
+                        await on_chunk(content)
+        except Exception:
+            # If streaming fails, fall back to a non-stream call
+            resp = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.3,
+                max_tokens=8192,
+            )
+            full_content = resp.choices[0].message.content or ""
+
+        # Combine for parsing — both reasoning and content may contain useful
+        # signal (the <thinking> section vs the json block).
+        combined = full_reasoning
+        if full_content:
+            combined = (combined + "\n" + full_content) if combined else full_content
+        plan = parse_design_plan(combined)
+        if not plan.raw_reasoning and full_reasoning:
+            plan.raw_reasoning = full_reasoning.strip()
+        plan.raw_text = combined
+        return plan
 
     async def decide_research(self, user_message: str, chat_history: Optional[list[dict]] = None) -> Optional[str]:
         """
@@ -308,6 +501,143 @@ Search Query:"""
         if query.upper() == "NONE":
             return None
         return query
+
+
+def parse_design_plan(raw_text: str) -> DesignPlan:
+    """Parse a planner LLM response into a structured `DesignPlan`.
+
+    The planner is asked to emit `<thinking>...</thinking>` followed by a single
+    ```json``` block. This function is forgiving: it extracts whatever JSON it
+    can find, and preserves both the thinking text and the full raw response.
+    """
+    plan = DesignPlan(raw_text=raw_text)
+
+    # 1. Pull out <thinking> ... </thinking>
+    think_match = re.search(r"<thinking>\s*(.*?)\s*</thinking>", raw_text, re.DOTALL | re.IGNORECASE)
+    if think_match:
+        plan.raw_reasoning = think_match.group(1).strip()
+    else:
+        # If there's text before the JSON block, treat it as informal reasoning
+        json_start = raw_text.find("```json")
+        if json_start > 0:
+            plan.raw_reasoning = raw_text[:json_start].strip()
+        elif "{" in raw_text:
+            first_brace = raw_text.find("{")
+            if first_brace > 0:
+                plan.raw_reasoning = raw_text[:first_brace].strip()
+
+    # 2. Find a JSON object — prefer ```json``` blocks, fall back to first {...}
+    data: dict = {}
+    json_text = ""
+    json_match = re.search(r"```json\s*(.*?)```", raw_text, re.DOTALL | re.IGNORECASE)
+    if json_match:
+        json_text = json_match.group(1).strip()
+    else:
+        # First balanced-ish object
+        brace_match = re.search(r"\{[\s\S]*\}", raw_text)
+        if brace_match:
+            json_text = brace_match.group(0)
+
+    if json_text:
+        try:
+            data = json.loads(json_text)
+        except json.JSONDecodeError:
+            # Try to repair common issues (trailing commas, single quotes)
+            cleaned = re.sub(r",\s*([}\]])", r"\1", json_text)
+            try:
+                data = json.loads(cleaned)
+            except json.JSONDecodeError:
+                data = {}
+
+    if data:
+        plan.summary = str(data.get("summary", "")).strip()
+        dims = data.get("overall_dimensions_mm")
+        if isinstance(dims, list) and len(dims) == 3:
+            try:
+                plan.overall_dimensions_mm = [float(x) for x in dims]
+            except (TypeError, ValueError):
+                pass
+
+        for comp in data.get("components", []) or []:
+            if not isinstance(comp, dict):
+                continue
+            try:
+                plan.components.append(DesignComponent(
+                    name=str(comp.get("name", "")).strip() or f"component_{len(plan.components)+1}",
+                    description=str(comp.get("description", "")).strip(),
+                    primitive=str(comp.get("primitive", "")).strip(),
+                    dimensions={
+                        str(k): float(v)
+                        for k, v in (comp.get("dimensions") or {}).items()
+                        if isinstance(v, (int, float))
+                    },
+                    position=[float(x) for x in comp.get("position", [])] if isinstance(comp.get("position"), list) and len(comp.get("position") or []) == 3 else None,
+                    orientation=str(comp.get("orientation", "")).strip(),
+                    operation=str(comp.get("operation", "")).strip(),
+                ))
+            except Exception:
+                continue
+
+        plan.key_features = [str(s).strip() for s in (data.get("key_features") or []) if str(s).strip()]
+        plan.assumptions = [str(s).strip() for s in (data.get("assumptions") or []) if str(s).strip()]
+        plan.risks = [str(s).strip() for s in (data.get("risks") or []) if str(s).strip()]
+        plan.parameters = {
+            str(k): float(v)
+            for k, v in (data.get("parameters") or {}).items()
+            if isinstance(v, (int, float))
+        }
+
+    # If nothing was parsed, treat whole response as reasoning so it stays visible
+    if not plan.summary and not plan.components and not plan.raw_reasoning:
+        plan.raw_reasoning = raw_text.strip()
+
+    return plan
+
+
+def plan_to_prompt_text(plan: DesignPlan) -> str:
+    """Render a `DesignPlan` as a compact prompt block for the code generator."""
+    if not plan or (not plan.summary and not plan.components and not plan.key_features):
+        return ""
+
+    lines: list[str] = ["## Design Plan (follow this exactly)"]
+    if plan.summary:
+        lines.append(f"**Goal:** {plan.summary}")
+    if plan.overall_dimensions_mm and len(plan.overall_dimensions_mm) == 3:
+        x, y, z = plan.overall_dimensions_mm
+        lines.append(f"**Overall size target:** {x:.1f} × {y:.1f} × {z:.1f} mm")
+
+    if plan.parameters:
+        lines.append("**Named parameters (declare these at the top of the source):**")
+        for k, v in plan.parameters.items():
+            lines.append(f"- `{k} = {v}`  # mm")
+
+    if plan.components:
+        lines.append("**Components (each must be built and combined as the plan says):**")
+        for i, c in enumerate(plan.components, 1):
+            dim_text = ", ".join(f"{k}={v}" for k, v in c.dimensions.items())
+            pos_text = f", position={c.position}" if c.position else ""
+            op_text = f", operation={c.operation}" if c.operation else ""
+            prim = c.primitive or "shape"
+            lines.append(
+                f"{i}. `{c.name}` — {prim} ({dim_text}){pos_text}{op_text}: {c.description}"
+            )
+
+    if plan.key_features:
+        lines.append("**Key features that MUST be visible in the result:**")
+        for f in plan.key_features:
+            lines.append(f"- {f}")
+
+    if plan.assumptions:
+        lines.append("**Assumptions:**")
+        for a in plan.assumptions:
+            lines.append(f"- {a}")
+
+    if plan.risks:
+        lines.append("**Known pitfalls — handle these explicitly:**")
+        for r in plan.risks:
+            lines.append(f"- {r}")
+
+    return "\n".join(lines)
 
 
 def extract_code_from_response(response: str) -> str:

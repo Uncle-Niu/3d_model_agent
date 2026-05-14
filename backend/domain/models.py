@@ -87,6 +87,35 @@ class GeometryIssue(BaseModel):
     location_hint: str = ""
 
 
+class DesignComponent(BaseModel):
+    """One sub-shape in the decomposition of a design."""
+    name: str
+    description: str
+    primitive: str = ""  # e.g. "box", "cylinder", "extruded_polygon"
+    dimensions: dict[str, float] = Field(default_factory=dict)  # named dims in mm
+    position: Optional[list[float]] = None  # [x, y, z] center in mm
+    orientation: str = ""  # e.g. "axis=Z" or free-form
+    operation: str = ""    # union | cut | intersect | base | pattern | fillet
+
+
+class DesignPlan(BaseModel):
+    """Structured plan produced before code generation.
+
+    The agent uses this as a contract — both the code generator and the vision
+    critique receive it so the LLM and the verifier are evaluating against the
+    *same* explicit goal rather than just the user's free-form prompt.
+    """
+    summary: str = ""                      # one-paragraph goal statement
+    overall_dimensions_mm: Optional[list[float]] = None  # [x, y, z]
+    components: list[DesignComponent] = Field(default_factory=list)
+    key_features: list[str] = Field(default_factory=list)   # feature checklist
+    assumptions: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    parameters: dict[str, float] = Field(default_factory=dict)
+    raw_reasoning: str = ""                # the model's free-form thinking
+    raw_text: str = ""                     # full raw planner response (for debug)
+
+
 class CritiqueReport(BaseModel):
     issues: list[GeometryIssue] = Field(default_factory=list)
     overall_printability: float = 0.0  # 0.0 - 1.0
@@ -167,6 +196,7 @@ class ModelMetadata(BaseModel):
     vision_score: Optional[float] = None  # latest vision critique score
     assembly: Optional[AssemblyManifest] = None
     citations: list[SearchResult] = Field(default_factory=list)
+    plan: Optional[DesignPlan] = None  # structured design plan used for this attempt
 
 
 class ProjectConfig(BaseModel):

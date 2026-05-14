@@ -19,6 +19,7 @@ from ..cad.engine import process_cadquery_code
 from ..domain.models import (
     ChatMessage,
     CritiqueReport,
+    DesignPlan,
     FailureType,
     GeometryStats,
     ModelMetadata,
@@ -28,7 +29,12 @@ from ..domain.models import (
     SearchResult,
     PipelineStep,
 )
-from ..models.llm_service import LLMService, build_system_prompt, extract_code_from_response
+from ..models.llm_service import (
+    LLMService,
+    build_system_prompt,
+    extract_code_from_response,
+    plan_to_prompt_text,
+)
 from ..storage import StorageService
 from ..tools.web_research import search_web, get_research_prompt_extension
 from ..vision.critic import VisionCritic
@@ -50,10 +56,12 @@ class AgentOrchestrator:
         on_model_ready: Optional[Callable[[str, str], Any]] = None,
         on_critique: Optional[Callable[[CritiqueReport, Dict[str, str]], Any]] = None,
         on_error: Optional[Callable[[str, Optional[str]], Any]] = None,
+        on_plan: Optional[Callable[[DesignPlan], Any]] = None,
+        on_reasoning: Optional[Callable[[str, str], Any]] = None,
     ):
         self.storage = storage
         self.llm = llm or LLMService()
-        
+
         # Callbacks for real-time updates
         self.on_status = on_status
         self.on_chunk = on_chunk
@@ -61,6 +69,9 @@ class AgentOrchestrator:
         self.on_model_ready = on_model_ready
         self.on_critique = on_critique
         self.on_error = on_error
+        # New: reasoning channels (planning step, vision reasoning, etc.)
+        self.on_plan = on_plan
+        self.on_reasoning = on_reasoning
 
         self.current_steps: List[PipelineStep] = []
 
@@ -85,6 +96,15 @@ class AgentOrchestrator:
     async def _emit_error(self, message: str, failure_type: Optional[str] = None):
         if self.on_error:
             await self.on_error(message, failure_type)
+
+    async def _emit_reasoning(self, channel: str, text: str):
+        """Stream visible reasoning text (planning, vision thinking, etc.)."""
+        if self.on_reasoning:
+            await self.on_reasoning(channel, text)
+
+    async def _emit_plan(self, plan: DesignPlan):
+        if self.on_plan:
+            await self.on_plan(plan)
 
     async def check_ollama_connectivity(self) -> bool:
         ollama_base = self.llm.base_url.replace("/v1", "")
@@ -279,12 +299,76 @@ class AgentOrchestrator:
             },
         )
 
+        # 2.5 Planning step — decompose the request into a structured plan BEFORE
+        # writing any CadQuery. The plan is the contract carried through every
+        # repair iteration AND given to the vision verifier, so the generator and
+        # the critic evaluate against the same explicit goal.
+        await self._emit_status(
+            "planning",
+            "Decomposing the request into a design plan...",
+            details=(
+                "The agent thinks step-by-step about the geometry, picks specific dimensions, "
+                "lists every sub-shape, and records the key visible features the result must have. "
+                "You will see this reasoning stream live."
+            ),
+            data={
+                "why": "Planning before coding catches dimensional and decomposition mistakes early and gives the vision verifier an explicit checklist.",
+                "used": context_used + (["research context"] if research_context else []),
+            },
+        )
+
+        async def _plan_chunk(chunk: str):
+            await self._emit_reasoning("planning", chunk)
+
+        try:
+            plan = await self.llm.plan_design(
+                user_message=user_message,
+                chat_history=chat_ctx,
+                current_source=current_source,
+                current_model_id=current_model_id,
+                research_context=research_context,
+                hard_constraints=config.hard_constraints,
+                soft_constraints=config.soft_constraints,
+                on_chunk=_plan_chunk,
+            )
+        except Exception as e:
+            await self._emit_debug("planning_error", f"Planner failed: {e}", {"traceback": traceback.format_exc()})
+            plan = DesignPlan(raw_text="", summary="(planner failed — proceeding without a structured plan)")
+
+        await self._emit_plan(plan)
+        await self._emit_debug("plan_ready", "Design plan generated", {
+            "summary": plan.summary,
+            "overall_dimensions_mm": plan.overall_dimensions_mm,
+            "component_count": len(plan.components),
+            "key_feature_count": len(plan.key_features),
+            "components": [c.model_dump() for c in plan.components],
+            "key_features": plan.key_features,
+            "assumptions": plan.assumptions,
+            "risks": plan.risks,
+        })
+
+        plan_text = plan_to_prompt_text(plan)
+        plan_summary_for_status = plan.summary or (plan_text.splitlines()[0] if plan_text else "")
+        await self._emit_status(
+            "planning",
+            "Plan ready.",
+            details=plan_summary_for_status or "Proceeding without a structured plan.",
+            data={
+                "plan_summary": plan.summary,
+                "components": [c.model_dump() for c in plan.components],
+                "key_features": plan.key_features,
+                "assumptions": plan.assumptions,
+                "risks": plan.risks,
+            },
+        )
+
         last_code = ""
         last_error = ""
         last_critique: Optional[CritiqueReport] = None
         last_failure_type: Optional[str] = None
         last_geometry_stats: Dict = {}
         repair_notes: List[str] = []
+        consecutive_empty = 0
 
         # 3. Iterative Loop
         for iteration in range(1, self.MAX_REPAIR_ITERATIONS + 1):
@@ -302,6 +386,7 @@ class AgentOrchestrator:
                         current_source, current_model_id, selection,
                         research_context=research_context,
                         project_id=project_id,
+                        plan_text=plan_text,
                     )
                 elif last_critique and last_critique.issues:
                     # Vision-driven repair
@@ -316,7 +401,7 @@ class AgentOrchestrator:
                             ],
                         })
                     repair_prompt = self._build_vision_repair_prompt(
-                        last_code, last_critique, user_message, iteration
+                        last_code, last_critique, user_message, iteration, plan_text=plan_text
                     )
                     await self._emit_debug("repair_request", f"Vision repair attempt {iteration}", {
                         "score": last_critique.overall_printability,
@@ -360,7 +445,25 @@ class AgentOrchestrator:
 
                 if not last_code.strip():
                     last_error = "LLM returned empty code"
+                    consecutive_empty += 1
+                    await self._emit_debug(
+                        "empty_code",
+                        f"LLM returned empty code on attempt {iteration} (consecutive={consecutive_empty}).",
+                    )
+                    # Two consecutive empty responses → the model is stuck (usually
+                    # qwen3.x looping in reasoning). Abort early instead of wasting
+                    # the remaining iterations on the same failure mode.
+                    if consecutive_empty >= 2:
+                        await self._emit_error(
+                            "LLM returned empty code two attempts in a row; aborting. "
+                            "This usually means the model is looping in reasoning. "
+                            "Try a simpler/shorter prompt or switch to gemma4:31b.",
+                            "execution_error",
+                        )
+                        self._save_failure_chat(project_id, thread_id, None)
+                        return None
                     continue
+                consecutive_empty = 0
 
                 # ── Step B: Execute CadQuery ──────────────────────────────────
                 await self._emit_status("executing", "Running CadQuery code...",
@@ -459,7 +562,8 @@ class AgentOrchestrator:
                 critique = None
                 if render_paths and vision_ok:
                     critique = await self._run_vision_critique(
-                        render_paths, user_message, geometry_stats, project_id, model_id
+                        render_paths, user_message, geometry_stats, project_id, model_id,
+                        plan=plan,
                     )
                 elif render_paths:
                     await self._emit_status(
@@ -498,16 +602,23 @@ class AgentOrchestrator:
                     iteration=iteration,
                     vision_score=critique.overall_printability if critique else None,
                     citations=citations,
+                    plan=plan,
                 )
                 self.storage.save_model_metadata(project_id, metadata)
-                
+
                 if geometry_stats:
                     self.storage.save_geometry_analysis(project_id, model_id, geometry_stats)
 
-                # Decide on repair
+                # Decide on repair — repair when:
+                #   - vision score below threshold
+                #   - any error-level issue
+                #   - vision explicitly says the model does not match user intent
                 vision_score = critique.overall_printability if critique else 1.0
                 has_errors = critique and any(i.severity == "error" for i in critique.issues)
-                needs_repair = critique and (vision_score < self.VISION_SCORE_THRESHOLD or has_errors)
+                intent_mismatch = bool(critique and critique.matches_intent is False)
+                needs_repair = critique and (
+                    vision_score < self.VISION_SCORE_THRESHOLD or has_errors or intent_mismatch
+                )
 
                 if needs_repair and iteration < self.MAX_REPAIR_ITERATIONS:
                     last_critique = critique
@@ -550,9 +661,12 @@ class AgentOrchestrator:
         selection: Optional[SelectionContext] = None,
         research_context: str = "",
         project_id: str = "",
+        plan_text: str = "",
     ) -> str:
         effective_user_message = user_message
-        
+
+        plan_block = f"{plan_text}\n\n" if plan_text else ""
+
         selection_context = ""
         if selection:
             # Try to find more metadata in the manifest
@@ -580,7 +694,7 @@ class AgentOrchestrator:
 
         if current_source:
             effective_user_message = (
-                f"{selection_context}{research_context}"
+                f"{selection_context}{research_context}{plan_block}"
                 "The project has one model with versioned checkpoints. "
                 f"Use checkpoint `{current_model_id}` as the current base model and edit it for this request.\n\n"
                 "## Current CadQuery Source\n"
@@ -588,10 +702,15 @@ class AgentOrchestrator:
                 f"{current_source}\n"
                 "```\n\n"
                 "## Requested Change\n"
-                f"{user_message}"
+                f"{user_message}\n\n"
+                "Follow the Design Plan above. If the plan and the request conflict, prefer the plan but make the conflict explicit in a brief inline comment."
             )
         else:
-             effective_user_message = f"{selection_context}{research_context}## Requested Change\n{user_message}"
+            effective_user_message = (
+                f"{selection_context}{research_context}{plan_block}"
+                f"## Requested Change\n{user_message}\n\n"
+                "Follow the Design Plan above. Declare the named parameters at the top of the source so they are editable later."
+            )
 
         await self._emit_debug("llm_request", "Sending request to LLM", {
             "model": self.llm.model,
@@ -600,13 +719,43 @@ class AgentOrchestrator:
         })
 
         full_response = ""
+        # We also capture reasoning because qwen3.x sometimes emits the code
+        # block in the `reasoning` channel rather than `content` (especially for
+        # complex prompts). If `content` ends up empty we fall back to it.
+        reasoning_buffer = ""
         t_start = time.time()
-        stream = self.llm.generate_stream(effective_user_message, system_prompt, chat_ctx)
+
+        async def _code_reasoning(text: str):
+            nonlocal reasoning_buffer
+            reasoning_buffer += text
+            await self._emit_reasoning("generating", text)
+
+        stream = self.llm.generate_stream(
+            effective_user_message, system_prompt, chat_ctx,
+            on_reasoning=_code_reasoning,
+            max_tokens=6144,
+        )
         if inspect.isawaitable(stream):
             stream = await stream
         async for chunk in stream:
             full_response += chunk
             await self._emit_chunk(chunk)
+
+        # If the model put the code in the reasoning channel instead of content
+        # (a Qwen3.x failure mode), recover by extracting from reasoning. We
+        # prefer content when both have code blocks.
+        extracted = extract_code_from_response(full_response).strip()
+        if not extracted and reasoning_buffer:
+            extracted_from_reasoning = extract_code_from_response(reasoning_buffer).strip()
+            if extracted_from_reasoning:
+                await self._emit_debug(
+                    "code_recovered_from_reasoning",
+                    "Code block was in the reasoning channel; recovered.",
+                    {"reasoning_length": len(reasoning_buffer), "code_length": len(extracted_from_reasoning)},
+                )
+                # Synthesize the full_response so the rest of the pipeline (parse,
+                # save, etc.) sees the code as if it had arrived normally.
+                full_response = "```python\n" + extracted_from_reasoning + "\n```"
 
         elapsed = time.time() - t_start
         await self._emit_debug("llm_response", f"LLM response complete ({elapsed:.1f}s)")
@@ -629,17 +778,24 @@ class AgentOrchestrator:
             return {}
 
     async def _run_vision_critique(
-        self, render_paths: Dict[str, str], user_intent: str, 
-        geometry_stats: Dict, project_id: str, model_id: str
+        self, render_paths: Dict[str, str], user_intent: str,
+        geometry_stats: Dict, project_id: str, model_id: str,
+        plan: Optional[DesignPlan] = None,
     ) -> Optional[CritiqueReport]:
         await self._emit_status("critiquing", "Analyzing geometry with vision AI...",
-                              details="Running a multi-modal LLM over the rendered images to evaluate design intent and FDM printability.")
+                              details="Running a multi-modal LLM over the rendered images. The verifier is given the plan's key-features checklist and must explicitly mark each present/missing.")
         try:
             critic = VisionCritic()
             available, _ = await critic.is_available()
             if not available: return None
 
-            critique_result = await critic.critique(render_paths, user_intent, geometry_stats)
+            critique_result = await critic.critique(render_paths, user_intent, geometry_stats, plan=plan)
+            await self._emit_debug("vision_response", "Vision critique response received", {
+                "success": critique_result.success,
+                "message": critique_result.message,
+                "matches_intent": critique_result.matches_intent,
+                "raw_response_preview": (critique_result.raw_response or "")[:1500],
+            })
             if not critique_result.success: return None
 
             report = critique_result.report
@@ -658,22 +814,54 @@ class AgentOrchestrator:
             await self._emit_debug("vision_error", str(e))
             return None
 
-    def _build_vision_repair_prompt(self, code: str, critique: CritiqueReport, intent: str, iter: int) -> str:
+    def _build_vision_repair_prompt(
+        self,
+        code: str,
+        critique: CritiqueReport,
+        intent: str,
+        iter: int,
+        plan_text: str = "",
+    ) -> str:
         issues_text = "\n".join(
-            f"- [{i.severity.upper()}] {i.issue_type}: {i.description}" for i in critique.issues
-        )
-        return f"""The CAD model was reviewed by a vision AI and needs improvement.
-## User Intent: {intent}
-## Current Code:
+            f"- [{i.severity.upper()}] {i.issue_type} ({i.location_hint or 'unknown location'}): {i.description}"
+            for i in critique.issues
+        ) or "- (no specific issues listed — overall score below threshold or intent mismatch)"
+
+        intent_match_text = ""
+        if not critique.matches_intent:
+            intent_match_text = (
+                "\n## CRITICAL: The vision verifier reports the model does NOT match the user's intent. "
+                "Re-read the user's request and the plan; the current code is producing the wrong shape, "
+                "not just an imperfect one. Rework the geometry rather than tweaking dimensions.\n"
+            )
+
+        plan_block = f"\n{plan_text}\n" if plan_text else ""
+
+        return f"""The CAD model was rendered and reviewed by a vision verifier. Repair it.
+
+## User Intent
+{intent}
+{plan_block}
+## Current Code
 ```python
 {code}
 ```
-## Critique (iteration {iter}):
-Score: {critique.overall_printability:.2f}
-Issues:
+
+## Vision Critique (iteration {iter})
+- Overall score: {critique.overall_printability:.2f}
+- Matches intent: {critique.matches_intent}
+- Confidence: {critique.confidence:.2f}
+
+### Issues
 {issues_text}
-## Required Fixes:
-{critique.repair_prompt}
+{intent_match_text}
+## Required fixes (from verifier)
+{critique.repair_prompt or '(none provided — fix the issues listed above)'}
+
+## Output rules
+- Output ONLY a single ```python block with the corrected code.
+- Keep the same named parameters at the top so the design stays editable.
+- Make the fewest changes needed to address every listed issue.
 """
 
     def _build_final_response(self, mid, iter, res, critique, score, repair_notes: List[str] = None) -> str:
@@ -697,13 +885,13 @@ Issues:
         
         return f"✓ Model generated (`{mid}`, attempt {iter}).{size_text}{m_text}{critique_text}{repair_text}"
 
-    def _save_failure_chat(self, pid, tid, mid):
+    def _save_failure_chat(self, pid, tid, mid=None):
         self.storage.append_chat_thread_message(
             pid, tid,
             ChatMessage(
-                role="assistant", 
-                content="Failed to generate valid model after retries.", 
+                role="assistant",
+                content="Failed to generate valid model after retries.",
                 model_id=mid,
-                steps=self.current_steps
-            )
+                steps=self.current_steps,
+            ),
         )

@@ -736,13 +736,24 @@ Critical for:
 
 Avoid Blender entirely.
 
-Recommended rendering approaches:
+Recommended rendering approaches (current pipeline uses VTK, with fallback chain):
 
-- OpenCascade offscreen rendering
-- VTK
-- pygfx
-- trimesh rendering
-- headless Three.js rendering
+1. **VTK** — primary. Offscreen window, proper Z-buffer, multi-sampled AA.
+   Renders solid opaque parts with feature-edge overlay (>15° crease angle).
+2. **pyrender** — secondary, if installed and OSMesa/EGL is available.
+3. **matplotlib 3D** — emergency fallback only. Painter's-algorithm depth sort
+   produces visible artifacts on CAD meshes; the VLM should NOT see this if VTK
+   is available.
+
+Every render is post-processed with PIL annotations:
+
+- View label (ISO / FRONT / RIGHT / TOP / SECTION_X / SECTION_Y) — top-left
+- Real-world bounding box in mm — top-right
+- Axis triad (+X red, +Y green, +Z blue) — bottom-left, view-correct
+- ~10mm scale bar — bottom-right
+
+These overlays let a multimodal LLM read scale, orientation, and view identity
+without doing pixel measurement.
 
 ### Responsibilities
 
@@ -804,10 +815,12 @@ class CritiqueReport(BaseModel):
 
 # Automatic Repair Loop
 
-Core AI workflow:
+Core AI workflow (current, post-2026-05-14):
 
 ```text
-Generate CAD
+Plan (decompose intent → DesignPlan: components, dims, key-features checklist)
+    ↓
+Generate CAD (plan injected into prompt; named parameters required)
     ↓
 Execute
     ↓
@@ -815,14 +828,25 @@ Validate (deterministic geometry checks)
     ↓
 Tessellate → glTF
     ↓
-Render
+Render (VTK offscreen, multi-angle, annotated)
     ↓
-Vision Critique
+Vision Critique (uses the plan's key-features checklist as ground truth)
     ↓
-Repair Geometry (if needed)
+Repair Geometry (triggered by low score OR matches_intent=false
+                 OR any missing checklist feature)
     ↓
-Repeat
+Repeat (plan is preserved across iterations)
 ```
+
+The **plan is the contract** that the generator and the verifier share. A vision
+verifier that doesn't know what to look for is mostly useless; giving it the
+same explicit feature checklist the generator was given turns it into a real
+acceptance test. The plan also makes the agent's reasoning legible — it streams
+to the UI as `reasoning_chunk` events before code generation begins.
+
+For thinking-mode models (qwen3.x) the planner allows thinking and surfaces it
+as visible reasoning; the code generator appends `/no_think` so the token
+budget is spent on code, not internal monolog.
 
 ## Failure Model
 
