@@ -176,9 +176,9 @@ function App() {
     viewport.reset();
   }
 
-  async function handleRenameProject() {
+  async function handleRenameProject(newName: string) {
     if (!project) return;
-    const name = window.prompt('Project name', project.name)?.trim();
+    const name = newName.trim();
     if (!name || name === project.name) return;
 
     const updated = await api.put<Project>(`/api/projects/${project.project_id}`, { name });
@@ -345,18 +345,25 @@ function App() {
           <h1>CAD Agent</h1>
         </div>
         <div className="app-header-project">
-          <select
-            className="project-select"
-            value={project.project_id}
-            onChange={(e) => handleProjectChange(e.target.value)}
-            aria-label="Select project"
-          >
-            {projects.map((p) => (
-              <option key={p.project_id} value={p.project_id}>
-                {p.name} (Created: {formatLocalDateTime(p.created_at)}, Last saved: {formatLocalDateTime(p.updated_at)})
-              </option>
-            ))}
-          </select>
+          <div className="project-dropdown">
+            <button className="project-dropdown-btn" type="button">
+              <div className="project-dropdown-name">{project.name}</div>
+              <div className="project-dropdown-time">Created: {formatLocalDateTime(project.created_at)} &nbsp;|&nbsp; Last saved: {formatLocalDateTime(project.updated_at)}</div>
+            </button>
+            <div className="project-dropdown-menu">
+              {projects.map((p) => (
+                <button 
+                  key={p.project_id} 
+                  className={p.project_id === project.project_id ? 'active' : ''}
+                  onClick={() => handleProjectChange(p.project_id)}
+                  type="button"
+                >
+                  <div className="project-dropdown-name">{p.name}</div>
+                  <div className="project-dropdown-time">Created: {formatLocalDateTime(p.created_at)} &nbsp;|&nbsp; Last saved: {formatLocalDateTime(p.updated_at)}</div>
+                </button>
+              ))}
+            </div>
+          </div>
           <button className="header-btn" type="button" onClick={handleNewProject}>
             New project
           </button>
@@ -376,14 +383,6 @@ function App() {
             onClick={handleOpenProjectFolder}
             title={project.project_path}
           >
-          </button>
-          <button
-            className={`header-btn ${historySidebarOpen ? 'active' : ''}`}
-            type="button"
-            onClick={() => setHistorySidebarOpen(!historySidebarOpen)}
-            title="Toggle history sidebar"
-          >
-            📋 History
           </button>
           
           <div className="export-dropdown">
@@ -438,6 +437,14 @@ function App() {
 
         {/* 3D Viewport */}
         <div className="app-viewport">
+          <button 
+            className="viewport-history-toggle"
+            onClick={() => setHistorySidebarOpen(!historySidebarOpen)}
+            title={historySidebarOpen ? "Close history" : "Open history"}
+          >
+            {historySidebarOpen ? '◀' : '▶'}
+          </button>
+
           {!historySidebarOpen && (
             <div className="model-version-bar">
               <span className="model-version-label">Model version</span>

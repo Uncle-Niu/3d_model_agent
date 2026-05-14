@@ -96,7 +96,7 @@ function CheckboxField({
 interface Props {
   isOpen: boolean;
   onClose: () => void;
-  onRenameProject: () => void;
+  onRenameProject: (newName: string) => void;
   onDeleteProject: () => void;
 }
 
@@ -106,6 +106,7 @@ export default function ProjectSettingsPanel({ isOpen, onClose, onRenameProject,
   const { project, setProject } = useProjectStore();
   const [hard, setHard] = useState<HardConstraints | null>(null);
   const [soft, setSoft] = useState<SoftConstraints | null>(null);
+  const [projectName, setProjectName] = useState('');
   
   const [mode, setMode] = useState<EditMode>('project');
   
@@ -120,6 +121,7 @@ export default function ProjectSettingsPanel({ isOpen, onClose, onRenameProject,
     if (mode === 'project' && project) {
       setHard({ ...project.hard_constraints });
       setSoft({ ...project.soft_constraints });
+      setProjectName(project.name);
     } else if (mode === 'global') {
       fetchGlobalSettings();
     }
@@ -162,6 +164,9 @@ export default function ProjectSettingsPanel({ isOpen, onClose, onRenameProject,
     try {
       if (mode === 'project') {
         if (!project) return;
+        if (projectName.trim() && projectName !== project.name) {
+          onRenameProject(projectName);
+        }
         const updated = await api.put<Project>(`/api/projects/${project.project_id}/constraints`, {
           hard_constraints: hard,
           soft_constraints: soft,
@@ -235,6 +240,7 @@ export default function ProjectSettingsPanel({ isOpen, onClose, onRenameProject,
     if (mode === 'project' && project) {
       setHard({ ...project.hard_constraints });
       setSoft({ ...project.soft_constraints });
+      setProjectName(project.name);
       setSavedMsg('');
     } else if (mode === 'global') {
       fetchGlobalSettings();
@@ -279,7 +285,6 @@ export default function ProjectSettingsPanel({ isOpen, onClose, onRenameProject,
           {/* ── Project General Settings ────────────────────────────────────── */}
           <section className="constraint-section">
             <div className="constraint-section-header">
-              <span className="constraint-badge">GENERAL</span>
               <div>
                 <h3 className="constraint-section-title">Project Info</h3>
               </div>
@@ -292,15 +297,12 @@ export default function ProjectSettingsPanel({ isOpen, onClose, onRenameProject,
                   <input
                     type="text"
                     className="constraint-input"
-                    value={project.name}
-                    disabled
+                    value={projectName}
+                    onChange={(e) => setProjectName(e.target.value)}
                   />
                 </div>
               </div>
-              <button className="constraint-btn constraint-btn--ghost" onClick={onRenameProject}>
-                Rename
-              </button>
-              <button className="constraint-btn" style={{ color: 'var(--red-500)', borderColor: 'var(--red-500)' }} onClick={() => { onClose(); onDeleteProject(); }}>
+              <button className="constraint-btn constraint-btn--ghost" style={{ color: 'var(--red-500)' }} onClick={() => { onClose(); onDeleteProject(); }}>
                 Delete
               </button>
             </div>
