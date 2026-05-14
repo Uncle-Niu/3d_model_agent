@@ -384,6 +384,7 @@ function App() {
             type="button"
             onClick={handleOpenProjectFolder}
             title={project.project_path}
+          >
           </button>
           <button
             className={`header-btn ${historySidebarOpen ? 'active' : ''}`}

@@ -139,6 +139,13 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
                     selection=active_selection,
                 )
 
+                messages = storage.get_chat_thread_messages(project_id, thread_id)
+                if messages and messages[-1].role == "assistant":
+                    await ws.send_text(json.dumps({
+                        "type": "chat_response",
+                        "content": messages[-1].content
+                    }))
+
             elif msg_type == "selection":
                 feature_name = msg.get("feature_name")
                 point = msg.get("point")

@@ -27,9 +27,9 @@ async def lifespan(app: FastAPI):
     # Initialize LLM service (lazy — only if needed)
     app.state.llm = None
 
-    print(f"✓ CAD Agent backend started (data: {data_root.absolute()})")
+    print(f"[OK] CAD Agent backend started (data: {data_root.absolute()})")
     yield
-    print("✓ CAD Agent backend shutting down")
+    print("[OK] CAD Agent backend shutting down")
 
 
 def create_app() -> FastAPI:
