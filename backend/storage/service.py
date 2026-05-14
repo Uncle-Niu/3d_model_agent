@@ -26,7 +26,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
 
-from ..domain.models import ChatMessage, ModelMetadata, ProjectConfig
+from ..domain.models import ChatMessage, ModelMetadata, ProjectConfig, GlobalSettings
 
 
 # Default data root — relative to where the server runs
@@ -41,6 +41,23 @@ class StorageService:
         self.root.mkdir(parents=True, exist_ok=True)
         self.projects_dir = self.root / "projects"
         self.projects_dir.mkdir(exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Global Settings
+    # ------------------------------------------------------------------
+
+    def get_global_settings(self) -> GlobalSettings:
+        """Load global settings from disk, or return defaults if not found."""
+        settings_path = self.root / "global_settings.json"
+        if not settings_path.exists():
+            return GlobalSettings()
+        data = self._read_json(settings_path)
+        return GlobalSettings(**data)
+
+    def save_global_settings(self, settings: GlobalSettings) -> None:
+        """Save global settings to disk."""
+        settings_path = self.root / "global_settings.json"
+        self._write_json(settings_path, settings.model_dump(mode="json"))
 
     # ------------------------------------------------------------------
     # Projects

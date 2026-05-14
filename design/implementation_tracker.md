@@ -102,7 +102,7 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 
 ---
 
-## 6. Frontend — Constraint Panel
+## 6. Frontend — Project Settings & Constraints Panel
 
 - ✅ Hard constraint editor UI
 - ✅ Print volume dimension inputs
@@ -113,6 +113,12 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - ✅ Soft constraints model defined (`SoftConstraints` in domain/models.py)
 - ✅ Constraints stored in project config
 - ✅ PUT `/api/projects/{id}/constraints` endpoint exists
+- ✅ `GlobalSettings` model defined
+- ✅ Global settings fallback logic implemented
+- ✅ Save constraints as global defaults
+- ✅ Reset constraints to global defaults
+- ✅ Project rename functionality integrated
+- ✅ Project delete functionality integrated
 
 ---
 

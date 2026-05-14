@@ -28,6 +28,11 @@ export interface SoftConstraints {
   notes: string;
 }
 
+export interface GlobalSettings {
+  hard_constraints: HardConstraints;
+  soft_constraints: SoftConstraints;
+}
+
 export interface ModelInfo {
   model_id: string;
   created_at: string;

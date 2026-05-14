@@ -8,7 +8,7 @@
  * - Camera preset buttons (Iso, Front, Right, Top)
  * - Assembly-level mesh click → selection → WS selection message
  * - Visual highlight of selected mesh
- * - Download menu (STL / STEP / GLB)
+ * - Visual highlight of selected mesh
  */
 
 import { Canvas, useThree } from '@react-three/fiber';
@@ -16,7 +16,6 @@ import { OrbitControls, Environment, Grid, Center, useGLTF, Box } from '@react-t
 import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { useViewportStore, useSelectionStore, useAssemblyStore } from '../stores';
-import { api } from '../api';
 
 // ---------------------------------------------------------------------------
 // Camera preset helper — imperative camera moves
@@ -222,26 +221,12 @@ interface ViewportProps {
 }
 
 export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}) {
-  const { glbUrl, isLoading, currentModelId, currentProjectId } = useViewportStore();
+  const { glbUrl, isLoading } = useViewportStore();
   const { partsVisibility, explodedFactor } = useAssemblyStore();
-  const [showDownloadMenu, setShowDownloadMenu] = useState(false);
-  const [downloadingFormat, setDownloadingFormat] = useState<string | null>(null);
   const [wireframe, setWireframe] = useState(false);
   const [showBbox, setShowBbox] = useState(false);
   const [cameraPreset, setCameraPreset] = useState<CameraPreset | null>(null);
   const { selectedFeatureName, setSelection } = useSelectionStore();
-  const downloadMenuRef = useRef<HTMLDivElement>(null);
-
-  // Close download menu when clicking outside
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (downloadMenuRef.current && !downloadMenuRef.current.contains(event.target as Node)) {
-        setShowDownloadMenu(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
 
   // Reset view modes when model changes
   useEffect(() => {
@@ -274,25 +259,6 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
     setCameraPreset(preset);
     // Reset after one frame so repeated clicks to same preset still trigger
     setTimeout(() => setCameraPreset(null), 50);
-  }
-
-  async function handleDownload(format: 'stl' | 'step' | 'glb') {
-    if (!currentModelId || !currentProjectId) {
-      alert('Model information not available');
-      return;
-    }
-    try {
-      setDownloadingFormat(format);
-      await api.downloadFile(
-        `/api/projects/${currentProjectId}/models/${currentModelId}/${format}`,
-        `model-${currentModelId}.${format}`,
-      );
-      setShowDownloadMenu(false);
-    } catch (err) {
-      alert(`Failed to download ${format.toUpperCase()}: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setDownloadingFormat(null);
-    }
   }
 
   return (
@@ -415,65 +381,6 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
           >
             ⬜ BBox
           </button>
-        </div>
-      )}
-
-      {/* Download button */}
-      {glbUrl && !isLoading && (
-        <div className="viewport-download-btn-container" ref={downloadMenuRef}>
-          <button
-            className="viewport-download-btn"
-            onClick={() => setShowDownloadMenu(!showDownloadMenu)}
-            disabled={downloadingFormat !== null}
-            title="Download 3D model file"
-          >
-            {downloadingFormat ? (
-              <>
-                <span className="download-spinner" />
-                Downloading...
-              </>
-            ) : (
-              <>⬇️ Download</>
-            )}
-          </button>
-
-          {showDownloadMenu && (
-            <div className="viewport-download-menu">
-              <button
-                className="viewport-download-option"
-                onClick={() => handleDownload('stl')}
-                disabled={downloadingFormat !== null}
-              >
-                <span className="option-icon">📦</span>
-                <span className="option-text">
-                  <div className="option-title">STL File</div>
-                  <div className="option-desc">Best for 3D printing</div>
-                </span>
-              </button>
-              <button
-                className="viewport-download-option"
-                onClick={() => handleDownload('step')}
-                disabled={downloadingFormat !== null}
-              >
-                <span className="option-icon">🔧</span>
-                <span className="option-text">
-                  <div className="option-title">STEP File</div>
-                  <div className="option-desc">For CAD software</div>
-                </span>
-              </button>
-              <button
-                className="viewport-download-option"
-                onClick={() => handleDownload('glb')}
-                disabled={downloadingFormat !== null}
-              >
-                <span className="option-icon">🌐</span>
-                <span className="option-text">
-                  <div className="option-title">GLB File</div>
-                  <div className="option-desc">For web/viewing</div>
-                </span>
-              </button>
-            </div>
-          )}
         </div>
       )}
     </div>

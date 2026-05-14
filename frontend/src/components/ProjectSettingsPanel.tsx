@@ -1,22 +1,11 @@
 /**
- * ConstraintPanel — slide-up editor for hard and soft engineering constraints.
- *
- * Hard constraints (deterministic, validated post-generation):
- *   - Print volume (X/Y/Z mm)
- *   - Minimum wall thickness (mm)
- *   - Max file size (MB)
- *
- * Soft constraints (injected into LLM prompt):
- *   - Max overhang angle
- *   - Prefer fillets / chamfers
- *   - Material assumption
- *   - Free-text notes
+ * ProjectSettingsPanel — slide-up editor for project settings, constraints, and global defaults.
  */
 
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { useProjectStore } from '../stores';
-import type { HardConstraints, Project, SoftConstraints } from '../types';
+import type { HardConstraints, Project, SoftConstraints, GlobalSettings } from '../types';
 
 // ---------------------------------------------------------------------------
 // Helper — labeled number input
@@ -31,6 +20,7 @@ function NumberField({
   max,
   step,
   onChange,
+  disabled
 }: {
   id: string;
   label: string;
@@ -40,6 +30,7 @@ function NumberField({
   max?: number;
   step?: number;
   onChange: (v: number) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="constraint-field">
@@ -56,6 +47,7 @@ function NumberField({
           max={max}
           step={step ?? 1}
           onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+          disabled={disabled}
         />
         {unit && <span className="constraint-unit">{unit}</span>}
       </div>
@@ -72,11 +64,13 @@ function CheckboxField({
   label,
   checked,
   onChange,
+  disabled
 }: {
   id: string;
   label: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="constraint-field constraint-field--checkbox">
@@ -86,6 +80,7 @@ function CheckboxField({
         className="constraint-checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
+        disabled={disabled}
       />
       <label htmlFor={id} className="constraint-label">
         {label}
@@ -95,29 +90,50 @@ function CheckboxField({
 }
 
 // ---------------------------------------------------------------------------
-// Main ConstraintPanel
+// Main ProjectSettingsPanel
 // ---------------------------------------------------------------------------
 
 interface Props {
   isOpen: boolean;
   onClose: () => void;
+  onRenameProject: () => void;
+  onDeleteProject: () => void;
 }
 
-export default function ConstraintPanel({ isOpen, onClose }: Props) {
+type EditMode = 'project' | 'global';
+
+export default function ProjectSettingsPanel({ isOpen, onClose, onRenameProject, onDeleteProject }: Props) {
   const { project, setProject } = useProjectStore();
   const [hard, setHard] = useState<HardConstraints | null>(null);
   const [soft, setSoft] = useState<SoftConstraints | null>(null);
+  
+  const [mode, setMode] = useState<EditMode>('project');
+  
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState('');
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // Initialise local state from project whenever panel opens or project changes
+  // Load state based on mode
   useEffect(() => {
-    if (project) {
+    if (!isOpen) return;
+    
+    if (mode === 'project' && project) {
       setHard({ ...project.hard_constraints });
       setSoft({ ...project.soft_constraints });
+    } else if (mode === 'global') {
+      fetchGlobalSettings();
     }
-  }, [project, isOpen]);
+  }, [project, isOpen, mode]);
+
+  async function fetchGlobalSettings() {
+    try {
+      const settings = await api.get<GlobalSettings>('/api/settings/defaults');
+      setHard({ ...settings.hard_constraints });
+      setSoft({ ...settings.soft_constraints });
+    } catch (err) {
+      console.error("Failed to load global settings", err);
+    }
+  }
 
   // Close on Escape
   useEffect(() => {
@@ -140,16 +156,25 @@ export default function ConstraintPanel({ isOpen, onClose }: Props) {
   }, [isOpen, onClose]);
 
   async function handleSave() {
-    if (!project || !hard || !soft) return;
+    if (!hard || !soft) return;
     setSaving(true);
     setSavedMsg('');
     try {
-      const updated = await api.put<Project>(`/api/projects/${project.project_id}/constraints`, {
-        hard_constraints: hard,
-        soft_constraints: soft,
-      });
-      setProject(updated);
-      setSavedMsg('✓ Constraints saved');
+      if (mode === 'project') {
+        if (!project) return;
+        const updated = await api.put<Project>(`/api/projects/${project.project_id}/constraints`, {
+          hard_constraints: hard,
+          soft_constraints: soft,
+        });
+        setProject(updated);
+        setSavedMsg('✓ Project constraints saved');
+      } else {
+        await api.put<GlobalSettings>('/api/settings/defaults', {
+          hard_constraints: hard,
+          soft_constraints: soft,
+        });
+        setSavedMsg('✓ Global defaults saved');
+      }
       setTimeout(() => setSavedMsg(''), 3000);
     } catch (err) {
       setSavedMsg(`❌ Save failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -158,11 +183,63 @@ export default function ConstraintPanel({ isOpen, onClose }: Props) {
     }
   }
 
-  function handleReset() {
+  async function handleResetToGlobalDefaults() {
     if (!project) return;
-    setHard({ ...project.hard_constraints });
-    setSoft({ ...project.soft_constraints });
-    setSavedMsg('');
+    try {
+      setSaving(true);
+      const settings = await api.get<GlobalSettings>('/api/settings/defaults');
+      setHard({ ...settings.hard_constraints });
+      setSoft({ ...settings.soft_constraints });
+      setSavedMsg('Loaded global defaults. Click save to apply.');
+    } catch(err) {
+      setSavedMsg('❌ Failed to load defaults');
+    } finally {
+      setSaving(false);
+      setTimeout(() => setSavedMsg(''), 3000);
+    }
+  }
+
+  async function handleSaveAsGlobalDefaults() {
+    if (!hard || !soft) return;
+    try {
+      setSaving(true);
+      await api.put<GlobalSettings>('/api/settings/defaults', {
+        hard_constraints: hard,
+        soft_constraints: soft,
+      });
+      setSavedMsg('✓ Saved as global defaults');
+    } catch(err) {
+      setSavedMsg('❌ Failed to save global defaults');
+    } finally {
+      setSaving(false);
+      setTimeout(() => setSavedMsg(''), 3000);
+    }
+  }
+
+  async function handleResetOriginalDefaults() {
+    try {
+      setSaving(true);
+      const settings = await api.post<GlobalSettings>('/api/settings/defaults/reset', {});
+      setHard({ ...settings.hard_constraints });
+      setSoft({ ...settings.soft_constraints });
+      setSavedMsg('✓ Reset to original hardcoded defaults');
+    } catch(err) {
+      setSavedMsg('❌ Failed to reset original defaults');
+    } finally {
+      setSaving(false);
+      setTimeout(() => setSavedMsg(''), 3000);
+    }
+  }
+
+  function handleReset() {
+    if (mode === 'project' && project) {
+      setHard({ ...project.hard_constraints });
+      setSoft({ ...project.soft_constraints });
+      setSavedMsg('');
+    } else if (mode === 'global') {
+      fetchGlobalSettings();
+      setSavedMsg('');
+    }
   }
 
   if (!project || !hard || !soft) return null;
@@ -180,25 +257,76 @@ export default function ConstraintPanel({ isOpen, onClose }: Props) {
         ref={panelRef}
         className={`constraint-panel ${isOpen ? 'open' : ''}`}
         role="dialog"
-        aria-label="Engineering Constraints Editor"
+        aria-label="Project Settings"
         aria-modal="true"
       >
         {/* Header */}
         <div className="constraint-header">
           <div className="constraint-header-title">
             <span className="constraint-header-icon">⚙️</span>
-            <h2>Engineering Constraints</h2>
+            <h2>Project Settings</h2>
           </div>
           <button
             className="constraint-close-btn"
             onClick={onClose}
-            aria-label="Close constraints panel"
+            aria-label="Close settings panel"
           >
             ✕
           </button>
         </div>
 
         <div className="constraint-body">
+          {/* ── Project General Settings ────────────────────────────────────── */}
+          <section className="constraint-section">
+            <div className="constraint-section-header">
+              <span className="constraint-badge">GENERAL</span>
+              <div>
+                <h3 className="constraint-section-title">Project Info</h3>
+              </div>
+            </div>
+            
+            <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-end', marginBottom: '1rem' }}>
+              <div className="constraint-field" style={{ flex: 1, marginBottom: 0 }}>
+                <label className="constraint-label">Project Name</label>
+                <div className="constraint-input-row">
+                  <input
+                    type="text"
+                    className="constraint-input"
+                    value={project.name}
+                    disabled
+                  />
+                </div>
+              </div>
+              <button className="constraint-btn constraint-btn--ghost" onClick={onRenameProject}>
+                Rename
+              </button>
+              <button className="constraint-btn" style={{ color: 'var(--red-500)', borderColor: 'var(--red-500)' }} onClick={() => { onClose(); onDeleteProject(); }}>
+                Delete
+              </button>
+            </div>
+          </section>
+
+          {/* ── Mode Toggle ─────────────────────────────────────────────────── */}
+          <section className="constraint-section">
+            <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
+              <button 
+                className={`constraint-btn ${mode === 'project' ? 'constraint-btn--primary' : 'constraint-btn--ghost'}`}
+                onClick={() => setMode('project')}
+              >
+                Project Constraints
+              </button>
+              <button 
+                className={`constraint-btn ${mode === 'global' ? 'constraint-btn--primary' : 'constraint-btn--ghost'}`}
+                onClick={() => setMode('global')}
+              >
+                Global Defaults
+              </button>
+            </div>
+            <p className="constraint-section-desc">
+              {mode === 'project' ? 'Editing constraints for this specific project only.' : 'Editing default constraints applied to all newly created projects.'}
+            </p>
+          </section>
+
           {/* ── Hard Constraints ─────────────────────────────────────────────── */}
           <section className="constraint-section">
             <div className="constraint-section-header">
@@ -352,24 +480,75 @@ export default function ConstraintPanel({ isOpen, onClose }: Props) {
               {savedMsg}
             </span>
           )}
-          <div className="constraint-footer-actions">
-            <button
-              className="constraint-btn constraint-btn--ghost"
-              type="button"
-              onClick={handleReset}
-              disabled={saving}
-            >
-              Reset
-            </button>
-            <button
-              className="constraint-btn constraint-btn--primary"
-              type="button"
-              onClick={handleSave}
-              disabled={saving}
-            >
-              {saving ? 'Saving…' : 'Save Constraints'}
-            </button>
-          </div>
+          
+          {mode === 'project' ? (
+            <div className="constraint-footer-actions">
+              <button
+                className="constraint-btn constraint-btn--ghost"
+                type="button"
+                onClick={handleResetToGlobalDefaults}
+                disabled={saving}
+                title="Reset this project's constraints to match the global defaults"
+              >
+                Reset to Global Defaults
+              </button>
+              <button
+                className="constraint-btn constraint-btn--ghost"
+                type="button"
+                onClick={handleSaveAsGlobalDefaults}
+                disabled={saving}
+                title="Save these project constraints as the new global defaults"
+              >
+                Save as Global Defaults
+              </button>
+              <div style={{ flex: 1 }}></div>
+              <button
+                className="constraint-btn constraint-btn--ghost"
+                type="button"
+                onClick={handleReset}
+                disabled={saving}
+              >
+                Undo Changes
+              </button>
+              <button
+                className="constraint-btn constraint-btn--primary"
+                type="button"
+                onClick={handleSave}
+                disabled={saving}
+              >
+                {saving ? 'Saving…' : 'Save Project Settings'}
+              </button>
+            </div>
+          ) : (
+            <div className="constraint-footer-actions">
+              <button
+                className="constraint-btn constraint-btn--ghost"
+                type="button"
+                onClick={handleResetOriginalDefaults}
+                disabled={saving}
+                title="Reset global defaults to factory original (hardcoded) settings"
+              >
+                Reset to Original Hardcoded Defaults
+              </button>
+              <div style={{ flex: 1 }}></div>
+              <button
+                className="constraint-btn constraint-btn--ghost"
+                type="button"
+                onClick={handleReset}
+                disabled={saving}
+              >
+                Undo Changes
+              </button>
+              <button
+                className="constraint-btn constraint-btn--primary"
+                type="button"
+                onClick={handleSave}
+                disabled={saving}
+              >
+                {saving ? 'Saving…' : 'Save Global Defaults'}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </>

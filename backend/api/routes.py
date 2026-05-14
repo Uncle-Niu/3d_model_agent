@@ -30,6 +30,7 @@ from ..domain.models import (
     SoftConstraints,
     ImportResponse,
     ImportedFile,
+    GlobalSettings,
 )
 from ..storage import StorageService
 
@@ -178,6 +179,34 @@ def _project_response(storage: StorageService, config: ProjectConfig) -> Project
 
 
 # ---------------------------------------------------------------------------
+# Global Settings endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/settings/defaults", response_model=GlobalSettings)
+async def get_global_settings(request: Request):
+    """Get the editable global default constraints."""
+    storage = _get_storage(request)
+    return storage.get_global_settings()
+
+
+@router.put("/settings/defaults", response_model=GlobalSettings)
+async def update_global_settings(body: GlobalSettings, request: Request):
+    """Update the editable global default constraints."""
+    storage = _get_storage(request)
+    storage.save_global_settings(body)
+    return body
+
+
+@router.post("/settings/defaults/reset", response_model=GlobalSettings)
+async def reset_global_settings(request: Request):
+    """Reset the editable global defaults to hardcoded original defaults."""
+    storage = _get_storage(request)
+    default_settings = GlobalSettings()
+    storage.save_global_settings(default_settings)
+    return default_settings
+
+
+# ---------------------------------------------------------------------------
 # Project endpoints
 # ---------------------------------------------------------------------------
 
@@ -187,11 +216,13 @@ async def create_project(body: CreateProjectRequest, request: Request):
     storage = _get_storage(request)
     project_id = _generate_project_id()
 
+    global_settings = storage.get_global_settings()
+
     config = ProjectConfig(
         project_id=project_id,
         name=body.name,
-        hard_constraints=body.hard_constraints or HardConstraints(),
-        soft_constraints=body.soft_constraints or SoftConstraints(),
+        hard_constraints=body.hard_constraints or global_settings.hard_constraints,
+        soft_constraints=body.soft_constraints or global_settings.soft_constraints,
     )
     storage.create_project(config)
 

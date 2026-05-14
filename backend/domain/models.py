@@ -70,6 +70,12 @@ class SoftConstraints(BaseModel):
     notes: str = ""
 
 
+class GlobalSettings(BaseModel):
+    """Editable global defaults for new projects."""
+    hard_constraints: HardConstraints = Field(default_factory=HardConstraints)
+    soft_constraints: SoftConstraints = Field(default_factory=SoftConstraints)
+
+
 # ---------------------------------------------------------------------------
 # Geometry / Artifacts
 # ---------------------------------------------------------------------------

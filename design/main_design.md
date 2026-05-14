@@ -282,11 +282,19 @@ Maintain revision history:
 
 ---
 
-## 5. Constraint Panel
+## 5. Project Settings & Global Defaults
 
-Editable engineering constraints displayed in UI.
+Editable project settings and constraints displayed in UI.
 
-### Hard Constraints (Deterministic, Validated Post-Generation)
+### Three-Layer Configuration Model
+
+1. **Project Level**: Constraints specific to the current project.
+2. **Editable Global Defaults**: Saved fallback constraints for any new projects created. Users can save a project's constraints as the global defaults or reset their project to match these global defaults.
+3. **Hardcoded Original Defaults**: The system's factory settings defined in the domain models. The editable global defaults can be reset back to these original values.
+
+### Constraint Types
+
+**Hard Constraints (Deterministic, Validated Post-Generation)**
 
 Configured in UI, enforced by code after CAD generation:
 

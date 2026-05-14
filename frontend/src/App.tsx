@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react';
 import Chat from './components/Chat';
-import ConstraintPanel from './components/ConstraintPanel';
+import ProjectSettingsPanel from './components/ProjectSettingsPanel';
 import DebugPanel from './components/DebugPanel';
 import HistorySidebar from './components/HistorySidebar';
 import SourcePanel from './components/SourcePanel';
@@ -222,20 +222,17 @@ function App() {
     }
   }
 
-  function handleExport(format: 'step' | 'stl' | 'source') {
+  async function handleExport(format: 'step' | 'stl' | 'glb' | 'source') {
     if (!project || !viewport.currentModelId) return;
     
-    // Construct the direct download URL
-    const baseUrl = api.defaults.baseURL || '';
-    const url = `${baseUrl}/projects/${project.project_id}/models/${viewport.currentModelId}/${format}`;
-    
-    // Create a temporary link and trigger download
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `model_${viewport.currentModelId}.${format === 'source' ? 'py' : format}`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    try {
+      await api.downloadFile(
+        `/api/projects/${project.project_id}/models/${viewport.currentModelId}/${format}`,
+        `model_${viewport.currentModelId}.${format === 'source' ? 'py' : format}`
+      );
+    } catch (err) {
+      alert(`Failed to export ${format.toUpperCase()}: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   async function handleThreadChange(threadId: string) {
@@ -356,26 +353,20 @@ function App() {
           >
             {projects.map((p) => (
               <option key={p.project_id} value={p.project_id}>
-                {p.name}
+                {p.name} (Created: {formatLocalDateTime(p.created_at)}, Last saved: {formatLocalDateTime(p.updated_at)})
               </option>
             ))}
           </select>
           <button className="header-btn" type="button" onClick={handleNewProject}>
             New project
           </button>
-          <button className="header-btn" type="button" onClick={handleRenameProject}>
-            Rename
-          </button>
-          <button className="header-btn danger" type="button" onClick={handleDeleteProject}>
-            Delete
-          </button>
           <button
             className="header-btn constraint-btn-header"
             type="button"
             onClick={() => setConstraintPanelOpen(true)}
-            title="Edit engineering constraints"
+            title="Edit project settings and constraints"
           >
-            ⚙️ Constraints
+            ⚙️ Project Settings
           </button>
         </div>
         <div className="app-header-actions">
@@ -411,6 +402,12 @@ function App() {
                 disabled={!viewport.currentModelId}
               >
                 Download STL (.stl)
+              </button>
+              <button 
+                onClick={() => handleExport('glb')} 
+                disabled={!viewport.currentModelId}
+              >
+                Download GLB (.glb)
               </button>
               <button 
                 onClick={() => handleExport('source')} 
@@ -508,9 +505,11 @@ function App() {
       {/* Debug Panel — bottom overlay */}
       <SourcePanel />
       <DebugPanel />
-      <ConstraintPanel
+      <ProjectSettingsPanel
         isOpen={constraintPanelOpen}
         onClose={() => setConstraintPanelOpen(false)}
+        onRenameProject={handleRenameProject}
+        onDeleteProject={handleDeleteProject}
       />
     </div>
   );
