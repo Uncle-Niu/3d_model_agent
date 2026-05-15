@@ -388,14 +388,10 @@ function PipelineStepRow({
   const rationale = typeof data.rationale === 'string' ? data.rationale : (typeof data.why === 'string' ? data.why : null);
   const outcome = typeof data.outcome === 'string' ? data.outcome : null;
   // Three semantically distinct list fields:
-  //   - inputs: context fed into this step (agent-side bookkeeping)
-  //   - found:  things this step retrieved / discovered (data sources)
-  //   - skipped: things this step deliberately did not use
-  const inputs = Array.isArray(data.inputs)
-    ? (data.inputs as string[])
-    : Array.isArray(data.used)
-    ? (data.used as string[])
-    : null;
+  //   - inputs:  context fed into this step (what the agent passed in)
+  //   - found:   data this step retrieved / discovered (search hits, recipes)
+  //   - skipped: tools or sources the step deliberately chose not to use
+  const inputs = Array.isArray(data.inputs) ? (data.inputs as string[]) : null;
   const found = Array.isArray(data.found) ? (data.found as string[]) : null;
   const skipped = Array.isArray(data.skipped) ? (data.skipped as string[]) : null;
   const errorExcerpt = typeof data.error_excerpt === 'string' ? data.error_excerpt
@@ -591,8 +587,16 @@ function PipelineStepRow({
               </p>
             )}
             {(skipped && skipped.length > 0) && (
-              <p className="pipeline-step-skipped" title="What this step deliberately did not use">
-                <span className="pipeline-step-list-label">Skipped:</span> {joinNicely(skipped)}
+              <p
+                className="pipeline-step-skipped"
+                title={
+                  'Tools or data sources the agent deliberately did NOT call '
+                  + 'for this step — e.g. it decided web search was not '
+                  + 'needed, or the vision model is unavailable. Distinct '
+                  + 'from a failed call: nothing was attempted.'
+                }
+              >
+                <span className="pipeline-step-list-label">Not used:</span> {joinNicely(skipped)}
               </p>
             )}
 

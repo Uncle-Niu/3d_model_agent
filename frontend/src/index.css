@@ -990,7 +990,6 @@ body {
   gap: 4px;
 }
 
-.pipeline-step-used,
 .pipeline-step-inputs,
 .pipeline-step-found,
 .pipeline-step-skipped {

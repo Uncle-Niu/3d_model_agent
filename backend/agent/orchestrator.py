@@ -253,7 +253,7 @@ class AgentOrchestrator:
             data={
                 "sub_stage": "context",
                 "rationale": "Grounds the design in this project's constraints, recent chat, and any active selection.",
-                "used": [
+                "inputs": [
                     f"{len(chat_ctx)} prior chat message(s)",
                     "hard constraints (bounding box, wall thickness)",
                     "soft constraints (material, finishing preferences)",
@@ -650,7 +650,7 @@ class AgentOrchestrator:
                                           data={
                                               "iteration": iteration,
                                               "rationale": "CadQuery lets us control mechanical geometry parametrically.",
-                                              "used": context_used + ["CadQuery API", "design plan"],
+                                              "inputs": context_used + ["CadQuery API", "design plan"],
                                               "model_id": model_id,
                                               "reasoning_channel": "generating",
                                               "in_progress": True,
@@ -673,7 +673,7 @@ class AgentOrchestrator:
                             "repair_kind": "vision",
                             "rationale": "The rendered model passed execution but did not meet the visual/printability quality threshold.",
                             "outcome": f"Fixing {len(last_critique.issues)} vision issue(s).",
-                            "used": [
+                            "inputs": [
                                 f"vision score {last_critique.overall_printability:.2f}",
                                 f"{len(last_critique.issues)} critique issue(s)",
                             ],
@@ -722,7 +722,7 @@ class AgentOrchestrator:
                             "repair_kind": "execution",
                             "rationale": "The previous generated source did not produce valid geometry, so the next LLM call is constrained by the failure.",
                             "outcome": f"Trying to fix: {err_first}",
-                            "used": [last_failure_type or "execution_error", err_first],
+                            "inputs": [last_failure_type or "execution_error", err_first],
                             "error_excerpt": (last_error[:600] if last_error else None),
                             "model_id": model_id,
                         })
@@ -771,7 +771,7 @@ class AgentOrchestrator:
                                       data={
                                           "iteration": iteration,
                                           "rationale": "Builds the 3D B-Rep solids and checks they are manifold.",
-                                          "used": ["CadQuery source"],
+                                          "inputs": ["CadQuery source"],
                                           "in_progress": True,
                                       })
                 
@@ -839,7 +839,7 @@ class AgentOrchestrator:
                                       data={
                                           "iteration": iteration,
                                           "rationale": "Convert B-Rep solids to a GLB mesh so the browser can render the model.",
-                                          "used": ["B-Rep solids"],
+                                          "inputs": ["B-Rep solids"],
                                           "in_progress": True,
                                       })
                 
@@ -1104,7 +1104,7 @@ class AgentOrchestrator:
                               details=None,
                               data={
                                   "rationale": "Multi-angle snapshots feed the vision verifier.",
-                                  "used": ["3D shape"],
+                                  "inputs": ["3D shape"],
                                   "in_progress": True,
                               })
         try:
@@ -1129,7 +1129,7 @@ class AgentOrchestrator:
                               details=None,
                               data={
                                   "rationale": "A multimodal LLM scores each plan key-feature as present / missing.",
-                                  "used": [f"{len(render_paths)} render(s)", "design plan checklist"],
+                                  "inputs": [f"{len(render_paths)} render(s)", "design plan checklist"],
                                   "in_progress": True,
                               })
         try:
