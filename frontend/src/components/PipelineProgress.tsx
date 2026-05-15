@@ -11,16 +11,16 @@ interface PipelineProgressProps {
 }
 
 const STAGE_ICONS: Record<string, string> = {
-  planning: '...',
-  researching: 'R',
-  generating: 'G',
-  executing: 'E',
-  tessellating: 'T',
-  rendering: 'P',
-  critiquing: 'C',
-  repairing: 'F',
-  failed: '!',
-  validating: 'V',
+  planning: '◴',
+  researching: '⌕',
+  generating: '✦',
+  executing: '▶',
+  tessellating: '◆',
+  rendering: '◐',
+  critiquing: '◉',
+  repairing: '↻',
+  failed: '✕',
+  validating: '✓',
 };
 
 function renderList(label: string, values?: string[]) {

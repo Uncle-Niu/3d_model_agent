@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { useProjectStore } from '../stores';
 import type { HardConstraints, Project, SoftConstraints, GlobalSettings } from '../types';
+import { toast } from './ui/Toast';
 
 // ---------------------------------------------------------------------------
 // Helper — labeled number input
@@ -172,17 +173,16 @@ export default function ProjectSettingsPanel({ isOpen, onClose, onRenameProject,
           soft_constraints: soft,
         });
         setProject(updated);
-        setSavedMsg('✓ Project constraints saved');
+        toast.success('Project constraints saved');
       } else {
         await api.put<GlobalSettings>('/api/settings/defaults', {
           hard_constraints: hard,
           soft_constraints: soft,
         });
-        setSavedMsg('✓ Global defaults saved');
+        toast.success('Global defaults saved');
       }
-      setTimeout(() => setSavedMsg(''), 3000);
     } catch (err) {
-      setSavedMsg(`❌ Save failed: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(`Save failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setSaving(false);
     }
@@ -302,9 +302,30 @@ export default function ProjectSettingsPanel({ isOpen, onClose, onRenameProject,
                   />
                 </div>
               </div>
-              <button className="constraint-btn constraint-btn--ghost" style={{ color: 'var(--red-500)' }} onClick={() => { onClose(); onDeleteProject(); }}>
-                Delete
+              <button
+                className="btn btn-danger"
+                onClick={() => {
+                  onClose();
+                  onDeleteProject();
+                }}
+              >
+                Delete project
               </button>
+            </div>
+
+            <div className="constraint-field" style={{ marginBottom: 0 }}>
+              <label className="constraint-label">Project Path</label>
+              <div className="constraint-input-row">
+                <input
+                  type="text"
+                  className="constraint-input constraint-input--readonly"
+                  value={project?.project_path ?? ''}
+                  readOnly
+                  spellCheck={false}
+                  title={project?.project_path}
+                  onFocus={(e) => e.currentTarget.select()}
+                />
+              </div>
             </div>
           </section>
 

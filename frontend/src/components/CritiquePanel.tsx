@@ -1,14 +1,10 @@
 /**
- * CritiquePanel — displays vision AI critique results inline in the chat.
- *
- * Shows:
- * - Printability score (color-coded)
- * - Issue list (error/warning/info badges)
- * - Multi-angle render thumbnails
+ * CritiquePanel — vision critique results, rendered inline inside the
+ * assistant message that produced it.
  */
 
 import { api } from '../api';
-import { useCritiqueStore } from '../stores';
+import { useChatStore, useCritiqueStore } from '../stores';
 
 const SEVERITY_COLOR: Record<string, string> = {
   error: 'var(--critique-error)',
@@ -24,6 +20,7 @@ const SEVERITY_LABEL: Record<string, string> = {
 
 export default function CritiquePanel() {
   const { critique, clearCritique } = useCritiqueStore();
+  const isGenerating = useChatStore((s) => s.isGenerating);
 
   if (!critique) return null;
 
@@ -34,10 +31,11 @@ export default function CritiquePanel() {
     score >= 0.65 ? 'var(--critique-warn)' :
     'var(--critique-error)';
 
+  // Only claim "Repairing…" when there's actually an active pipeline run.
   const scoreLabel =
     score >= 0.8 ? 'Good' :
-    score >= 0.65 ? 'Needs Improvement' :
-    'Poor – Repairing...';
+    score >= 0.65 ? 'Needs improvement' :
+    isGenerating ? 'Poor — repairing…' : 'Poor';
 
   const viewOrder = ['iso', 'front', 'right', 'top'] as const;
 
@@ -45,7 +43,7 @@ export default function CritiquePanel() {
     <div className="critique-panel">
       <div className="critique-header">
         <div className="critique-title">
-          <span className="critique-icon">👁</span>
+          <span className="critique-icon" aria-hidden="true">◉</span>
           Vision Critique
         </div>
         <div className="critique-score" style={{ color: scoreColor }}>
@@ -61,7 +59,6 @@ export default function CritiquePanel() {
         </div>
       )}
 
-      {/* Render thumbnails */}
       {Object.keys(renderUrls).length > 0 && (
         <div className="critique-renders">
           {viewOrder.map((view) =>
@@ -71,9 +68,7 @@ export default function CritiquePanel() {
                   src={api.url(renderUrls[view])}
                   alt={`${view} view`}
                   className="critique-render-img"
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).style.display = 'none';
-                  }}
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                 />
                 <span className="critique-render-label">{view.toUpperCase()}</span>
               </div>
@@ -82,8 +77,7 @@ export default function CritiquePanel() {
         </div>
       )}
 
-      {/* Issues */}
-      {issues.length > 0 && (
+      {issues.length > 0 ? (
         <div className="critique-issues">
           {issues.map((issue, i) => (
             <div key={i} className="critique-issue">
@@ -101,10 +95,8 @@ export default function CritiquePanel() {
             </div>
           ))}
         </div>
-      )}
-
-      {issues.length === 0 && (
-        <div className="critique-ok">✅ No printability issues detected</div>
+      ) : (
+        <div className="critique-ok">✓ No printability issues detected</div>
       )}
     </div>
   );

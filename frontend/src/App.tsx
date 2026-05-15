@@ -2,18 +2,20 @@
  * Main App component — layout with viewport, chat panel, and debug panel.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Chat from './components/Chat';
 import ProjectSettingsPanel from './components/ProjectSettingsPanel';
-import DebugPanel from './components/DebugPanel';
+import BottomDock from './components/BottomDock';
+import AppIcon from './components/AppIcon';
 import HistorySidebar from './components/HistorySidebar';
-import SourcePanel from './components/SourcePanel';
 import Viewport from './components/Viewport';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useChatStore, useProjectStore, useSelectionStore, useViewportStore } from './stores';
 import { api } from './api';
 import { formatLocalDateTime } from './time';
 import type { ChatMessage, ChatThread, ChatThreadSummary, ModelInfo, Project } from './types';
+import { confirmDialog, promptDialog, DialogHost } from './components/ui/ConfirmDialog';
+import { toast, ToastHost } from './components/ui/Toast';
 
 function App() {
   const { project, setProject } = useProjectStore();
@@ -27,7 +29,35 @@ function App() {
   const [initializing, setInitializing] = useState(true);
   const [constraintPanelOpen, setConstraintPanelOpen] = useState(false);
   const [historySidebarOpen, setHistorySidebarOpen] = useState(true);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const projectMenuRef = useRef<HTMLDivElement>(null);
+  const exportMenuRef = useRef<HTMLDivElement>(null);
   const { sendMessage, sendRawMessage, isConnected } = useWebSocket(project?.project_id ?? null, activeThreadId);
+
+  // Close popovers on outside-click / Escape
+  useEffect(() => {
+    function handleDocClick(e: MouseEvent) {
+      if (projectMenuOpen && projectMenuRef.current && !projectMenuRef.current.contains(e.target as Node)) {
+        setProjectMenuOpen(false);
+      }
+      if (exportMenuOpen && exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setExportMenuOpen(false);
+      }
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setProjectMenuOpen(false);
+        setExportMenuOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleDocClick);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleDocClick);
+      document.removeEventListener('keydown', handleKey);
+    };
+  }, [projectMenuOpen, exportMenuOpen]);
 
   // On mount: create or load a project
   useEffect(() => {
@@ -198,9 +228,6 @@ function App() {
 
   async function handleDeleteProject() {
     if (!project) return;
-    const confirmed = window.confirm(`Delete project "${project.name}"? This removes its chats and models.`);
-    if (!confirmed) return;
-
     await api.delete(`/api/projects/${project.project_id}`);
     const remaining = projects.filter((item) => item.project_id !== project.project_id);
 
@@ -226,20 +253,23 @@ function App() {
       await api.post(`/api/projects/${project.project_id}/open_folder`);
     } catch (err) {
       console.error('Failed to open project folder:', err);
-      alert(`Could not open project folder: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(`Could not open project folder: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
   async function handleExport(format: 'step' | 'stl' | 'glb' | 'source') {
     if (!project || !viewport.currentModelId) return;
-    
+
     try {
       await api.downloadFile(
         `/api/projects/${project.project_id}/models/${viewport.currentModelId}/${format}`,
         `model_${viewport.currentModelId}.${format === 'source' ? 'py' : format}`
       );
+      toast.success(`Exported ${format.toUpperCase()}`);
     } catch (err) {
-      alert(`Failed to export ${format.toUpperCase()}: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(`Failed to export ${format.toUpperCase()}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setExportMenuOpen(false);
     }
   }
 
@@ -260,35 +290,53 @@ function App() {
     viewport.reset();
   }
 
-  async function handleRenameThread() {
-    if (!project || !activeThreadId) return;
-    const current = chatThreads.find((thread) => thread.thread_id === activeThreadId);
-    const title = window.prompt('Chat title', current?.title ?? 'New chat')?.trim();
+  async function handleRenameThread(threadId: string, nextTitle?: string) {
+    if (!project) return;
+    const current = chatThreads.find((thread) => thread.thread_id === threadId);
+    let title = nextTitle?.trim();
+    if (!title) {
+      const result = await promptDialog({
+        title: 'Rename chat',
+        initialValue: current?.title ?? 'New chat',
+        placeholder: 'Chat title',
+        confirmLabel: 'Rename',
+      });
+      title = result?.trim();
+    }
     if (!title || title === current?.title) return;
 
     const updated = await api.put<ChatThread>(
-      `/api/projects/${project.project_id}/chat_threads/${activeThreadId}`,
+      `/api/projects/${project.project_id}/chat_threads/${threadId}`,
       { title }
     );
     setChatThreads((threads) =>
       threads.map((thread) =>
-        thread.thread_id === activeThreadId
+        thread.thread_id === threadId
           ? { ...thread, title: updated.title, updated_at: updated.updated_at }
           : thread
       )
     );
+    toast.success('Chat renamed');
   }
 
-  async function handleDeleteThread() {
-    if (!project || !activeThreadId) return;
-    const current = chatThreads.find((thread) => thread.thread_id === activeThreadId);
-    const confirmed = window.confirm(`Delete chat "${current?.title ?? 'this chat'}"?`);
+  async function handleDeleteThread(threadId: string) {
+    if (!project) return;
+    const current = chatThreads.find((thread) => thread.thread_id === threadId);
+    const confirmed = await confirmDialog({
+      title: 'Delete chat?',
+      message: `Delete chat "${current?.title ?? 'this chat'}"?`,
+      confirmLabel: 'Delete chat',
+      tone: 'danger',
+    });
     if (!confirmed) return;
 
-    await api.delete(`/api/projects/${project.project_id}/chat_threads/${activeThreadId}`);
+    await api.delete(`/api/projects/${project.project_id}/chat_threads/${threadId}`);
     await loadChatThreads(project.project_id);
-    chat.reset();
-    viewport.reset();
+    if (threadId === activeThreadId) {
+      chat.reset();
+      viewport.reset();
+    }
+    toast.success('Chat deleted');
   }
 
   function handleSend(message: string) {
@@ -329,7 +377,7 @@ function App() {
     return (
       <div className="app-loading">
         <div className="app-loading-spinner" />
-        <p>Connecting to CAD Agent...</p>
+        <p>Connecting to Mission Crafter...</p>
       </div>
     );
   }
@@ -349,88 +397,113 @@ function App() {
       {/* Header */}
       <header className="app-header">
         <div className="app-header-brand">
-          <span className="app-logo">◆</span>
-          <h1>CAD Agent</h1>
+          <span className="app-logo" aria-hidden="true">
+            <AppIcon size={22} />
+          </span>
+          <h1>Mission Crafter</h1>
         </div>
+
         <div className="app-header-project">
-          <div className="project-dropdown">
-            <button className="project-dropdown-btn" type="button">
-              <div className="project-dropdown-name">{project.name}</div>
-              <div className="project-dropdown-time">Created: {formatLocalDateTime(project.created_at)} &nbsp;|&nbsp; Last saved: {formatLocalDateTime(project.updated_at)}</div>
+          <div className="project-dropdown" ref={projectMenuRef}>
+            <button
+              className="project-dropdown-btn"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={projectMenuOpen}
+              onClick={() => setProjectMenuOpen((v) => !v)}
+            >
+              <div className="project-dropdown-name">
+                {project.name}
+                <span className="project-dropdown-caret" aria-hidden="true">▾</span>
+              </div>
+              <div className="project-dropdown-time">
+                Saved {formatLocalDateTime(project.updated_at)}
+              </div>
             </button>
-            <div className="project-dropdown-menu">
-              {projects.map((p) => (
-                <button 
-                  key={p.project_id} 
-                  className={p.project_id === project.project_id ? 'active' : ''}
-                  onClick={() => handleProjectChange(p.project_id)}
+            {projectMenuOpen && (
+              <div className="project-dropdown-menu" role="menu">
+                {projects.map((p) => (
+                  <button
+                    key={p.project_id}
+                    role="menuitem"
+                    className={p.project_id === project.project_id ? 'active' : ''}
+                    onClick={() => { setProjectMenuOpen(false); handleProjectChange(p.project_id); }}
+                    type="button"
+                  >
+                    <div className="project-dropdown-name">{p.name}</div>
+                    <div className="project-dropdown-time">
+                      Saved {formatLocalDateTime(p.updated_at)}
+                    </div>
+                  </button>
+                ))}
+                <div className="project-dropdown-divider" />
+                <button
+                  role="menuitem"
+                  onClick={() => { setProjectMenuOpen(false); handleNewProject(); }}
                   type="button"
                 >
-                  <div className="project-dropdown-name">{p.name}</div>
-                  <div className="project-dropdown-time">Created: {formatLocalDateTime(p.created_at)} &nbsp;|&nbsp; Last saved: {formatLocalDateTime(p.updated_at)}</div>
+                  <div className="project-dropdown-name">＋ New project</div>
                 </button>
-              ))}
-            </div>
+                <button
+                  role="menuitem"
+                  onClick={() => { setProjectMenuOpen(false); handleOpenProjectFolder(); }}
+                  type="button"
+                  title={project.project_path}
+                >
+                  <div className="project-dropdown-name">📂 Open project folder</div>
+                </button>
+              </div>
+            )}
           </div>
-          <button className="header-btn" type="button" onClick={handleNewProject}>
-            New project
-          </button>
+
           <button
-            className="header-btn constraint-btn-header"
+            className="btn btn-ghost"
             type="button"
             onClick={() => setConstraintPanelOpen(true)}
             title="Edit project settings and constraints"
           >
-            ⚙️ Project Settings
+            Project settings
           </button>
         </div>
+
         <div className="app-header-actions">
-          <button
-            className="project-path-link"
-            type="button"
-            onClick={handleOpenProjectFolder}
-            title={project.project_path}
-          >
-          </button>
-          
-          <div className="export-dropdown">
-            <button className="header-btn" type="button">
-              📤 Export
+          <div className="export-dropdown" ref={exportMenuRef}>
+            <button
+              className="btn btn-ghost"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={exportMenuOpen}
+              disabled={!viewport.currentModelId}
+              title={viewport.currentModelId ? 'Download model files' : 'Generate a model first'}
+              onClick={() => setExportMenuOpen((v) => !v)}
+            >
+              Export <span aria-hidden="true">▾</span>
             </button>
-            <div className="export-menu">
-              <button 
-                onClick={() => handleExport('step')} 
-                disabled={!viewport.currentModelId}
-              >
-                Download STEP (.step)
-              </button>
-              <button 
-                onClick={() => handleExport('stl')} 
-                disabled={!viewport.currentModelId}
-              >
-                Download STL (.stl)
-              </button>
-              <button 
-                onClick={() => handleExport('glb')} 
-                disabled={!viewport.currentModelId}
-              >
-                Download GLB (.glb)
-              </button>
-              <button 
-                onClick={() => handleExport('source')} 
-                disabled={!viewport.currentModelId}
-              >
-                Download Source (.py)
-              </button>
-              <hr />
-              <button onClick={handleOpenProjectFolder}>
-                Open Project Folder
-              </button>
-            </div>
+            {exportMenuOpen && viewport.currentModelId && (
+              <div className="export-menu" role="menu">
+                <button role="menuitem" onClick={() => handleExport('step')}>
+                  Download STEP (.step)
+                </button>
+                <button role="menuitem" onClick={() => handleExport('stl')}>
+                  Download STL (.stl)
+                </button>
+                <button role="menuitem" onClick={() => handleExport('glb')}>
+                  Download GLB (.glb)
+                </button>
+                <button role="menuitem" onClick={() => handleExport('source')}>
+                  Download source (.py)
+                </button>
+              </div>
+            )}
           </div>
 
-          <span className="connection-dot connected" />
-          <span>Connected</span>
+          <div
+            className={`connection-status ${isConnected ? 'is-connected' : 'is-disconnected'}`}
+            title={isConnected ? 'Realtime connection live' : 'Reconnecting to server…'}
+          >
+            <span className={`connection-dot ${isConnected ? 'connected' : 'disconnected'}`} />
+            <span>{isConnected ? 'Connected' : 'Reconnecting…'}</span>
+          </div>
         </div>
       </header>
 
@@ -439,16 +512,23 @@ function App() {
         {historySidebarOpen && (
           <HistorySidebar
             versions={modelVersions}
-            onSelect={handleModelVersionChange}
+            onSelectModel={handleModelVersionChange}
+            threads={chatThreads}
+            activeThreadId={activeThreadId}
+            onSelectThread={handleThreadChange}
+            onNewThread={handleNewThread}
+            onRenameThread={handleRenameThread}
+            onDeleteThread={handleDeleteThread}
           />
         )}
 
         {/* 3D Viewport */}
         <div className="app-viewport">
-          <button 
+          <button
             className="viewport-history-toggle"
             onClick={() => setHistorySidebarOpen(!historySidebarOpen)}
-            title={historySidebarOpen ? "Close history" : "Open history"}
+            title={historySidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+            aria-label={historySidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
           >
             {historySidebarOpen ? '◀' : '▶'}
           </button>
@@ -468,7 +548,7 @@ function App() {
                 ) : (
                   modelVersions.map((model) => (
                     <option key={model.model_id} value={model.model_id}>
-                      {model.model_id} - {formatLocalDateTime(model.created_at)} - {model.prompt || 'checkpoint'}
+                      #{model.model_id.slice(-6)} — {formatLocalDateTime(model.created_at)} — {model.prompt || 'checkpoint'}
                     </option>
                   ))
                 )}
@@ -485,44 +565,22 @@ function App() {
 
         {/* Chat Panel */}
         <div className="app-chat">
-          <div className="chat-thread-bar">
-            <select
-              className="thread-select"
-              value={activeThreadId ?? ''}
-              onChange={(e) => handleThreadChange(e.target.value)}
-              aria-label="Select chat history"
-            >
-              {chatThreads.map((thread) => (
-                <option key={thread.thread_id} value={thread.thread_id}>
-                  {thread.title}
-                </option>
-              ))}
-            </select>
-            <div className="chat-thread-actions">
-              <button className="chat-thread-new" type="button" onClick={handleNewThread}>
-                New chat
-              </button>
-              <button className="chat-thread-new" type="button" onClick={handleRenameThread}>
-                Rename
-              </button>
-              <button className="chat-thread-new danger" type="button" onClick={handleDeleteThread}>
-                Delete
-              </button>
-            </div>
-          </div>
           <Chat onSend={handleSend} disabled={!activeThreadId || !isConnected} />
         </div>
       </div>
 
-      {/* Debug Panel — bottom overlay */}
-      <SourcePanel />
-      <DebugPanel />
+      {/* Unified bottom dock — Source / Assembly / Features / Parameters / Debug */}
+      <BottomDock />
+
       <ProjectSettingsPanel
         isOpen={constraintPanelOpen}
         onClose={() => setConstraintPanelOpen(false)}
         onRenameProject={handleRenameProject}
         onDeleteProject={handleDeleteProject}
       />
+
+      <DialogHost />
+      <ToastHost />
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../api';
 import { useViewportStore } from '../stores';
 import type { CadParameter, ModelInfo } from '../types';
+import { toast } from './ui/Toast';
 
 type ExecuteSourceResponse = {
   success: boolean;
@@ -19,6 +20,10 @@ interface ParameterPanelProps {
   insideDock?: boolean;
 }
 
+function shortId(id: string, n = 6) {
+  return id.length <= n ? id : id.slice(-n);
+}
+
 export default function ParameterPanel({ insideDock }: ParameterPanelProps = {}) {
   const { currentModelId, currentProjectId } = useViewportStore();
   const viewport = useViewportStore();
@@ -27,8 +32,6 @@ export default function ParameterPanel({ insideDock }: ParameterPanelProps = {})
   const [localValues, setLocalValues] = useState<Record<string, any>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
-  const [error, setError] = useState('');
-  const [status, setStatus] = useState('');
 
   useEffect(() => {
     if (!currentProjectId || !currentModelId) {
@@ -39,33 +42,23 @@ export default function ParameterPanel({ insideDock }: ParameterPanelProps = {})
 
     let cancelled = false;
     setIsLoading(true);
-    setError('');
-    setStatus('');
 
     api.get<CadParameter[]>(`/api/projects/${currentProjectId}/models/${currentModelId}/parameters`)
       .then((params) => {
-        if (!cancelled) {
-          setParameters(params);
-          const values: Record<string, any> = {};
-          params.forEach(p => {
-            values[p.name] = p.value;
-          });
-          setLocalValues(values);
-        }
+        if (cancelled) return;
+        setParameters(params);
+        const values: Record<string, any> = {};
+        params.forEach(p => { values[p.name] = p.value; });
+        setLocalValues(values);
       })
       .catch((err) => {
-        if (!cancelled) {
-          setError('Failed to load parameters');
-          console.error(err);
-        }
+        if (cancelled) return;
+        toast.error('Failed to load parameters');
+        console.error(err);
       })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false);
-      });
+      .finally(() => { if (!cancelled) setIsLoading(false); });
 
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [currentProjectId, currentModelId]);
 
   function handleChange(name: string, value: any, type: string) {
@@ -73,20 +66,12 @@ export default function ParameterPanel({ insideDock }: ParameterPanelProps = {})
     if (type === 'float') typedValue = parseFloat(value);
     if (type === 'int') typedValue = parseInt(value, 10);
     if (type === 'bool') typedValue = value === 'true' || value === true;
-
-    setLocalValues(prev => ({
-      ...prev,
-      [name]: typedValue
-    }));
+    setLocalValues(prev => ({ ...prev, [name]: typedValue }));
   }
 
   async function handleUpdate() {
     if (!currentProjectId || !currentModelId) return;
-
     setIsUpdating(true);
-    setError('');
-    setStatus('Updating model...');
-
     try {
       const result = await api.post<ExecuteSourceResponse>(
         `/api/projects/${currentProjectId}/models/${currentModelId}/update_parameters`,
@@ -94,18 +79,24 @@ export default function ParameterPanel({ insideDock }: ParameterPanelProps = {})
       );
 
       if (result.success) {
-        setStatus(`Updated to ${result.model.model_id}`);
+        toast.success(`Updated to #${shortId(result.model.model_id)}`);
         if (result.glb_url) {
           viewport.setModel(result.model.model_id, api.url(result.glb_url), currentProjectId);
         }
       } else {
-        setError(`Failed: ${result.message}`);
+        toast.error(`Update failed: ${result.message}`);
       }
     } catch (err) {
-      setError(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      toast.error(`Update failed: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsUpdating(false);
     }
+  }
+
+  function handleRevert() {
+    const values: Record<string, any> = {};
+    parameters.forEach(p => { values[p.name] = p.value; });
+    setLocalValues(values);
   }
 
   const isDirty = parameters.some(p => localValues[p.name] !== p.value);
@@ -114,56 +105,68 @@ export default function ParameterPanel({ insideDock }: ParameterPanelProps = {})
 
   const content = (
     <div className={insideDock ? "docked-panel-content" : "panel-content"}>
-          {isLoading ? (
-            <div className="loading">Loading...</div>
-          ) : parameters.length === 0 ? (
-            <div className="empty">No parameters detected in source.</div>
-          ) : (
-            <div className="parameter-list">
-              {parameters.map(p => (
-                <div key={p.name} className="parameter-item">
+      {isLoading ? (
+        <div className="loading">Loading…</div>
+      ) : parameters.length === 0 ? (
+        <div className="empty">No parameters detected in source.</div>
+      ) : (
+        <div className="parameter-list">
+          {parameters.map(p => {
+            const hasRange = p.min_value !== undefined && p.max_value !== undefined;
+            return (
+              <div key={p.name} className="parameter-item">
+                <div className="parameter-label-row">
                   <label htmlFor={`param-${p.name}`}>{p.name}</label>
-                  {p.type === 'bool' ? (
-                    <select
-                      id={`param-${p.name}`}
-                      value={String(localValues[p.name])}
-                      onChange={(e) => handleChange(p.name, e.target.value, p.type)}
-                    >
-                      <option value="true">True</option>
-                      <option value="false">False</option>
-                    </select>
-                  ) : (
-                    <input
-                      id={`param-${p.name}`}
-                      type={p.type === 'str' ? 'text' : 'number'}
-                      step={p.type === 'float' ? '0.1' : '1'}
-                      value={localValues[p.name] ?? ''}
-                      onChange={(e) => handleChange(p.name, e.target.value, p.type)}
-                    />
-                  )}
+                  <span className="parameter-hint">
+                    {p.type}
+                    {hasRange ? ` · ${p.min_value}…${p.max_value}` : ''}
+                  </span>
                 </div>
-              ))}
-              
-              <div className="panel-actions">
-                <button 
-                  className="update-button"
-                  disabled={!isDirty || isUpdating}
-                  onClick={handleUpdate}
-                >
-                  {isUpdating ? 'Updating...' : 'Update Model'}
-                </button>
+                {p.type === 'bool' ? (
+                  <select
+                    id={`param-${p.name}`}
+                    value={String(localValues[p.name])}
+                    onChange={(e) => handleChange(p.name, e.target.value, p.type)}
+                  >
+                    <option value="true">True</option>
+                    <option value="false">False</option>
+                  </select>
+                ) : (
+                  <input
+                    id={`param-${p.name}`}
+                    type={p.type === 'str' ? 'text' : 'number'}
+                    step={p.type === 'float' ? '0.1' : '1'}
+                    min={p.min_value}
+                    max={p.max_value}
+                    value={localValues[p.name] ?? ''}
+                    onChange={(e) => handleChange(p.name, e.target.value, p.type)}
+                  />
+                )}
+                {p.description && <div className="parameter-desc">{p.description}</div>}
               </div>
-              
-              {status && <div className="status-msg">{status}</div>}
-              {error && <div className="error-msg">{error}</div>}
-            </div>
-          )}
+            );
+          })}
+
+          <div className="panel-actions">
+            {isDirty && (
+              <button className="btn btn-ghost" onClick={handleRevert} disabled={isUpdating}>
+                Revert
+              </button>
+            )}
+            <button
+              className="btn btn-primary"
+              disabled={!isDirty || isUpdating}
+              onClick={handleUpdate}
+            >
+              {isUpdating ? 'Updating…' : 'Update model'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 
-  if (insideDock) {
-    return content;
-  }
+  if (insideDock) return content;
 
   return (
     <div className={`parameter-panel ${isOpen ? 'open' : 'closed'}`}>

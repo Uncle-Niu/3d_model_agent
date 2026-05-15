@@ -31,7 +31,7 @@ beforeEach(() => {
 describe('Chat component', () => {
   it('shows welcome screen when no messages', () => {
     render(<Chat onSend={() => {}} />);
-    expect(screen.getByText(/AI CAD Agent/i)).toBeInTheDocument();
+    expect(screen.getByText(/Mission Crafter/i)).toBeInTheDocument();
     expect(screen.getByText(/Describe a 3D part/i)).toBeInTheDocument();
   });
 

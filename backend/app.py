@@ -27,15 +27,15 @@ async def lifespan(app: FastAPI):
     # Initialize LLM service (lazy — only if needed)
     app.state.llm = None
 
-    print(f"[OK] CAD Agent backend started (data: {data_root.absolute()})")
+    print(f"[OK] Mission Crafter backend started (data: {data_root.absolute()})")
     yield
-    print("[OK] CAD Agent backend shutting down")
+    print("[OK] Mission Crafter backend shutting down")
 
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
-        title="AI-Native CAD Agent",
+        title="Mission Crafter",
         description="Local-first AI-powered CAD and 3D-printing system",
         version="0.1.0",
         lifespan=lifespan,

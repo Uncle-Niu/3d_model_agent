@@ -1,19 +1,17 @@
 /**
  * 3D Viewport component — renders glTF models using React Three Fiber.
  *
- * Features:
- * - GLB model rendering with orbit controls
- * - Wireframe mode toggle
- * - Bounding box overlay
- * - Camera preset buttons (Iso, Front, Right, Top)
- * - Assembly-level mesh click → selection → WS selection message
- * - Visual highlight of selected mesh
- * - Visual highlight of selected mesh
+ * Selection model:
+ *   - Mesh names from the GLB are normalised to `userData.cadName` (assembly-level).
+ *   - On scene load we clone every material so highlight color changes don't
+ *     leak across meshes that originally shared a material instance, and so
+ *     they don't mutate the useGLTF cache. Original colors and original local
+ *     positions are stashed in userData for restore.
  */
 
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, Environment, Grid, Center, useGLTF, Box, ContactShadows } from '@react-three/drei';
-import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { useViewportStore, useSelectionStore, useAssemblyStore } from '../stores';
 
@@ -30,24 +28,63 @@ const CAMERA_PRESETS = {
 
 type CameraPreset = keyof typeof CAMERA_PRESETS;
 
-function CameraController({ preset }: { preset: CameraPreset | null }) {
+type CameraAction =
+  | { kind: 'preset'; preset: CameraPreset; nonce: number }
+  | { kind: 'fit'; nonce: number };
+
+function CameraController({ action, fitTargetRef }: {
+  action: CameraAction | null;
+  fitTargetRef: React.MutableRefObject<THREE.Object3D | null>;
+}) {
   const { camera, controls } = useThree() as any;
   useEffect(() => {
-    if (!preset) return;
-    const target = CAMERA_PRESETS[preset].clone();
-    camera.position.copy(target);
-    camera.lookAt(0, 0, 0);
-    if (controls && controls.target) {
-      controls.target.set(0, 0, 0);
-      controls.update();
+    if (!action) return;
+    if (action.kind === 'preset') {
+      const target = CAMERA_PRESETS[action.preset].clone();
+      camera.position.copy(target);
+      camera.lookAt(0, 0, 0);
+      if (controls && controls.target) {
+        controls.target.set(0, 0, 0);
+        controls.update();
+      }
+    } else if (action.kind === 'fit') {
+      const target = fitTargetRef.current;
+      if (!target) return;
+      const box = new THREE.Box3().setFromObject(target);
+      if (box.isEmpty()) return;
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      const maxDim = Math.max(size.x, size.y, size.z) || 1;
+      const persp = camera as THREE.PerspectiveCamera;
+      const fov = (persp.fov * Math.PI) / 180;
+      const distance = (maxDim / 2) / Math.tan(fov / 2) * 1.8;
+      const dir = new THREE.Vector3(1, 0.75, 1).normalize();
+      camera.position.copy(center.clone().add(dir.multiplyScalar(distance)));
+      camera.lookAt(center);
+      if (controls && controls.target) {
+        controls.target.copy(center);
+        controls.update();
+      }
     }
-  }, [preset, camera, controls]);
+  }, [action, camera, controls, fitTargetRef]);
   return null;
 }
 
 // ---------------------------------------------------------------------------
 // Model renderer with wireframe + selection highlight
 // ---------------------------------------------------------------------------
+
+const GENERIC_NAME = (n: string) =>
+  !n ||
+  n.toLowerCase().startsWith('mesh') ||
+  n.toLowerCase().startsWith('buffer') ||
+  n.toLowerCase().startsWith('object_') ||
+  /^\d+$/.test(n);
+
+const HIGHLIGHT_COLOR = '#ff5fc1';
+const HIGHLIGHT_EMISSIVE = '#5a0a3a';
 
 interface ModelProps {
   url: string;
@@ -56,115 +93,141 @@ interface ModelProps {
   onMeshClick: (name: string | null, point: THREE.Vector3) => void;
   partsVisibility: Record<string, boolean>;
   explodedFactor: number;
+  onSceneReady?: (scene: THREE.Object3D) => void;
 }
 
-function Model({ url, wireframe, selectedMeshName, onMeshClick, partsVisibility, explodedFactor }: ModelProps) {
-  const { scene } = useGLTF(url);
-  const ref = useRef<THREE.Group>(null);
-  const originalColors = useRef<Map<string, THREE.Color>>(new Map());
-  const partCenters = useRef<Map<string, THREE.Vector3>>(new Map());
+function Model({ url, wireframe, selectedMeshName, onMeshClick, partsVisibility, explodedFactor, onSceneReady }: ModelProps) {
+  const { scene: cachedScene } = useGLTF(url);
 
-  // Assign cadName from scene node names (for assembly-level selection)
+  // Clone the scene + materials once per url. This isolates us from the useGLTF
+  // cache (so re-mounting doesn't see stale magenta) and ensures meshes that
+  // share materials in the source GLB get independent material instances.
+  const scene = useMemo(() => {
+    const cloned = cachedScene.clone(true);
+    cloned.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      mesh.material = Array.isArray(mesh.material)
+        ? mesh.material.map((m) => m.clone())
+        : mesh.material?.clone();
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+    });
+    return cloned;
+  }, [cachedScene]);
+
+  const groupRef = useRef<THREE.Group>(null);
+
+  // Assign cadName + cache original color, emissive, position once per mesh.
   useEffect(() => {
     scene.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh;
-        // Preserve original color
-        if (!originalColors.current.has(mesh.uuid)) {
-          const mat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-          if (mat instanceof THREE.MeshStandardMaterial) {
-            originalColors.current.set(mesh.uuid, mat.color.clone());
-          }
-        }
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh) return;
 
-        // Robust name resolution: ignore generic names, look up hierarchy
-        if (!mesh.userData.cadName) {
-          const isGeneric = (n: string) => !n || n.toLowerCase().startsWith('mesh') || n.toLowerCase().startsWith('buffer');
-          
-          let name = mesh.name;
-          if (isGeneric(name)) name = '';
-          
-          let p = mesh.parent;
-          while (!name && p && p !== scene) {
-            if (!isGeneric(p.name)) name = p.name;
-            p = p.parent;
-          }
-          mesh.userData.cadName = name || `mesh_${mesh.uuid.slice(0, 6)}`;
+      if (!mesh.userData.cadName) {
+        let name = mesh.name;
+        if (GENERIC_NAME(name)) name = '';
+        let p = mesh.parent;
+        while (!name && p && p !== scene) {
+          if (!GENERIC_NAME(p.name)) name = p.name;
+          p = p.parent;
         }
-        
-        // Calculate part center for exploded view
-        if (!partCenters.current.has(mesh.userData.cadName)) {
-           const box = new THREE.Box3().setFromObject(mesh);
-           const center = new THREE.Vector3();
-           box.getCenter(center);
-           partCenters.current.set(mesh.userData.cadName, center);
-        }
+        mesh.userData.cadName = name || `mesh_${mesh.uuid.slice(0, 6)}`;
+      }
 
-        // Enable shadows for depth
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
+      if (mesh.userData.origPos === undefined) {
+        mesh.userData.origPos = mesh.position.clone();
+      }
+
+      if (mesh.userData.partCenter === undefined) {
+        const box = new THREE.Box3().setFromObject(mesh);
+        const center = new THREE.Vector3();
+        box.getCenter(center);
+        mesh.userData.partCenter = center;
+      }
+
+      if (mesh.userData.origColors === undefined) {
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        mesh.userData.origColors = mats.map((m) =>
+          m instanceof THREE.MeshStandardMaterial ? m.color.clone() : null
+        );
+        mesh.userData.origEmissive = mats.map((m) =>
+          m instanceof THREE.MeshStandardMaterial ? m.emissive.clone() : null
+        );
+        mesh.userData.origEmissiveIntensity = mats.map((m) =>
+          m instanceof THREE.MeshStandardMaterial ? m.emissiveIntensity : 0
+        );
       }
     });
-  }, [scene]);
+    onSceneReady?.(scene);
+  }, [scene, onSceneReady]);
 
-  // Apply material settings + selection highlight + visibility + exploded view
+  // Apply selection / wireframe / visibility / explode every render.
   useEffect(() => {
-    const selName = selectedMeshName?.toLowerCase().trim();
+    const selName = selectedMeshName?.toLowerCase().trim() || null;
 
     scene.traverse((child) => {
-      if ((child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh;
-        const cadName = (mesh.userData.cadName as string || '').toLowerCase().trim();
-        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        
-        // STRICT equality to avoid partial matches (e.g. "part" matching "small_part")
-        const isSelected = !!selName && !!cadName && cadName === selName;
-        
-        // Visibility
-        mesh.visible = partsVisibility[mesh.userData.cadName] !== false;
+      const mesh = child as THREE.Mesh;
+      if (!mesh.isMesh) return;
 
-        // Exploded View
-        if (explodedFactor > 0 && partCenters.current.has(mesh.userData.cadName)) {
-          const center = partCenters.current.get(mesh.userData.cadName)!;
-          mesh.position.copy(center).multiplyScalar(explodedFactor);
-        } else {
-          mesh.position.set(0, 0, 0);
-        }
+      const cadName: string = mesh.userData.cadName ?? '';
+      const cadNameLc = cadName.toLowerCase().trim();
+      const isSelected = !!selName && cadNameLc === selName;
 
-        mats.forEach((mat) => {
-          if (mat instanceof THREE.MeshStandardMaterial) {
-            mat.roughness = 0.6; 
-            mat.metalness = 0.2;
-            mat.wireframe = wireframe;
+      // Visibility
+      mesh.visible = partsVisibility[cadName] !== false;
 
-            if (isSelected) {
-              // Ultra-vibrant Magenta highlight
-              mat.color.set('#ff00ff'); 
-              mat.emissive.set('#440044');
-              mat.emissiveIntensity = 1.5;
-            } else {
-              const orig = originalColors.current.get(mesh.uuid);
-              if (orig) {
-                if (orig.r > 0.9 && orig.g > 0.9 && orig.b > 0.9) {
-                  mat.color.setRGB(0.8, 0.8, 0.85);
-                } else {
-                  mat.color.copy(orig);
-                }
-              }
-              mat.emissive.set('#000000');
-              mat.emissiveIntensity = 0;
-            }
-            mat.needsUpdate = true;
-          }
-        });
+      // Exploded view from cached part center (relative to original position).
+      const origPos = mesh.userData.origPos as THREE.Vector3 | undefined;
+      const partCenter = mesh.userData.partCenter as THREE.Vector3 | undefined;
+      if (explodedFactor > 0 && partCenter && origPos) {
+        mesh.position
+          .copy(origPos)
+          .add(partCenter.clone().multiplyScalar(explodedFactor));
+      } else if (origPos) {
+        mesh.position.copy(origPos);
       }
+
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+      const origColors = (mesh.userData.origColors ?? []) as Array<THREE.Color | null>;
+      const origEmissive = (mesh.userData.origEmissive ?? []) as Array<THREE.Color | null>;
+      const origEmissiveI = (mesh.userData.origEmissiveIntensity ?? []) as Array<number>;
+
+      mats.forEach((mat, i) => {
+        if (!(mat instanceof THREE.MeshStandardMaterial)) return;
+        mat.wireframe = wireframe;
+        mat.roughness = 0.55;
+        mat.metalness = 0.2;
+
+        if (isSelected) {
+          mat.color.set(HIGHLIGHT_COLOR);
+          mat.emissive.set(HIGHLIGHT_EMISSIVE);
+          mat.emissiveIntensity = 0.9;
+        } else {
+          const oc = origColors[i];
+          if (oc) {
+            // Lift pure white slightly so it's not blown out under the env map.
+            if (oc.r > 0.95 && oc.g > 0.95 && oc.b > 0.95) {
+              mat.color.setRGB(0.82, 0.83, 0.88);
+            } else {
+              mat.color.copy(oc);
+            }
+          }
+          if (origEmissive[i]) mat.emissive.copy(origEmissive[i] as THREE.Color);
+          mat.emissiveIntensity = origEmissiveI[i] ?? 0;
+        }
+        mat.needsUpdate = true;
+      });
     });
   }, [scene, wireframe, selectedMeshName, partsVisibility, explodedFactor]);
 
   function handleClick(e: any) {
     e.stopPropagation();
-    const mesh = e.object as THREE.Mesh;
-    const cadName = mesh.userData.cadName ?? null;
+    let obj: THREE.Object3D | null = e.object;
+    // Walk up to find the named mesh node (in case click hits a sub-primitive).
+    while (obj && !(obj as THREE.Mesh).isMesh) obj = obj.parent;
+    const mesh = obj as THREE.Mesh | null;
+    const cadName = mesh?.userData.cadName ?? null;
     onMeshClick(cadName, e.point);
   }
 
@@ -175,7 +238,7 @@ function Model({ url, wireframe, selectedMeshName, onMeshClick, partsVisibility,
   return (
     <Center>
       <primitive
-        ref={ref}
+        ref={groupRef}
         object={scene}
         onClick={handleClick}
         onPointerMissed={handleMissedClick}
@@ -252,15 +315,16 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
   const { partsVisibility, explodedFactor } = useAssemblyStore();
   const [wireframe, setWireframe] = useState(false);
   const [showBbox, setShowBbox] = useState(false);
-  const [cameraPreset, setCameraPreset] = useState<CameraPreset | null>(null);
+  const [cameraAction, setCameraAction] = useState<CameraAction | null>(null);
   const { selectedFeatureName, setSelection } = useSelectionStore();
+  const sceneRef = useRef<THREE.Object3D | null>(null);
 
   // Reset view modes when model changes
   useEffect(() => {
     setWireframe(false);
     setShowBbox(false);
     setSelection(null);
-    setCameraPreset(null);
+    setCameraAction(null);
   }, [glbUrl, setSelection]);
 
   const handleMeshClick = useCallback(
@@ -282,11 +346,12 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
     [onSelect, sendWsMessage, setSelection]
   );
 
-  function handlePreset(preset: CameraPreset) {
-    setCameraPreset(preset);
-    // Reset after one frame so repeated clicks to same preset still trigger
-    setTimeout(() => setCameraPreset(null), 50);
-  }
+  const triggerPreset = (preset: CameraPreset) => {
+    setCameraAction({ kind: 'preset', preset, nonce: Date.now() });
+  };
+  const triggerFit = () => {
+    setCameraAction({ kind: 'fit', nonce: Date.now() });
+  };
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
@@ -326,14 +391,15 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
                 onMeshClick={handleMeshClick}
                 partsVisibility={partsVisibility}
                 explodedFactor={explodedFactor}
+                onSceneReady={(s) => { sceneRef.current = s; }}
               />
               {showBbox && <BoundingBoxOverlay url={glbUrl} />}
-              <ContactShadows 
-                position={[0, -0.01, 0]} 
-                opacity={0.6} 
-                scale={150} 
-                blur={2.5} 
-                far={20} 
+              <ContactShadows
+                position={[0, -0.01, 0]}
+                opacity={0.6}
+                scale={150}
+                blur={2.5}
+                far={20}
               />
             </>
           ) : (
@@ -350,8 +416,7 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
           maxDistance={500}
         />
 
-        {/* Camera preset controller */}
-        <CameraController preset={cameraPreset} />
+        <CameraController action={cameraAction} fitTargetRef={sceneRef} />
       </Canvas>
 
       {/* Loading overlay */}
@@ -369,8 +434,8 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
 
       {/* Selection indicator */}
       {selectedFeatureName && (
-        <div className="viewport-selection-indicator" title="Click elsewhere to deselect">
-          <span className="viewport-selection-icon">◆</span>
+        <div className="viewport-selection-indicator" title="Click empty space to deselect">
+          <span className="viewport-selection-icon" aria-hidden="true" />
           <span className="viewport-selection-name">{selectedFeatureName}</span>
           <button
             className="viewport-selection-clear"
@@ -385,34 +450,40 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
       {/* Viewport toolbar — top-right buttons */}
       {glbUrl && !isLoading && (
         <div className="viewport-toolbar">
-          {/* View preset buttons */}
           {(['iso', 'front', 'right', 'top'] as CameraPreset[]).map((preset) => (
             <button
               key={preset}
-              className="viewport-tool-btn viewport-preset-btn"
-              onClick={() => handlePreset(preset)}
-              title={`${preset.charAt(0).toUpperCase() + preset.slice(1)} view`}
+              className="btn btn-ghost btn-sm viewport-preset-btn"
+              onClick={() => triggerPreset(preset)}
+              title={`${preset[0].toUpperCase() + preset.slice(1)} view`}
             >
-              {preset === 'iso' ? '◈' : preset === 'front' ? '↕' : preset === 'right' ? '↔' : '⊕'}
-              {' '}{preset}
+              {preset}
             </button>
           ))}
+
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={triggerFit}
+            title="Fit model to view"
+          >
+            Fit
+          </button>
 
           <div className="viewport-toolbar-divider" />
 
           <button
-            className={`viewport-tool-btn ${wireframe ? 'active' : ''}`}
+            className={`btn btn-ghost btn-sm ${wireframe ? 'is-active' : ''}`}
             onClick={() => setWireframe((v) => !v)}
-            title="Toggle wireframe mode"
+            title="Toggle wireframe"
           >
-            ◻ Wire
+            Wire
           </button>
           <button
-            className={`viewport-tool-btn ${showBbox ? 'active' : ''}`}
+            className={`btn btn-ghost btn-sm ${showBbox ? 'is-active' : ''}`}
             onClick={() => setShowBbox((v) => !v)}
             title="Toggle bounding box"
           >
-            ⬜ BBox
+            BBox
           </button>
         </div>
       )}
