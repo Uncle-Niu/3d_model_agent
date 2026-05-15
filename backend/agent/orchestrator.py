@@ -31,6 +31,7 @@ from ..domain.models import (
     PipelineStep,
 )
 from ..models.llm_service import (
+    LLMBackendUnavailable,
     LLMService,
     build_system_prompt,
     extract_code_from_response,
@@ -135,6 +136,44 @@ class AgentOrchestrator:
     async def _emit_plan(self, plan: DesignPlan):
         if self.on_plan:
             await self.on_plan(plan)
+
+    async def _handle_backend_unavailable(
+        self, exc: LLMBackendUnavailable, *, stage: str
+    ) -> None:
+        """Re-check Ollama after an LLM call surfaces an infrastructure failure.
+
+        Emits a user-visible error with whatever diagnostic the connectivity
+        probe can find (Ollama down vs. model unloaded vs. unknown). The caller
+        is expected to re-raise so the pipeline aborts instead of cascading
+        into doomed code generation.
+        """
+        await self._emit_debug(
+            "llm_backend_unavailable",
+            f"LLM backend failure during `{stage}`: {exc}",
+            {
+                "stage": stage,
+                "exception_type": type(exc.cause).__name__ if exc.cause else "LLMBackendUnavailable",
+                "exception_message": str(exc.cause) if exc.cause else str(exc),
+                "traceback": traceback.format_exc(),
+            },
+        )
+        # Probe Ollama again to distinguish "process crashed / OOM" from
+        # "transient hiccup". `check_ollama_connectivity` already emits its
+        # own user-visible error on failure, so we only need to add a generic
+        # one when the probe still succeeds (meaning the stream died but the
+        # daemon is back — almost always a worker OOM that restarted).
+        ollama_ok = await self.check_ollama_connectivity()
+        if ollama_ok:
+            await self._emit_error(
+                (
+                    f"LLM backend dropped the `{stage}` stream but the Ollama "
+                    f"daemon is reachable again. This usually means the model "
+                    f"worker crashed mid-generation (OOM, GPU driver kill, or "
+                    f"context overflow). Check Ollama logs for the underlying "
+                    f"cause. Original error: {exc}"
+                ),
+                failure_type="llm_backend_unavailable",
+            )
 
     async def check_ollama_connectivity(self) -> bool:
         ollama_base = self.llm.base_url.replace("/v1", "")
@@ -622,6 +661,9 @@ class AgentOrchestrator:
                 soft_constraints=config.soft_constraints,
                 on_chunk=_plan_chunk,
             )
+        except LLMBackendUnavailable as e:
+            await self._handle_backend_unavailable(e, stage="planning")
+            raise
         except Exception as e:
             await self._emit_debug("planning_error", f"Planner failed: {e}", {"traceback": traceback.format_exc()})
             plan = DesignPlan(raw_text="", summary="(planner failed — proceeding without a structured plan)")
@@ -698,6 +740,9 @@ class AgentOrchestrator:
                     on_chunk=_plan_chunk,
                 )
                 quality_report = validate_plan_against_recipes(plan, recipe_cards)
+            except LLMBackendUnavailable as e:
+                await self._handle_backend_unavailable(e, stage="plan_repair")
+                raise
             except Exception as e:
                 await self._emit_debug("plan_repair_error", f"Plan repair failed: {e}", {"traceback": traceback.format_exc()})
 

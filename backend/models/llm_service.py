@@ -12,7 +12,24 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Any, AsyncIterator, Callable, Optional
 
-from openai import AsyncOpenAI
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+)
+
+
+class LLMBackendUnavailable(RuntimeError):
+    """The LLM backend (Ollama, vLLM, etc.) is unreachable, crashed, or returned
+    nothing usable. Distinct from a logic-level failure where the model returned
+    a parseable-but-bad response. The orchestrator should re-check connectivity
+    and abort the pipeline rather than retry against a dead endpoint.
+    """
+
+    def __init__(self, message: str, *, cause: Optional[BaseException] = None):
+        super().__init__(message)
+        self.cause = cause
 
 from ..cad.examples import get_api_reference, get_examples_text
 from ..domain.models import (
@@ -516,15 +533,45 @@ class LLMService:
                     full_content += content
                     if on_chunk:
                         await on_chunk(content)
-        except Exception:
-            # If streaming fails, fall back to a non-stream call
-            resp = await self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.3,
-                max_tokens=8192,
-            )
+        except (APIConnectionError, APITimeoutError, APIStatusError) as exc:
+            # Backend dropped, timed out, or returned a 5xx mid-stream — almost
+            # always a crashed/OOM Ollama. Don't retry against the dead endpoint;
+            # surface it so the orchestrator can re-check connectivity and abort.
+            raise LLMBackendUnavailable(
+                f"LLM backend failed during plan streaming: {type(exc).__name__}: {exc}",
+                cause=exc,
+            ) from exc
+        except Exception as exc:
+            # Unknown streaming error (e.g. malformed SSE chunk). Try once
+            # non-streaming as a best effort. If that also fails with an
+            # infrastructure error, surface it; otherwise let the original
+            # exception propagate.
+            try:
+                resp = await self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=0.3,
+                    max_tokens=8192,
+                )
+            except (APIConnectionError, APITimeoutError, APIStatusError) as fallback_exc:
+                raise LLMBackendUnavailable(
+                    f"LLM backend failed on non-stream fallback: "
+                    f"{type(fallback_exc).__name__}: {fallback_exc}",
+                    cause=fallback_exc,
+                ) from fallback_exc
             full_content = resp.choices[0].message.content or ""
+
+        # Detect silent truncation: an Ollama worker that crashed mid-stream
+        # often closes the SSE cleanly with zero tokens emitted. The 8k budget
+        # makes a legitimate empty response vanishingly unlikely, so treat it
+        # as a backend failure rather than letting the parser produce a blank
+        # DesignPlan.
+        if not full_content and not full_reasoning:
+            raise LLMBackendUnavailable(
+                "LLM backend returned an empty stream (0 content + 0 reasoning tokens). "
+                "This usually means the backend crashed mid-generation — check Ollama logs "
+                "for OOM or worker termination."
+            )
 
         # Combine for parsing — both reasoning and content may contain useful
         # signal (the <thinking> section vs the json block).
