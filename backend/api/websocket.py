@@ -6,6 +6,7 @@ Delegates to AgentOrchestrator for the core generation pipeline.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from typing import Optional
@@ -37,6 +38,9 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
 
     llm = LLMService()
     active_selection: Optional[SelectionContext] = None
+    # Holds the asyncio.Task running an active chat pipeline so we can cancel
+    # it from a `cancel_chat` WS message without blocking the receive loop.
+    active_pipeline_task: Optional[asyncio.Task] = None
 
     # Callbacks for the orchestrator
     async def on_status(stage: str, message: str, details: Optional[str] = None, data: Optional[dict] = None):
@@ -147,9 +151,13 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
                 content = msg.get("content", "").strip()
                 thread_id = msg.get("thread_id") or ws.query_params.get("thread_id") or "legacy"
                 base_model_id = msg.get("base_model_id")
-                
+
                 if not content:
                     await on_error("Empty message")
+                    continue
+
+                if active_pipeline_task and not active_pipeline_task.done():
+                    await on_error("A chat turn is already running — stop it before sending a new one.")
                     continue
 
                 storage.append_chat_thread_message(
@@ -157,27 +165,58 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
                     ChatMessage(role="user", content=content),
                 )
 
-                # Run generation
-                await orchestrator.run_pipeline(
-                    project_id=project_id,
-                    thread_id=thread_id,
-                    user_message=content,
-                    base_model_id=base_model_id,
-                    selection=active_selection,
-                )
+                async def _run_turn(_thread_id: str = thread_id, _content: str = content, _base_model_id=base_model_id):
+                    try:
+                        await orchestrator.run_pipeline(
+                            project_id=project_id,
+                            thread_id=_thread_id,
+                            user_message=_content,
+                            base_model_id=_base_model_id,
+                            selection=active_selection,
+                        )
 
-                messages = storage.get_chat_thread_messages(project_id, thread_id)
-                if messages and messages[-1].role == "assistant":
-                    assistant_message = messages[-1]
-                    await ws.send_text(json.dumps({
-                        "type": "chat_response",
-                        "content": assistant_message.content,
-                        "model_id": assistant_message.model_id,
-                        "steps": [
-                            step.model_dump(mode="json")
-                            for step in assistant_message.steps
-                        ],
-                    }))
+                        messages = storage.get_chat_thread_messages(project_id, _thread_id)
+                        if messages and messages[-1].role == "assistant":
+                            assistant_message = messages[-1]
+                            await ws.send_text(json.dumps({
+                                "type": "chat_response",
+                                "content": assistant_message.content,
+                                "model_id": assistant_message.model_id,
+                                "steps": [
+                                    step.model_dump(mode="json")
+                                    for step in assistant_message.steps
+                                ],
+                            }))
+                    except asyncio.CancelledError:
+                        # Cancellation is initiated by the user via `cancel_chat`.
+                        # Persist a short marker message and notify the client so
+                        # the chat UI can leave generating state.
+                        try:
+                            storage.append_chat_thread_message(
+                                project_id, _thread_id,
+                                ChatMessage(role="assistant", content="⏹ Stopped by user."),
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            await ws.send_text(json.dumps({
+                                "type": "chat_response",
+                                "content": "⏹ Stopped by user.",
+                                "model_id": None,
+                                "steps": [],
+                            }))
+                        except Exception:
+                            pass
+                        raise
+
+                active_pipeline_task = asyncio.create_task(_run_turn())
+
+            elif msg_type == "cancel_chat":
+                if active_pipeline_task and not active_pipeline_task.done():
+                    active_pipeline_task.cancel()
+                    await on_debug("cancel", "Chat cancellation requested by user")
+                else:
+                    await on_debug("cancel", "Cancel requested but no active chat turn")
 
             elif msg_type == "selection":
                 feature_name = msg.get("feature_name")
@@ -204,3 +243,8 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
             await on_error(str(e))
         except Exception:
             pass
+    finally:
+        # Cancel any in-flight pipeline so we don't leak background work after
+        # the client disconnects or the loop exits unexpectedly.
+        if active_pipeline_task and not active_pipeline_task.done():
+            active_pipeline_task.cancel()

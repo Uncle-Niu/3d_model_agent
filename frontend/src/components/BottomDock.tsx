@@ -6,7 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
-import { useDebugStore, useViewportStore } from '../stores';
+import { useChatStore, useDebugStore, useViewportStore } from '../stores';
 import { formatLocalDateTime } from '../time';
 import type { DebugEntry, ModelInfo } from '../types';
 import AssemblyPanel from './AssemblyPanel';
@@ -183,9 +183,14 @@ function DebugView() {
 // ---------------------------------------------------------------------------
 
 export default function BottomDock() {
-  const { currentModelId, currentProjectId } = useViewportStore();
+  const { currentModelId, currentProjectId, isWipModel } = useViewportStore();
   const viewport = useViewportStore();
   const debugEntries = useDebugStore((s) => s.entries);
+  const isGenerating = useChatStore((s) => s.isGenerating);
+  // While a chat turn is in progress (or the active model is a WIP iteration
+  // streamed mid-turn), lock the source editor so the user doesn't race the
+  // agent's writes.
+  const sourceLocked = isGenerating || isWipModel;
 
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<DockTab>('source');
@@ -419,7 +424,8 @@ export default function BottomDock() {
               <button
                 className="btn btn-primary btn-sm"
                 onClick={executeSource}
-                disabled={isExecuting || !source.trim()}
+                disabled={isExecuting || !source.trim() || sourceLocked}
+                title={sourceLocked ? 'The agent is currently working — wait for the chat turn to finish before editing.' : undefined}
               >
                 {isExecuting ? 'Executing…' : isDirty ? 'Save & Execute' : 'Execute'}
               </button>
@@ -505,11 +511,19 @@ export default function BottomDock() {
                 </div>
               ) : (
                 <div className="source-editor-view">
+                  {sourceLocked && (
+                    <div className="source-locked-banner" role="status">
+                      {isGenerating
+                        ? 'Agent is working — source is locked. Stop the chat or wait for it to finish to edit.'
+                        : 'Viewing a work-in-progress iteration — switch to the final version to edit.'}
+                    </div>
+                  )}
                   <textarea
                     className="source-editor"
                     value={source}
                     onChange={(e) => setSource(e.target.value)}
                     spellCheck={false}
+                    readOnly={sourceLocked}
                     aria-label="Editable CadQuery source code"
                   />
                 </div>

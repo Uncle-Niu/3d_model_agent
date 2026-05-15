@@ -12,6 +12,7 @@ import AppIcon from './AppIcon';
 
 interface ChatProps {
   onSend: (message: string) => void;
+  onCancel?: () => void;
   disabled?: boolean;
 }
 
@@ -22,7 +23,7 @@ const SUGGESTIONS: Array<{ label: string; prompt: string }> = [
   { label: 'Snap-fit cable clip', prompt: 'Create a cable clip that can snap onto a 4mm wire, with a hinge opening' },
 ];
 
-export default function Chat({ onSend, disabled = false }: ChatProps) {
+export default function Chat({ onSend, onCancel, disabled = false }: ChatProps) {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -139,6 +140,10 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
             <div className="chat-message-avatar" aria-hidden="true"><AppIcon size={16} /></div>
             <div className="chat-message-content">
               <PipelineProgress steps={currentSteps} isLive={true} />
+              {/* Surface render thumbnails + score the moment the vision
+                  verifier returns, so the user can see what the agent saw
+                  before the turn finishes. */}
+              <CritiquePanel />
             </div>
           </div>
         )}
@@ -173,14 +178,26 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
             rows={1}
             disabled={isGenerating || disabled}
           />
-          <button
-            className="chat-send-btn btn btn-primary"
-            type="submit"
-            disabled={!input.trim() || isGenerating || disabled}
-            title="Send (Enter)"
-          >
-            {isGenerating ? <span className="spinner" /> : '➤'}
-          </button>
+          {isGenerating ? (
+            <button
+              className="chat-send-btn btn btn-stop"
+              type="button"
+              onClick={() => onCancel?.()}
+              disabled={!onCancel}
+              title="Stop the in-progress chat turn"
+            >
+              ■
+            </button>
+          ) : (
+            <button
+              className="chat-send-btn btn btn-primary"
+              type="submit"
+              disabled={!input.trim() || disabled}
+              title="Send (Enter)"
+            >
+              ➤
+            </button>
+          )}
         </div>
       </form>
     </div>

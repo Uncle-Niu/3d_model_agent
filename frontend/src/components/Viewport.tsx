@@ -311,7 +311,7 @@ interface ViewportProps {
 }
 
 export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}) {
-  const { glbUrl, isLoading } = useViewportStore();
+  const { glbUrl, isLoading, currentModelId } = useViewportStore();
   const { partsVisibility, explodedFactor } = useAssemblyStore();
   const [wireframe, setWireframe] = useState(false);
   const [showBbox, setShowBbox] = useState(false);
@@ -428,7 +428,11 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
 
       {!glbUrl && !isLoading && (
         <div className="viewport-overlay">
-          <div className="viewport-empty">Send a message to generate a 3D model</div>
+          <div className="viewport-empty">
+            {currentModelId
+              ? 'This iteration didn’t produce viewable geometry. Open the Source panel to inspect the code.'
+              : 'Send a message to generate a 3D model'}
+          </div>
         </div>
       )}
 

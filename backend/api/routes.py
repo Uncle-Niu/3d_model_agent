@@ -110,6 +110,11 @@ class ModelResponse(BaseModel):
     has_stl: bool
     has_glb: bool
     iteration: int
+    failure_type: Optional[str] = None
+    vision_score: Optional[float] = None
+    is_final: bool = False
+    thread_id: Optional[str] = None
+    turn_index: Optional[int] = None
 
 
 class ExecuteSourceRequest(BaseModel):
@@ -413,6 +418,11 @@ async def list_models(project_id: str, request: Request):
             has_stl=m.has_stl,
             has_glb=m.has_glb,
             iteration=m.iteration,
+            failure_type=m.failure_type.value if m.failure_type else None,
+            vision_score=m.vision_score,
+            is_final=m.is_final,
+            thread_id=m.thread_id,
+            turn_index=m.turn_index,
         )
         for m in models
     ]
@@ -618,6 +628,7 @@ async def execute_model_source(project_id: str, body: ExecuteSourceRequest, requ
         failure_type=None if result["success"] else FailureType.EXECUTION_ERROR,
         failure_message="" if result["success"] else result["message"],
         iteration=0,
+        is_final=result["success"],
     )
     storage.save_model_metadata(project_id, metadata)
     if "source" not in result.get("files", {}):
@@ -632,6 +643,11 @@ async def execute_model_source(project_id: str, body: ExecuteSourceRequest, requ
         has_stl=metadata.has_stl,
         has_glb=metadata.has_glb,
         iteration=metadata.iteration,
+        failure_type=metadata.failure_type.value if metadata.failure_type else None,
+        vision_score=metadata.vision_score,
+        is_final=metadata.is_final,
+        thread_id=metadata.thread_id,
+        turn_index=metadata.turn_index,
     )
     return ExecuteSourceResponse(
         success=result["success"],
@@ -704,6 +720,7 @@ async def update_model_parameters(
         failure_type=None if result["success"] else FailureType.EXECUTION_ERROR,
         failure_message="" if result["success"] else result["message"],
         iteration=0,
+        is_final=result["success"],
     )
     storage.save_model_metadata(project_id, metadata)
     if "source" not in result.get("files", {}):
@@ -718,6 +735,11 @@ async def update_model_parameters(
         has_stl=metadata.has_stl,
         has_glb=metadata.has_glb,
         iteration=metadata.iteration,
+        failure_type=metadata.failure_type.value if metadata.failure_type else None,
+        vision_score=metadata.vision_score,
+        is_final=metadata.is_final,
+        thread_id=metadata.thread_id,
+        turn_index=metadata.turn_index,
     )
     return ExecuteSourceResponse(
         success=result["success"],

@@ -185,6 +185,15 @@ class AgentOrchestrator:
 
         self.current_steps = []
 
+        # Compute a 1-based turn index by counting prior user messages in the
+        # thread. The user we're handling now has already been appended by the
+        # WS layer, so this index points at the current turn.
+        try:
+            existing_messages = self.storage.get_chat_thread_messages(project_id, thread_id)
+            turn_index = sum(1 for m in existing_messages if m.role == "user")
+        except Exception:
+            turn_index = None
+
         # 1. Connectivity Check
         ollama_ok = await self.check_ollama_connectivity()
         vision_ok = await self.check_vision_connectivity()
@@ -512,6 +521,9 @@ class AgentOrchestrator:
                         failure_message=last_error,
                         iteration=iteration,
                         citations=citations,
+                        is_final=False,
+                        thread_id=thread_id,
+                        turn_index=turn_index,
                     )
                     self.storage.save_model_metadata(project_id, metadata)
                     continue
@@ -534,6 +546,9 @@ class AgentOrchestrator:
                     has_glb="glb" in exec_result["files"],
                     iteration=iteration,
                     citations=citations,
+                    is_final=False,
+                    thread_id=thread_id,
+                    turn_index=turn_index,
                 )
                 self.storage.save_model_metadata(project_id, preliminary_metadata)
 
@@ -603,6 +618,9 @@ class AgentOrchestrator:
                     vision_score=critique.overall_printability if critique else None,
                     citations=citations,
                     plan=plan,
+                    is_final=False,  # may be promoted below if we accept this iteration
+                    thread_id=thread_id,
+                    turn_index=turn_index,
                 )
                 self.storage.save_model_metadata(project_id, metadata)
 
@@ -626,13 +644,20 @@ class AgentOrchestrator:
                         f"Vision score {vision_score:.2f} below threshold — triggering repair")
                     continue
 
+                # Promote this metadata to final and persist again. We re-save
+                # the same metadata object with is_final=True so the version
+                # sidebar can label it distinctly from the WIP iterations that
+                # preceded it.
+                metadata.is_final = True
+                self.storage.save_model_metadata(project_id, metadata)
+
                 # Final Success Response
                 response_text = self._build_final_response(model_id, iteration, exec_result, critique, vision_score, repair_notes)
                 self.storage.append_chat_thread_message(
                     project_id, thread_id,
                     ChatMessage(
-                        role="assistant", 
-                        content=response_text, 
+                        role="assistant",
+                        content=response_text,
                         model_id=model_id,
                         steps=self.current_steps
                     ),

@@ -110,49 +110,71 @@ export default function HistorySidebar({
             {versions.length === 0 ? (
               <div className="sidebar-empty">No versions generated yet.</div>
             ) : (
-              [...versions].reverse().map((v) => (
-                <div
-                  key={v.model_id}
-                  className={`sidebar-item version-item ${v.model_id === currentModelId ? 'is-active' : ''} ${v.failure_type ? 'is-failed' : ''}`}
-                  onClick={() => onSelectModel(v.model_id)}
-                >
-                  <div className="sidebar-item-main">
-                    <div className="version-row">
-                      <span className="version-id" title={v.model_id}>#{shortId(v.model_id)}</span>
-                      <span className="version-time">{formatLocalDateTime(v.created_at)}</span>
-                    </div>
-                    <div className="version-prompt" title={v.prompt}>
-                      {v.prompt || (v.iteration ? `Repair iteration ${v.iteration}` : 'Checkpoint')}
-                    </div>
-                    {v.parent_model_id && (
-                      <div className="version-lineage">
-                        <span className="version-lineage-label">from</span>
-                        <button
-                          className="version-lineage-link"
-                          title={`Jump to parent ${v.parent_model_id}`}
-                          onClick={(e) => { e.stopPropagation(); onSelectModel(v.parent_model_id!); }}
-                        >
-                          #{shortId(v.parent_model_id)}
-                        </button>
+              [...versions].reverse().map((v) => {
+                const isFinal = v.is_final === true;
+                const isFailed = !!v.failure_type;
+                const isWip = !isFinal;
+                const isActive = v.model_id === currentModelId;
+                const labelText = isFailed
+                  ? 'Failed iteration'
+                  : isFinal
+                  ? 'Final'
+                  : v.has_glb
+                  ? `WIP iter ${v.iteration}`
+                  : `WIP iter ${v.iteration} (no geometry)`;
+                const labelClass = isFailed
+                  ? 'is-failed'
+                  : isFinal
+                  ? 'is-final'
+                  : 'is-wip';
+                return (
+                  <div
+                    key={v.model_id}
+                    className={`sidebar-item version-item ${isActive ? 'is-active' : ''} ${isFailed ? 'is-failed' : ''} ${isWip && !isFailed ? 'is-wip' : ''}`}
+                    onClick={() => onSelectModel(v.model_id)}
+                  >
+                    <div className="sidebar-item-main">
+                      <div className="version-row">
+                        <span className={`version-badge ${labelClass}`} title={labelText}>
+                          {labelText}
+                        </span>
+                        <span className="version-id" title={v.model_id}>#{shortId(v.model_id)}</span>
+                        <span className="version-time">{formatLocalDateTime(v.created_at)}</span>
                       </div>
-                    )}
-                    <div className="version-stats">
-                      {v.failure_type ? (
-                        <span className="version-status is-failed">
-                          ⚠ {v.failure_type.replace(/_/g, ' ')}
-                        </span>
-                      ) : (
-                        <span className="version-status is-success">✓ Success</span>
+                      <div className="version-prompt" title={v.prompt}>
+                        {v.prompt || (v.iteration ? `Iteration ${v.iteration}` : 'Checkpoint')}
+                      </div>
+                      {v.parent_model_id && (
+                        <div className="version-lineage">
+                          <span className="version-lineage-label">from</span>
+                          <button
+                            className="version-lineage-link"
+                            title={`Jump to parent ${v.parent_model_id}`}
+                            onClick={(e) => { e.stopPropagation(); onSelectModel(v.parent_model_id!); }}
+                          >
+                            #{shortId(v.parent_model_id)}
+                          </button>
+                        </div>
                       )}
-                      {v.vision_score !== undefined && v.vision_score !== null && (
-                        <span className="version-score" title="Vision critique score">
-                          {Math.round(v.vision_score * 100)}%
-                        </span>
-                      )}
+                      <div className="version-stats">
+                        {isFailed && (
+                          <span className="version-status is-failed">
+                            ⚠ {v.failure_type!.replace(/_/g, ' ')}
+                          </span>
+                        )}
+                        {!isFailed && v.has_glb && (
+                          <span className="version-status is-success">✓ Geometry</span>
+                        )}
+                        {v.vision_score !== undefined && v.vision_score !== null && (
+                          <span className="version-score" title="Vision critique score">
+                            {Math.round(v.vision_score * 100)}%
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>

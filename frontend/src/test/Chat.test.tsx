@@ -113,7 +113,8 @@ describe('Chat component', () => {
     useChatStore.getState().setGenerating(true);
     useChatStore.getState().setStage('critiquing', 'Analyzing geometry with vision AI...');
     render(<Chat onSend={() => {}} />);
-    expect(screen.getByText('critiquing')).toBeInTheDocument();
+    // PipelineProgress maps the raw 'critiquing' stage to a clearer label.
+    expect(screen.getByText('Verifying')).toBeInTheDocument();
     expect(screen.getByText('Analyzing geometry with vision AI...')).toBeInTheDocument();
   });
 

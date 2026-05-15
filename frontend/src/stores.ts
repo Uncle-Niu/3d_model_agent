@@ -92,9 +92,14 @@ interface ViewportState {
   currentModelId: string | null;
   currentProjectId: string | null;
   isLoading: boolean;
-  setModel: (modelId: string, glbUrl: string, projectId: string) => void;
+  // True while the active model_id refers to an in-progress iteration that
+  // the agent is still working on; used by the SourcePanel to show "WIP"
+  // styling and lock edits.
+  isWipModel: boolean;
+  setModel: (modelId: string, glbUrl: string | null, projectId: string, opts?: { isWip?: boolean }) => void;
   setLoading: (loading: boolean) => void;
   setProjectId: (projectId: string | null) => void;
+  setWip: (wip: boolean) => void;
   reset: () => void;
 }
 
@@ -103,16 +108,24 @@ export const useViewportStore = create<ViewportState>((set) => ({
   currentModelId: null,
   currentProjectId: null,
   isLoading: false,
+  isWipModel: false,
 
-  setModel: (modelId, glbUrl, projectId) =>
-    set({ currentModelId: modelId, glbUrl, currentProjectId: projectId, isLoading: false }),
+  setModel: (modelId, glbUrl, projectId, opts) =>
+    set({
+      currentModelId: modelId,
+      glbUrl,
+      currentProjectId: projectId,
+      isLoading: false,
+      isWipModel: opts?.isWip ?? false,
+    }),
+  setWip: (wip) => set({ isWipModel: wip }),
 
   setLoading: (loading) => set({ isLoading: loading }),
 
   setProjectId: (projectId) => set({ currentProjectId: projectId }),
 
   reset: () =>
-    set({ glbUrl: null, currentModelId: null, currentProjectId: null, isLoading: false }),
+    set({ glbUrl: null, currentModelId: null, currentProjectId: null, isLoading: false, isWipModel: false }),
 }));
 
 // ---------------------------------------------------------------------------

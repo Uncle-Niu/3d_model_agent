@@ -88,7 +88,15 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
 
       case 'model_ready':
         console.log(`[WS] Model ready: ${msg.model_id} → ${msg.glb_url}`);
-        viewport.setModel(msg.model_id, api.url(msg.glb_url), projectId || '');
+        // While the agent is still iterating, every model_ready is a WIP
+        // checkpoint — flag it so the source panel can show "WIP — locked"
+        // styling. The flag is cleared when the chat_response arrives.
+        viewport.setModel(
+          msg.model_id,
+          api.url(msg.glb_url),
+          projectId || '',
+          { isWip: chat.isGenerating },
+        );
         window.dispatchEvent(new CustomEvent('cad-model-ready', {
           detail: { projectId, modelId: msg.model_id },
         }));
@@ -105,6 +113,9 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
           steps: msg.steps ?? chat.currentSteps,
         });
         chat.setGenerating(false);
+        // Turn ended successfully — the currently displayed model is now the
+        // accepted final, no longer WIP.
+        viewport.setWip(false);
         break;
 
       case 'error':
@@ -116,6 +127,9 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
           timestamp: new Date().toISOString(),
         });
         chat.setGenerating(false);
+        // The current model — if any — is the last WIP we saw; unlock edits
+        // by clearing the WIP flag so the user can recover from the error.
+        viewport.setWip(false);
         break;
 
       case 'debug_log':
@@ -188,5 +202,15 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
     wsRef.current.send(JSON.stringify(msg));
   }, []);
 
-  return { sendMessage, sendRawMessage, isConnected };
+  /**
+   * Ask the backend to stop the in-flight chat turn. The backend cancels the
+   * pipeline asyncio task and emits a `chat_response` marker that flips the
+   * UI back out of generating state.
+   */
+  const cancelChat = useCallback(() => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: 'cancel_chat' }));
+  }, []);
+
+  return { sendMessage, sendRawMessage, cancelChat, isConnected };
 }

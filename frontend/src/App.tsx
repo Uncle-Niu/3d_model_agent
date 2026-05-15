@@ -31,9 +31,14 @@ function App() {
   const [historySidebarOpen, setHistorySidebarOpen] = useState(true);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [chatWidth, setChatWidth] = useState<number>(() => {
+    const stored = Number(localStorage.getItem('chatPanelWidth'));
+    return Number.isFinite(stored) && stored >= 320 && stored <= 900 ? stored : 470;
+  });
+  const [isResizingChat, setIsResizingChat] = useState(false);
   const projectMenuRef = useRef<HTMLDivElement>(null);
   const exportMenuRef = useRef<HTMLDivElement>(null);
-  const { sendMessage, sendRawMessage, isConnected } = useWebSocket(project?.project_id ?? null, activeThreadId);
+  const { sendMessage, sendRawMessage, cancelChat, isConnected } = useWebSocket(project?.project_id ?? null, activeThreadId);
 
   // Close popovers on outside-click / Escape
   useEffect(() => {
@@ -158,17 +163,23 @@ function App() {
   async function loadModelVersions(projectId: string, preferredModelId?: string) {
     try {
       const models = await api.get<ModelInfo[]>(`/api/projects/${projectId}/models`);
-      const successful = models.filter((model) => model.has_glb);
-      setModelVersions(successful);
+      // Show every iteration in the sidebar (WIP + final + failed). The
+      // sidebar visually labels each so users can pick a WIP iteration as a
+      // future starting point.
+      setModelVersions(models);
 
-      const selected =
-        successful.find((model) => model.model_id === preferredModelId) ??
-        successful.at(-1);
+      // For viewport selection we still need a model with GLB. Prefer the
+      // explicit preferred id, then the latest final, then any model with GLB.
+      const renderable = models.filter((m) => m.has_glb);
+      const preferred =
+        renderable.find((m) => m.model_id === preferredModelId) ??
+        [...renderable].reverse().find((m) => m.is_final) ??
+        renderable.at(-1);
 
-      if (selected) {
+      if (preferred) {
         viewport.setModel(
-          selected.model_id,
-          api.url(`/api/projects/${projectId}/models/${selected.model_id}/glb`),
+          preferred.model_id,
+          api.url(`/api/projects/${projectId}/models/${preferred.model_id}/glb`),
           projectId
         );
       } else {
@@ -184,11 +195,11 @@ function App() {
 
   function handleModelVersionChange(modelId: string) {
     if (!project || !modelId) return;
-    viewport.setModel(
-      modelId,
-      api.url(`/api/projects/${project.project_id}/models/${modelId}/glb`),
-      project.project_id
-    );
+    const meta = modelVersions.find((m) => m.model_id === modelId);
+    const glbUrl = meta?.has_glb
+      ? api.url(`/api/projects/${project.project_id}/models/${modelId}/glb`)
+      : null;
+    viewport.setModel(modelId, glbUrl, project.project_id, { isWip: meta?.is_final === false });
   }
 
   async function handleProjectChange(projectId: string) {
@@ -564,8 +575,35 @@ function App() {
         </div>
 
         {/* Chat Panel */}
-        <div className="app-chat">
-          <Chat onSend={handleSend} disabled={!activeThreadId || !isConnected} />
+        <div className="app-chat" style={{ width: chatWidth }}>
+          <div
+            className={`chat-resize-handle ${isResizingChat ? 'is-dragging' : ''}`}
+            onPointerDown={(e) => {
+              e.preventDefault();
+              setIsResizingChat(true);
+              const startX = e.clientX;
+              const startWidth = chatWidth;
+              function move(ev: PointerEvent) {
+                const next = Math.min(900, Math.max(320, startWidth + (startX - ev.clientX)));
+                setChatWidth(next);
+              }
+              function end() {
+                setIsResizingChat(false);
+                window.removeEventListener('pointermove', move);
+                window.removeEventListener('pointerup', end);
+                // Persist after drag ends so we don't thrash storage
+                setChatWidth((w) => {
+                  localStorage.setItem('chatPanelWidth', String(w));
+                  return w;
+                });
+              }
+              window.addEventListener('pointermove', move);
+              window.addEventListener('pointerup', end);
+            }}
+            title="Drag to resize chat panel"
+            aria-label="Resize chat panel"
+          />
+          <Chat onSend={handleSend} onCancel={cancelChat} disabled={!activeThreadId || !isConnected} />
         </div>
       </div>
 

@@ -197,6 +197,16 @@ class ModelMetadata(BaseModel):
     assembly: Optional[AssemblyManifest] = None
     citations: list[SearchResult] = Field(default_factory=list)
     plan: Optional[DesignPlan] = None  # structured design plan used for this attempt
+    # True when this is the final accepted result of a turn. False for
+    # in-progress iterations that were either superseded by a later repair
+    # attempt or that failed to produce valid geometry.
+    is_final: bool = False
+    # The chat thread this model was generated for (when known) — lets the UI
+    # group versions per turn and lock WIP iterations to their originating turn.
+    thread_id: Optional[str] = None
+    # The turn (1-based index of user messages in the thread) this model belongs
+    # to, when known. Useful for grouping iterations of one turn.
+    turn_index: Optional[int] = None
 
 
 class ProjectConfig(BaseModel):

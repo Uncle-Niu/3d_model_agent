@@ -44,6 +44,9 @@ export interface ModelInfo {
   iteration: number;
   failure_type?: string | null;
   vision_score?: number | null;
+  is_final?: boolean;
+  thread_id?: string | null;
+  turn_index?: number | null;
 }
 
 export interface PipelineStep {
