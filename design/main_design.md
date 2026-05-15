@@ -553,11 +553,13 @@ ToolResult
 
 ### Prompt Architecture
 
-The system prompt sent to the LLM includes three key sections:
+The system prompt sent to the LLM includes these key sections:
 
 1. **CadQuery API reference** — curated subset of the most-used methods (not the full docs). Sourced from CadQuery documentation.
-2. **Example library** — 10-15 curated CadQuery examples covering common patterns. These act as few-shot examples that teach the LLM the correct syntax.
-3. **Output format spec** — LLM outputs only valid CadQuery Python, assigns result to a variable named `result`.
+2. **Example library** - curated, tested CadQuery examples covering common patterns. These act as few-shot examples that teach the LLM correct syntax.
+3. **Recipe/archetype context** - compact local recipe cards for common product classes such as phone holders, trays, brackets, and enclosures.
+4. **Local example-bank RAG** - snippets retrieved from cloned open-source CAD repositories under `data/cad_sources/`.
+5. **Output format spec** - LLM outputs only valid CadQuery Python, assigns result to a variable named `result`.
 
 ### System Prompt Structure
 
@@ -577,6 +579,9 @@ You are a CAD engineer. Generate CadQuery Python code for the user's request.
 ## Examples
 [10-15 working examples here]
 
+## Retrieved Recipe / Example Bank Context
+[request-relevant archetype cards and local CAD snippets here]
+
 ## User Constraints
 [injected from constraint panel]
 ```
@@ -595,7 +600,64 @@ Example categories:
 - Threaded holes
 - Multi-body assemblies
 
-Source examples from CadQuery documentation and tested custom scripts.
+Source examples from CadQuery documentation and tested custom scripts. The curated
+library should stay small, high-signal, and guaranteed executable inside the
+sandbox.
+
+### Product Recipe Cards
+
+Maintain local recipe cards in `/backend/cad/recipes.py`.
+
+Recipe cards are not code snippets. They describe product archetypes and are used
+before code generation:
+
+- Required visible/function features
+- Required negative-space/cut features (slots, notches, cavities, holes)
+- Construction strategies
+- CadQuery patterns to consider
+- Plan/render rejection rules
+
+The orchestrator retrieves relevant recipes from the user request and injects
+them into the planner. `validate_plan_against_recipes()` gates the plan before
+code generation. If a plan for a known product class is too sparse (for example
+only a base plus slab for a phone holder), the plan is repaired before CadQuery
+source is requested.
+
+### Local CAD Example Bank
+
+Maintain a gitignored local source bank under:
+
+```text
+data/cad_sources/
+```
+
+Bootstrap it on a new machine with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap_cad_sources.ps1
+```
+
+Update existing clones with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap_cad_sources.ps1 -Update
+```
+
+Current source banks:
+
+- `CadQuery/awesome-cadquery`
+- `CadQuery/cadquery-contrib`
+- `gumyr/build123d`
+- `CadQuery/cadquery`
+- `gumyr/cq_warehouse`
+- `tanius/cadquery-models`
+
+`backend/cad/example_bank.py` scans `.py`, `.md`, `.rst`, and `.scad` files and
+retrieves compact snippets by request relevance. Planning may use broad CAD
+references. Code generation and vision repair use CadQuery-only snippets so the
+sandbox is not asked to import unsupported external packages. Snippets are
+reference context only; generated code must still follow the normal CadQuery
+output rules.
 
 ### Code Validation (Before Execution)
 

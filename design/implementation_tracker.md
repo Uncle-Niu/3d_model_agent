@@ -55,6 +55,15 @@ Focus: make the agent reliably build complex shapes and expose its reasoning.
 - ✅ `scripts/smoke_pipeline.py` exercises the full pipeline against a live
   Ollama with no UI — useful for debugging future regressions.
 
+- Done: Added product **recipe/archetype cards** in `backend/cad/recipes.py`.
+  Plans for known object classes (phone holders, trays, brackets, enclosures)
+  are gated before code generation and repaired if they omit required features
+  or negative-space/cut features.
+- Done: Added local **CAD example-bank RAG** in `backend/cad/example_bank.py`.
+  The agent retrieves compact snippets from cloned open-source CAD repositories
+  under `data/cad_sources/` for planning, generation, and repair.
+- Done: Added `scripts/bootstrap_cad_sources.ps1` to restore/update gitignored
+  local CAD source banks on a fresh machine.
 ---
 
 ## 1. System Architecture
@@ -253,6 +262,11 @@ Focus: make the agent reliably build complex shapes and expose its reasoning.
 - ✅ Plan is injected into the code-gen prompt and every repair prompt
 - ✅ Plan is given to the vision verifier as the ground-truth checklist
 - ✅ Plan persisted in `ModelMetadata.plan` so users can inspect what the agent intended
+- Done: Recipe/archetype context is injected into planning, and weak plans are
+  rejected/repaired before code generation.
+- Done: Local CAD example-bank snippets are retrieved for planning, generation, and
+  repair. Code generation receives CadQuery-only snippets to stay within the
+  sandbox.
 
 ### Thinking-mode model support (NEW)
 - ✅ Qwen3.x `reasoning` channel handled — combined with `content` for parsing
@@ -264,6 +278,8 @@ Focus: make the agent reliably build complex shapes and expose its reasoning.
 ### System Prompt
 - ✅ CadQuery API quick reference injected
 - ✅ Example library injected (10 examples)
+- Done: Recipe/archetype context injected when a request matches known product classes
+- Done: Local CAD example-bank RAG context injected from `data/cad_sources/`
 - ✅ Output format spec (`result` variable requirement)
 - ✅ Hard constraints injected into prompt
 - ✅ Soft constraints injected into prompt
@@ -280,8 +296,20 @@ Focus: make the agent reliably build complex shapes and expose its reasoning.
 - ✅ Hex nut
 - ✅ Phone stand
 - ✅ Cable clip (snap-fit)
-- ❌ Threaded holes example
-- ❌ Multi-body assembly example
+- Done: Threaded holes example
+- Done: Multi-body assembly example
+
+### Recipe Cards and Local Example Bank
+- Done: `backend/cad/recipes.py` defines product archetypes with required visible
+  features, negative-space/cut features, construction strategy, and plan
+  rejection rules.
+- Done: `validate_plan_against_recipes()` gates known product classes before code
+  generation.
+- Done: `backend/cad/example_bank.py` indexes cloned local CAD source banks.
+- Done: `scripts/bootstrap_cad_sources.ps1` restores/updates gitignored source
+  banks on a different machine.
+- Done: Current source banks: `awesome-cadquery`, `cadquery-contrib`, `build123d`,
+  `cadquery`, `cq_warehouse`, and `cadquery-models`.
 
 ### Code Validation (AST)
 - ✅ Syntax check (ast.parse)
@@ -663,6 +691,9 @@ Generate CadQuery → Execute → Export GLB
 | `tests/backend/test_parameters.py` | 6 | Parameter extraction and injection, feature extraction (source spans) |
 | `tests/backend/test_importer.py` | 4 | STEP/STL/GLB import and conversion |
 | `tests/backend/test_web_research.py` | 3 | DuckDuckGo search integration |
+| `tests/backend/cad/test_recipes.py` | 4 | Recipe retrieval, product-plan gating, negative-space requirements |
+| `tests/backend/cad/test_example_bank.py` | 3 | Local CAD example-bank indexing, CadQuery-only retrieval, prompt context |
+| `tests/backend/test_vision_recipe_context.py` | 1 | Vision prompt uses recipe/example context as an independent rubric |
 | `tests/integration/test_imports.py` | 3 | Import API integration |
 
 ### Frontend — 76 tests, all passing (`npm test`)
