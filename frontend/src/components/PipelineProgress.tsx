@@ -45,14 +45,15 @@ function stageMeta(stage: string) {
 function dataAsProse(data: PipelineStep['data']): string[] {
   if (!data) return [];
   const out: string[] = [];
-  if (typeof data.why === 'string' && data.why.trim()) {
-    out.push(data.why.trim());
+  const rationale = data.rationale || data.why;
+  if (typeof rationale === 'string' && rationale.trim()) {
+    out.push(rationale.trim());
   }
   if (Array.isArray(data.used) && data.used.length > 0) {
-    out.push(`Drew on ${joinNicely(data.used)}.`);
+    out.push(`Used inputs: ${joinNicely(data.used)}.`);
   }
   if (Array.isArray(data.skipped) && data.skipped.length > 0) {
-    out.push(`Skipped ${joinNicely(data.skipped)}.`);
+    out.push(`Skipped: ${joinNicely(data.skipped)}.`);
   }
   return out;
 }
@@ -71,11 +72,18 @@ function PlanArtifacts({ data }: { data: PipelineStep['data'] }) {
   if (!data) return null;
   const components = Array.isArray(data.components) ? (data.components as Array<Record<string, unknown>>) : null;
   const features = Array.isArray(data.key_features) ? (data.key_features as string[]) : null;
+  const reasoning = typeof data.raw_reasoning === 'string' ? data.raw_reasoning : null;
 
-  if (!components?.length && !features?.length) return null;
+  if (!components?.length && !features?.length && !reasoning) return null;
 
   return (
     <div className="pipeline-artifact">
+      {reasoning && (!components?.length) && (
+        <div className="pipeline-artifact-block">
+          <div className="pipeline-artifact-title">Agent Reasoning</div>
+          <div className="pipeline-step-message-full">{reasoning}</div>
+        </div>
+      )}
       {components && components.length > 0 && (
         <div className="pipeline-artifact-block">
           <div className="pipeline-artifact-title">Components</div>
@@ -103,6 +111,31 @@ function PlanArtifacts({ data }: { data: PipelineStep['data'] }) {
   );
 }
 
+function ResearchArtifacts({ data }: { data: PipelineStep['data'] }) {
+  if (!data) return null;
+  const results = Array.isArray(data.research_results) ? (data.research_results as Array<Record<string, string>>) : null;
+
+  if (!results?.length) return null;
+
+  return (
+    <div className="pipeline-artifact">
+      <div className="pipeline-artifact-block">
+        <div className="pipeline-artifact-title">Search Results</div>
+        <ul className="pipeline-artifact-list">
+          {results.map((r, i) => (
+            <li key={i}>
+              <a href={r.url} target="_blank" rel="noreferrer" className="pipeline-artifact-link">
+                {r.title || new URL(r.url).hostname}
+              </a>
+              {r.snippet && <div className="pipeline-artifact-snippet">{r.snippet}</div>}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 interface PipelineStepRowProps {
   step: PipelineStep;
   index: number;
@@ -113,9 +146,30 @@ interface PipelineStepRowProps {
 
 function PipelineStepRow({ step, isLast, isExpanded, onToggle }: PipelineStepRowProps) {
   const meta = stageMeta(step.stage);
-  const prose = dataAsProse(step.data);
-  const hasDetails = !!(step.details || prose.length > 0 || step.data);
-  const showPlan = step.stage === 'planning' && step.data && (Array.isArray(step.data.components) || Array.isArray(step.data.key_features));
+  
+  // Truncate long messages for the headline to keep the timeline clean
+  const maxHeadlineLength = 160;
+  const lines = (step.message || '').split('\n').filter(l => l.trim());
+  const firstLine = lines[0] || '';
+  const isLong = firstLine.length > maxHeadlineLength || lines.length > 1;
+  
+  const displayMessage = isLong 
+    ? firstLine.slice(0, maxHeadlineLength).trim() + '...' 
+    : firstLine;
+
+  const data = step.data || {};
+  const rationale = typeof data.rationale === 'string' ? data.rationale : null;
+  const outcome = typeof data.outcome === 'string' ? data.outcome : null;
+  const usedInputs = Array.isArray(data.used) ? data.used : null;
+  const skipped = Array.isArray(data.skipped) ? data.skipped : null;
+
+  const hasDetails = !!(step.details || rationale || outcome || usedInputs || skipped || isLong || step.data?.raw_reasoning || step.data?.research_results);
+  const showPlan = step.stage === 'planning' && step.data && (
+    Array.isArray(step.data.components) || 
+    Array.isArray(step.data.key_features) ||
+    typeof step.data.raw_reasoning === 'string'
+  );
+  const showResearch = step.stage === 'researching' && step.data && Array.isArray(step.data.research_results);
 
   return (
     <div className={`pipeline-step pipeline-step-tone-${meta.tone}`}>
@@ -133,7 +187,7 @@ function PipelineStepRow({ step, isLast, isExpanded, onToggle }: PipelineStepRow
           disabled={!hasDetails}
         >
           <span className="pipeline-step-stage">{meta.label}</span>
-          <span className="pipeline-step-message">{step.message}</span>
+          <span className="pipeline-step-message">{displayMessage}</span>
           {hasDetails && (
             <span className="pipeline-step-chevron" aria-hidden="true">{isExpanded ? '▾' : '▸'}</span>
           )}
@@ -141,11 +195,42 @@ function PipelineStepRow({ step, isLast, isExpanded, onToggle }: PipelineStepRow
 
         {isExpanded && hasDetails && (
           <div className="pipeline-step-body">
-            {step.details && <p className="pipeline-step-detail">{step.details}</p>}
-            {prose.map((line, i) => (
-              <p key={i} className="pipeline-step-rationale">{line}</p>
-            ))}
+            {/* 1. Hardcoded Description + Dynamic Rationale combined */}
+            {(step.details || rationale) && (
+              <p className="pipeline-step-combined">
+                {step.details && <span className="pipeline-step-hardcoded">{step.details} </span>}
+                {rationale && <span className="pipeline-step-rationale">{rationale}</span>}
+              </p>
+            )}
+
+            {/* 2. Clear Decision / Outcome */}
+            {outcome && (
+              <p className="pipeline-step-outcome">
+                <span className="outcome-label">Result:</span> {outcome}
+              </p>
+            )}
+
+            {/* 3. Full message (if it was truncated) */}
+            {isLong && (
+              <div className="pipeline-step-message-full">
+                {step.message}
+              </div>
+            )}
+
+            {/* 4. Inputs / Context */}
+            {(usedInputs || skipped) && (
+              <div className="pipeline-step-context">
+                {usedInputs && usedInputs.length > 0 && (
+                  <p className="pipeline-step-used">Used inputs: {joinNicely(usedInputs)}</p>
+                )}
+                {skipped && skipped.length > 0 && (
+                  <p className="pipeline-step-skipped">Skipped: {joinNicely(skipped)}</p>
+                )}
+              </div>
+            )}
+
             {showPlan && <PlanArtifacts data={step.data} />}
+            {showResearch && <ResearchArtifacts data={step.data} />}
           </div>
         )}
       </div>
@@ -185,7 +270,25 @@ export default function PipelineProgress({ steps, isLive = false }: PipelineProg
     return `Completed in ${steps.length} steps`;
   }, [steps, isLive]);
 
-  if (steps.length === 0) return null;
+  const expandables = useMemo(() => {
+    return steps
+      .map((step, i) => {
+        const prose = dataAsProse(step.data);
+        const hasDetails = !!(step.details || prose.length > 0 || step.data?.outcome || step.data);
+        return hasDetails ? i : -1;
+      })
+      .filter((i) => i !== -1);
+  }, [steps]);
+
+  const allExpanded = expandables.length > 0 && expandables.every((i) => expanded.has(i));
+
+  function toggleAllExpanded() {
+    if (allExpanded) {
+      setExpanded(new Set());
+    } else {
+      setExpanded(new Set(expandables));
+    }
+  }
 
   function toggleStep(i: number) {
     setExpanded((prev) => {
@@ -195,6 +298,8 @@ export default function PipelineProgress({ steps, isLive = false }: PipelineProg
     });
   }
 
+  if (steps.length === 0) return null;
+
   return (
     <div className={`pipeline-progress ${isLive ? 'is-live' : 'is-persisted'}`}>
       <div className="pipeline-header">
@@ -202,13 +307,24 @@ export default function PipelineProgress({ steps, isLive = false }: PipelineProg
           {isLive && <span className="pipeline-live-pulse" aria-hidden="true" />}
           <span className="pipeline-headline">{headline}</span>
         </div>
-        <button
-          className="pipeline-toggle-btn"
-          type="button"
-          onClick={() => setShowTimeline((v) => !v)}
-        >
-          {showTimeline ? 'Hide timeline' : 'Show timeline'}
-        </button>
+        <div className="pipeline-actions">
+          {showTimeline && expandables.length > 0 && (
+            <button
+              className="pipeline-action-btn"
+              type="button"
+              onClick={toggleAllExpanded}
+            >
+              {allExpanded ? 'Collapse all' : 'Expand all'}
+            </button>
+          )}
+          <button
+            className="pipeline-toggle-btn"
+            type="button"
+            onClick={() => setShowTimeline((v) => !v)}
+          >
+            {showTimeline ? 'Hide timeline' : 'Show timeline'}
+          </button>
+        </div>
       </div>
 
       {showTimeline && (

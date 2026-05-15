@@ -210,19 +210,15 @@ class AgentOrchestrator:
 
         await self._emit_status(
             "planning",
-            "Preparing turn context...",
-            details=(
-                "The agent is gathering the request, recent chat history, project constraints, "
-                "and any selected or existing model context before choosing the next action."
-            ),
+            "Preparing modeling context...",
+            details="Gathering project constraints, chat history, and active selection.",
             data={
-                "why": "Keep generation grounded in the current project instead of treating this as an isolated prompt.",
+                "rationale": "Ensures the model is grounded in the current project context.",
                 "used": [
-                    f"{len(chat_ctx)} recent chat message(s)",
-                    "project hard constraints",
-                    "project soft constraints",
+                    f"{len(chat_ctx)} chat messages",
+                    "hard constraints",
+                    "soft constraints",
                 ],
-                "skipped": [],
             },
         )
 
@@ -231,22 +227,20 @@ class AgentOrchestrator:
         research_context = ""
         await self._emit_status(
             "planning",
-            "Deciding whether web research is needed...",
-            details=(
-                "A lightweight LLM planning call checks if the request depends on current "
-                "standards, vendor dimensions, material data, or hardware specifications."
-            ),
+            "Checking research needs...",
+            details="Determining if external dimensions or hardware standards are required.",
             data={
-                "why": "Search only when external facts would materially affect the CAD dimensions or design.",
-                "used": ["user request", "recent chat context"],
+                "rationale": "Only search when technical facts (like bolt sizes) are missing from context.",
+                "used": ["user prompt", "chat history"],
             },
         )
         search_query = await self.llm.decide_research(user_message, chat_ctx)
         if search_query:
-            await self._emit_status("researching", f"Searching the web for: {search_query}...", 
-                                  details=f"The agent determined that external technical standards or dimensions are required for '{user_message}'.",
+            await self._emit_status("researching", f"Searching for: {search_query}", 
+                                  details="Fetching external technical specifications and standards.",
                                   data={
-                                      "why": "External reference data may be needed for correct sizing or standards compliance.",
+                                      "rationale": "Need accurate dimensions to ensure standard hardware compatibility.",
+                                      "outcome": f"Research initiated: {search_query}",
                                       "used": [search_query],
                                   })
             citations = await search_web(search_query)
@@ -256,17 +250,21 @@ class AgentOrchestrator:
                     "query": search_query,
                     "citations": [c.model_dump() for c in citations]
                 })
+                await self._emit_status("researching", "Web research complete.",
+                                      details="Retrieved external specifications for the design.",
+                                      data={
+                                          "outcome": f"Found {len(citations)} relevant sources.",
+                                          "research_results": [c.model_dump() for c in citations]
+                                      })
         else:
             await self._emit_status(
                 "planning",
                 "Skipping web research.",
-                details=(
-                    "The planner did not find a need for outside specifications; the request can be handled "
-                    "from the prompt, chat context, and project constraints."
-                ),
+                details="Request can be handled using existing project context.",
                 data={
-                    "why": "Avoid adding unrelated or stale web facts when the design does not require them.",
-                    "skipped": ["web search", "page fetching"],
+                    "rationale": "Internal context is sufficient for this design.",
+                    "outcome": "No external research required.",
+                    "skipped": ["web search"],
                 },
             )
 
@@ -291,15 +289,12 @@ class AgentOrchestrator:
             context_used.append(f"{len(citations)} research citation(s)")
         await self._emit_status(
             "planning",
-            "Selected modeling context.",
-            details=(
-                "The agent chose whether to edit an existing checkpoint or generate a new model, "
-                "then assembled the prompt inputs for code generation."
-            ),
+            "Modeling strategy selected.",
+            details="Determined whether to edit a checkpoint or start a new part.",
             data={
-                "why": "Use the most relevant geometry context while keeping unrelated state out of the CAD prompt.",
+                "rationale": "Minimizes unnecessary geometry changes by reusing relevant base models.",
+                "outcome": f"Generate new model from scratch" if not current_source else f"Modify existing checkpoint `{current_model_id}`",
                 "used": context_used,
-                "skipped": [] if current_source else ["source-code edit path"],
             },
         )
 
@@ -309,15 +304,11 @@ class AgentOrchestrator:
         # the critic evaluate against the same explicit goal.
         await self._emit_status(
             "planning",
-            "Decomposing the request into a design plan...",
-            details=(
-                "The agent thinks step-by-step about the geometry, picks specific dimensions, "
-                "lists every sub-shape, and records the key visible features the result must have. "
-                "You will see this reasoning stream live."
-            ),
+            "Developing design plan...",
+            details="Decomposing request into shapes, dimensions, and manufacturing features.",
             data={
-                "why": "Planning before coding catches dimensional and decomposition mistakes early and gives the vision verifier an explicit checklist.",
-                "used": context_used + (["research context"] if research_context else []),
+                "rationale": "Catches dimensional errors early before writing complex CadQuery code.",
+                "used": context_used + (["research results"] if research_context else []),
             },
         )
 
@@ -355,14 +346,17 @@ class AgentOrchestrator:
         plan_summary_for_status = plan.summary or (plan_text.splitlines()[0] if plan_text else "")
         await self._emit_status(
             "planning",
-            "Plan ready.",
-            details=plan_summary_for_status or "Proceeding without a structured plan.",
+            "Design plan finalized.",
+            details="The agent has finished the step-by-step geometry breakdown.",
             data={
+                "outcome": plan_summary_for_status or "Plan ready for code generation.",
                 "plan_summary": plan.summary,
+                "raw_reasoning": plan.raw_reasoning,
                 "components": [c.model_dump() for c in plan.components],
                 "key_features": plan.key_features,
                 "assumptions": plan.assumptions,
                 "risks": plan.risks,
+                "parameters": plan.parameters,
             },
         )
 
@@ -379,11 +373,11 @@ class AgentOrchestrator:
             try:
                 # ── Step A: Generate or Repair code ──────────────────────────
                 if iteration == 1:
-                    await self._emit_status("generating", "Generating CadQuery code...", 
-                                          details="Synthesizing Python code using CadQuery API based on your description and project constraints.",
+                    await self._emit_status("generating", "Writing CadQuery code...", 
+                                          details="Synthesizing Python source based on design plan and constraints.",
                                           data={
-                                              "why": "CadQuery source is the editable canonical representation for this CAD-first workflow.",
-                                              "used": context_used + ["CadQuery examples", "constraint prompt"],
+                                              "rationale": "CadQuery allows parametric control over mechanical geometry.",
+                                              "used": context_used + ["CadQuery API", "design plan"],
                                           })
                     last_code = await self._generate_code_streaming(
                         user_message, system_prompt, chat_ctx,
@@ -398,7 +392,8 @@ class AgentOrchestrator:
                         f"Vision-driven repair (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS})...",
                         details=f"The vision AI identified {len(last_critique.issues)} issues in the previous rendering. Attempting to fix geometry or printability faults.",
                         data={
-                            "why": "The rendered model passed execution but did not meet the visual/printability quality threshold.",
+                            "rationale": "The rendered model passed execution but did not meet the visual/printability quality threshold.",
+                            "outcome": f"Initiated repair for {len(last_critique.issues)} vision issues.",
                             "used": [
                                 f"vision score {last_critique.overall_printability:.2f}",
                                 f"{len(last_critique.issues)} critique issue(s)",
@@ -427,7 +422,8 @@ class AgentOrchestrator:
                         f"Repairing code (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS})...",
                         details="The previous code failed with an execution error. Analyzing traceback to correct the logic.",
                         data={
-                            "why": "The previous generated source did not produce valid geometry, so the next LLM call is constrained by the failure.",
+                            "rationale": "The previous generated source did not produce valid geometry, so the next LLM call is constrained by the failure.",
+                            "outcome": "Initiated syntax/logic repair.",
                             "used": [last_failure_type or "execution_error", last_error.splitlines()[0] if last_error else "previous failure"],
                         })
                     await self._emit_debug("repair_request", f"Error repair attempt {iteration}", {
@@ -470,11 +466,11 @@ class AgentOrchestrator:
                 consecutive_empty = 0
 
                 # ── Step B: Execute CadQuery ──────────────────────────────────
-                await self._emit_status("executing", "Running CadQuery code...",
-                                      details="Executing the generated Python script in a sandboxed CadQuery environment to produce 3D geometry.",
+                await self._emit_status("executing", "Executing geometry engine...",
+                                      details="Running script to produce 3D B-Rep (Boundary Representation) solids.",
                                       data={
-                                          "why": "Only actual OpenCascade geometry can confirm whether the generated source is usable.",
-                                          "used": ["generated CadQuery source", "project constraints"],
+                                          "rationale": "Validation requires checking if the source produces manifold geometry.",
+                                          "used": ["CadQuery source"],
                                       })
                 
                 model_id = self.storage.next_model_id(project_id)
@@ -524,11 +520,11 @@ class AgentOrchestrator:
                     continue
 
                 # ── Step C: Success! Render and Critique ──────────────────────
-                await self._emit_status("tessellating", "Preparing 3D preview...",
-                                      details="Tessellating the B-Rep geometry into a GLB mesh for real-time 3D viewing in the browser.",
+                await self._emit_status("tessellating", "Generating 3D preview...",
+                                      details="Converting B-Rep solids to GLB mesh for browser display.",
                                       data={
-                                          "why": "The browser displays GLB meshes while STEP remains the canonical CAD export.",
-                                          "used": ["validated geometry", "generated model files"],
+                                          "rationale": "Mesh-based rendering is faster for interactive viewing.",
+                                          "used": ["B-Rep solids"],
                                       })
                 
                 preliminary_metadata = ModelMetadata(
@@ -579,11 +575,10 @@ class AgentOrchestrator:
                     await self._emit_status(
                         "critiquing",
                         "Skipping vision critique.",
-                        details="The vision model was unavailable during the preflight check, so deterministic validation results are used for this turn.",
+                        details="Vision model (Ollama) is disconnected or unavailable.",
                         data={
-                            "why": "Avoid blocking a successful CAD result on an unavailable optional reviewer.",
-                            "skipped": ["vision critique"],
-                            "used": ["deterministic execution and geometry checks"],
+                            "rationale": "Proceeding with geometric validation only to avoid blocking.",
+                            "skipped": ["vision-based verification"],
                         },
                     )
 

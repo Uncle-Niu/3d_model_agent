@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import xml.etree.ElementTree as ET
 from typing import Any, AsyncIterator, Callable, Optional
 
 from openai import AsyncOpenAI
@@ -382,27 +383,39 @@ class LLMService:
             "## Output format (STRICT)\n"
             "1. First, a short `<thinking>` section with your free-form reasoning (1-3 paragraphs). "
             "   Use this to consider proportions, references, ambiguities, and risks.\n"
-            "2. Then a single ```json``` block with this schema (no other code blocks):\n"
-            "```json\n"
-            "{\n"
-            "  \"summary\": \"one-sentence description of the final part\",\n"
-            "  \"overall_dimensions_mm\": [X, Y, Z],\n"
-            "  \"components\": [\n"
-            "    {\n"
-            "      \"name\": \"unique_snake_case_name\",\n"
-            "      \"description\": \"what this sub-shape is and why\",\n"
-            "      \"primitive\": \"box|cylinder|sphere|extrude|revolve|polygon|cone|torus|custom\",\n"
-            "      \"dimensions\": {\"length\": 50, \"width\": 30, \"height\": 10},\n"
-            "      \"position\": [x, y, z],\n"
-            "      \"orientation\": \"axis=Z|free-form description\",\n"
-            "      \"operation\": \"base|union|cut|intersect|fillet|chamfer|shell|pattern\"\n"
-            "    }\n"
-            "  ],\n"
-            "  \"key_features\": [\"feature 1 that must be visible in the result\", ...],\n"
-            "  \"assumptions\": [\"specific assumption with chosen value\", ...],\n"
-            "  \"risks\": [\"a thing that can go wrong in CadQuery, with mitigation\", ...],\n"
-            "  \"parameters\": {\"param_name_in_mm\": 10.0}\n"
-            "}\n"
+            "2. Then output a single `<design_plan>` XML block with this exact schema. DO NOT output JSON:\n"
+            "```xml\n"
+            "<design_plan>\n"
+            "  <summary>one-sentence description of the final part</summary>\n"
+            "  <overall_dimensions_mm>\n"
+            "    <x>10</x><y>20</y><z>30</z>\n"
+            "  </overall_dimensions_mm>\n"
+            "  <components>\n"
+            "    <component>\n"
+            "      <name>unique_snake_case_name</name>\n"
+            "      <description>what this sub-shape is and why</description>\n"
+            "      <primitive>box|cylinder|sphere|extrude|revolve|polygon|cone|torus|custom</primitive>\n"
+            "      <dimensions>\n"
+            "        <length>50</length><width>30</width><height>10</height>\n"
+            "      </dimensions>\n"
+            "      <position><x>0</x><y>0</y><z>0</z></position>\n"
+            "      <orientation>axis=Z|free-form description</orientation>\n"
+            "      <operation>base|union|cut|intersect|fillet|chamfer|shell|pattern</operation>\n"
+            "    </component>\n"
+            "  </components>\n"
+            "  <key_features>\n"
+            "    <feature>feature 1 that must be visible in the result</feature>\n"
+            "  </key_features>\n"
+            "  <assumptions>\n"
+            "    <assumption>specific assumption with chosen value</assumption>\n"
+            "  </assumptions>\n"
+            "  <risks>\n"
+            "    <risk>a thing that can go wrong in CadQuery, with mitigation</risk>\n"
+            "  </risks>\n"
+            "  <parameters>\n"
+            "    <parameter name=\"param_name\">10.0</parameter>\n"
+            "  </parameters>\n"
+            "</design_plan>\n"
             "```\n\n"
             "## Constraints\n"
             f"- Max print volume: {hc.max_x_mm} × {hc.max_y_mm} × {hc.max_z_mm} mm\n"
@@ -497,8 +510,9 @@ If no search is needed, output ONLY "NONE".
 Search Query:"""
         
         response = await self.generate(prompt, "You are a technical research assistant.")
-        query = response.strip().strip('"').strip("'")
-        if query.upper() == "NONE":
+        # Only take the first line in case the model ignores "ONLY" and adds reasoning
+        query = response.strip().split("\n")[0].strip().strip('"').strip("'")
+        if query.upper() == "NONE" or not query:
             return None
         return query
 
@@ -526,66 +540,73 @@ def parse_design_plan(raw_text: str) -> DesignPlan:
             if first_brace > 0:
                 plan.raw_reasoning = raw_text[:first_brace].strip()
 
-    # 2. Find a JSON object — prefer ```json``` blocks, fall back to first {...}
-    data: dict = {}
-    json_text = ""
-    json_match = re.search(r"```json\s*(.*?)```", raw_text, re.DOTALL | re.IGNORECASE)
-    if json_match:
-        json_text = json_match.group(1).strip()
-    else:
-        # First balanced-ish object
-        brace_match = re.search(r"\{[\s\S]*\}", raw_text)
-        if brace_match:
-            json_text = brace_match.group(0)
-
-    if json_text:
+    # 2. Extract <design_plan> block
+    plan_match = re.search(r"<design_plan>.*?</design_plan>", raw_text, re.DOTALL | re.IGNORECASE)
+    if plan_match:
+        xml_text = plan_match.group(0)
         try:
-            data = json.loads(json_text)
-        except json.JSONDecodeError:
-            # Try to repair common issues (trailing commas, single quotes)
-            cleaned = re.sub(r",\s*([}\]])", r"\1", json_text)
-            try:
-                data = json.loads(cleaned)
-            except json.JSONDecodeError:
-                data = {}
+            root = ET.fromstring(xml_text)
+            plan.summary = (root.findtext("summary") or "").strip()
+            
+            dims = root.find("overall_dimensions_mm")
+            if dims is not None:
+                try:
+                    plan.overall_dimensions_mm = [
+                        float(dims.findtext("x") or 0),
+                        float(dims.findtext("y") or 0),
+                        float(dims.findtext("z") or 0)
+                    ]
+                except Exception:
+                    pass
 
-    if data:
-        plan.summary = str(data.get("summary", "")).strip()
-        dims = data.get("overall_dimensions_mm")
-        if isinstance(dims, list) and len(dims) == 3:
-            try:
-                plan.overall_dimensions_mm = [float(x) for x in dims]
-            except (TypeError, ValueError):
-                pass
-
-        for comp in data.get("components", []) or []:
-            if not isinstance(comp, dict):
-                continue
-            try:
+            for comp in root.findall(".//component"):
+                c_name = (comp.findtext("name") or "").strip()
+                if not c_name:
+                    continue
+                dims_elem = comp.find("dimensions")
+                dimensions = {}
+                if dims_elem is not None:
+                    for d in dims_elem:
+                        try:
+                            dimensions[d.tag] = float(d.text)
+                        except Exception:
+                            pass
+                
+                pos_elem = comp.find("position")
+                position = None
+                if pos_elem is not None:
+                    try:
+                        position = [
+                            float(pos_elem.findtext("x") or 0),
+                            float(pos_elem.findtext("y") or 0),
+                            float(pos_elem.findtext("z") or 0)
+                        ]
+                    except Exception:
+                        pass
+                
                 plan.components.append(DesignComponent(
-                    name=str(comp.get("name", "")).strip() or f"component_{len(plan.components)+1}",
-                    description=str(comp.get("description", "")).strip(),
-                    primitive=str(comp.get("primitive", "")).strip(),
-                    dimensions={
-                        str(k): float(v)
-                        for k, v in (comp.get("dimensions") or {}).items()
-                        if isinstance(v, (int, float))
-                    },
-                    position=[float(x) for x in comp.get("position", [])] if isinstance(comp.get("position"), list) and len(comp.get("position") or []) == 3 else None,
-                    orientation=str(comp.get("orientation", "")).strip(),
-                    operation=str(comp.get("operation", "")).strip(),
+                    name=c_name,
+                    description=(comp.findtext("description") or "").strip(),
+                    primitive=(comp.findtext("primitive") or "").strip(),
+                    dimensions=dimensions,
+                    position=position,
+                    orientation=(comp.findtext("orientation") or "").strip(),
+                    operation=(comp.findtext("operation") or "").strip(),
                 ))
-            except Exception:
-                continue
-
-        plan.key_features = [str(s).strip() for s in (data.get("key_features") or []) if str(s).strip()]
-        plan.assumptions = [str(s).strip() for s in (data.get("assumptions") or []) if str(s).strip()]
-        plan.risks = [str(s).strip() for s in (data.get("risks") or []) if str(s).strip()]
-        plan.parameters = {
-            str(k): float(v)
-            for k, v in (data.get("parameters") or {}).items()
-            if isinstance(v, (int, float))
-        }
+            
+            plan.key_features = [f.text.strip() for f in root.findall(".//key_features/feature") if f.text and f.text.strip()]
+            plan.assumptions = [a.text.strip() for a in root.findall(".//assumptions/assumption") if a.text and a.text.strip()]
+            plan.risks = [r.text.strip() for r in root.findall(".//risks/risk") if r.text and r.text.strip()]
+            
+            for p in root.findall(".//parameters/parameter"):
+                p_name = p.get("name")
+                if p_name and p.text:
+                    try:
+                        plan.parameters[p_name] = float(p.text)
+                    except ValueError:
+                        pass
+        except ET.ParseError:
+            pass
 
     # If nothing was parsed, treat whole response as reasoning so it stays visible
     if not plan.summary and not plan.components and not plan.raw_reasoning:
