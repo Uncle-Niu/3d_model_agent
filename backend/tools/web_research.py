@@ -38,6 +38,7 @@ async def search_web(
             
     except Exception as e:
         logger.error(f"Web search failed: {e}")
+        return []
         
     return results
 

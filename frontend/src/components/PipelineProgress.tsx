@@ -78,6 +78,12 @@ function PlanArtifacts({ data }: { data: PipelineStep['data'] }) {
 
   return (
     <div className="pipeline-artifact">
+      {data.summary && (
+        <div className="pipeline-artifact-block">
+          <div className="pipeline-artifact-title">Design Goal</div>
+          <div className="pipeline-artifact-summary">{String(data.summary)}</div>
+        </div>
+      )}
       {reasoning && !components?.length && (
         <div className="pipeline-artifact-block">
           <div className="pipeline-artifact-title">Agent Reasoning</div>

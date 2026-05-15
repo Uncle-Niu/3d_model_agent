@@ -116,6 +116,7 @@ def _build_vision_user_prompt(
     user_intent: str,
     geometry_stats: Optional[dict] = None,
     plan: Optional[DesignPlan] = None,
+    recipe_context: str = "",
 ) -> str:
     """Build the user message for the vision critique."""
     stats_text = ""
@@ -150,15 +151,27 @@ def _build_vision_user_prompt(
                 parts.append(f"- {a}")
         plan_text = "\n".join(parts) + "\n"
 
+    recipe_text = ""
+    if recipe_context:
+        recipe_text = (
+            "\n## CAD Recipe / Product Archetype Context\n"
+            "Use this as an independent rubric in addition to the generated plan. "
+            "If the model satisfies the plan but omits required recipe features, mark matches_intent=false.\n"
+            f"{recipe_context}\n"
+        )
+
     return f"""\
 Verify this generated 3D CAD model against the user's intent and the plan below.
 
 ## User's Original Request
 {user_intent}
-{plan_text}{stats_text}
+{recipe_text}{plan_text}{stats_text}
 You are looking at four rendered views of the model: isometric, front, right, and top.
 Inspect each key feature in the checklist individually. Only return `matches_intent=true`
-if every feature in the checklist is actually visible and the overall shape matches.
+if every feature in the checklist is actually visible, every required recipe/archetype
+feature is represented, and the overall shape matches. Reject simplistic placeholder
+geometry such as a plain base plus slab when the recipe calls for lips, ribs, slots,
+holes, guides, or cable notches.
 
 Return only the JSON object specified in your instructions — no fences, no preamble.
 """
@@ -489,6 +502,7 @@ class VisionCritic:
         user_intent: str,
         geometry_stats: Optional[dict] = None,
         plan: Optional[DesignPlan] = None,
+        recipe_context: str = "",
     ) -> VisionCritiqueResult:
         """
         Send renders to the vision model and get back a structured critique.
@@ -515,7 +529,12 @@ class VisionCritic:
             )
 
         # Build user message with images (plan included so the verifier checks the same checklist the generator was given)
-        user_text = _build_vision_user_prompt(user_intent, geometry_stats, plan=plan)
+        user_text = _build_vision_user_prompt(
+            user_intent,
+            geometry_stats,
+            plan=plan,
+            recipe_context=recipe_context,
+        )
         user_content = [{"type": "text", "text": user_text}] + image_items
 
         messages = [

@@ -14,6 +14,11 @@ from typing import Any, Callable, Dict, List, Optional
 import httpx
 
 from ..cad.engine import process_cadquery_code
+from ..cad.recipes import (
+    build_recipe_prompt_context,
+    retrieve_recipe_cards,
+    validate_plan_against_recipes,
+)
 from ..domain.models import (
     ChatMessage,
     CritiqueReport,
@@ -266,7 +271,12 @@ class AgentOrchestrator:
                 "used": ["user prompt", "chat history"],
             },
         )
-        search_query, research_reasoning = await self.llm.decide_research(user_message, chat_ctx)
+        research_decision = await self.llm.decide_research(user_message, chat_ctx)
+        if isinstance(research_decision, tuple):
+            search_query, research_reasoning = research_decision
+        else:
+            search_query = research_decision
+            research_reasoning = "Research decision did not include detailed reasoning."
         if search_query:
             await self._emit_status("researching", f"Searching for: {search_query}", 
                                   details=research_reasoning,
@@ -276,7 +286,13 @@ class AgentOrchestrator:
                                       "used": [search_query],
                                       "why": research_reasoning
                                   })
-            citations = await search_web(search_query)
+            search_error = ""
+            try:
+                citations = await search_web(search_query)
+            except Exception as e:
+                search_error = str(e)
+                citations = []
+
             # Create a concise summary of results for the status message
             results_summary = "No specific specifications found in search snippets."
             if citations:
@@ -286,12 +302,15 @@ class AgentOrchestrator:
                     "citations": [c.model_dump() for c in citations]
                 })
                 results_summary = "\n".join([f"- {c.title}: {c.snippet[:100]}..." for c in citations[:3]])
+            elif search_error:
+                results_summary = f"Search failed: {search_error}. This usually means a search provider ratelimit; the design will proceed with default assumptions."
                 
             await self._emit_status("researching", "Web research complete.",
                                   details=f"Retrieved {len(citations)} external specifications for the design.\n\n{results_summary}",
                                   data={
-                                      "outcome": f"Found {len(citations)} relevant sources." if citations else "No relevant sources found.",
-                                      "research_results": [c.model_dump() for c in citations]
+                                      "outcome": f"Found {len(citations)} relevant sources." if citations else ("Search error" if search_error else "No relevant sources found."),
+                                      "research_results": [c.model_dump() for c in citations],
+                                      "error": search_error
                                   })
         else:
             await self._emit_status(
@@ -340,6 +359,22 @@ class AgentOrchestrator:
         # writing any CadQuery. The plan is the contract carried through every
         # repair iteration AND given to the vision verifier, so the generator and
         # the critic evaluate against the same explicit goal.
+        recipe_cards = retrieve_recipe_cards(user_message)
+        recipe_context = build_recipe_prompt_context(user_message, recipe_cards)
+        if recipe_cards:
+            await self._emit_status(
+                "planning",
+                "Retrieved CAD recipe patterns.",
+                details=(
+                    "Matched product archetypes: "
+                    + ", ".join(f"{card.title} (`{card.recipe_id}`)" for card in recipe_cards)
+                ),
+                data={
+                    "rationale": "Grounds the plan in known CAD/product patterns before code generation.",
+                    "used": [card.recipe_id for card in recipe_cards],
+                },
+            )
+
         await self._emit_status(
             "planning",
             "Developing design plan...",
@@ -360,6 +395,7 @@ class AgentOrchestrator:
                 current_source=current_source,
                 current_model_id=current_model_id,
                 research_context=research_context,
+                recipe_context=recipe_context,
                 hard_constraints=config.hard_constraints,
                 soft_constraints=config.soft_constraints,
                 on_chunk=_plan_chunk,
@@ -367,6 +403,55 @@ class AgentOrchestrator:
         except Exception as e:
             await self._emit_debug("planning_error", f"Planner failed: {e}", {"traceback": traceback.format_exc()})
             plan = DesignPlan(raw_text="", summary="(planner failed — proceeding without a structured plan)")
+
+        quality_report = validate_plan_against_recipes(plan, recipe_cards)
+        if not quality_report.is_sufficient:
+            await self._emit_status(
+                "planning",
+                "Plan is missing required product details.",
+                details=quality_report.feedback,
+                data={
+                    "rationale": "A weak plan leads to simplistic geometry, so the plan is repaired before CadQuery code is generated.",
+                    "missing_features": list(quality_report.missing_features),
+                    "missing_negative_space": list(quality_report.missing_negative_space),
+                },
+            )
+            try:
+                plan = await self.llm.repair_design_plan(
+                    user_message=user_message,
+                    rejected_plan=plan,
+                    quality_feedback=quality_report.feedback,
+                    chat_history=chat_ctx,
+                    current_source=current_source,
+                    current_model_id=current_model_id,
+                    research_context=research_context,
+                    recipe_context=recipe_context,
+                    hard_constraints=config.hard_constraints,
+                    soft_constraints=config.soft_constraints,
+                    on_chunk=_plan_chunk,
+                )
+                quality_report = validate_plan_against_recipes(plan, recipe_cards)
+            except Exception as e:
+                await self._emit_debug("plan_repair_error", f"Plan repair failed: {e}", {"traceback": traceback.format_exc()})
+
+            if not quality_report.is_sufficient:
+                await self._emit_status(
+                    "planning",
+                    "Plan still has gaps; continuing with explicit recipe constraints.",
+                    details=quality_report.feedback,
+                    data={
+                        "rationale": "Proceeding keeps the pipeline usable, but code generation and vision critique will still receive the recipe checklist.",
+                        "missing_features": list(quality_report.missing_features),
+                        "missing_negative_space": list(quality_report.missing_negative_space),
+                    },
+                )
+            else:
+                await self._emit_status(
+                    "planning",
+                    "Plan repaired with required product details.",
+                    details="The revised plan now satisfies the retrieved CAD recipe checklist.",
+                    data={"outcome": "Plan quality gate passed after repair."},
+                )
 
         await self._emit_plan(plan)
         await self._emit_debug("plan_ready", "Design plan generated", {
@@ -386,7 +471,8 @@ class AgentOrchestrator:
         comp_parts = [f"- {c.name}: {c.description}" for c in plan.components] if plan.components else ["- (No specific components listed)"]
         component_list = "\n".join(comp_parts)
         goal_text = plan.summary if plan.summary else "Generate a valid CAD model based on the prompt."
-        plan_details = f"**Goal:** {goal_text}\n\n**Components:**\n{component_list}"
+        # Use plain text as UI doesn't render markdown here
+        plan_details = f"Goal: {goal_text}\n\nComponents:\n{component_list}"
         
         await self._emit_status(
             "planning",
@@ -432,6 +518,7 @@ class AgentOrchestrator:
                         user_message, system_prompt, chat_ctx,
                         current_source, base_model_id, selection,
                         research_context=research_context,
+                        recipe_context=recipe_context,
                         project_id=project_id,
                         plan_text=plan_text,
                     )
@@ -450,7 +537,12 @@ class AgentOrchestrator:
                             "model_id": model_id
                         })
                     repair_prompt = self._build_vision_repair_prompt(
-                        last_code, last_critique, user_message, iteration, plan_text=plan_text
+                        last_code,
+                        last_critique,
+                        user_message,
+                        iteration,
+                        plan_text=plan_text,
+                        recipe_context=recipe_context,
                     )
                     await self._emit_debug("repair_request", f"Vision repair attempt {iteration}", {
                         "score": last_critique.overall_printability,
@@ -569,7 +661,7 @@ class AgentOrchestrator:
                     current_model_id = model_id # Track latest WIP
                     
                     # Notify UI of WIP model even if it failed, so source is visible
-                    await self._emit_status("executing", f"Execution failed: {exec_result.message}", 
+                    await self._emit_status("executing", f"Execution failed: {exec_result.get('message', 'unknown error')}",
                                           details="Checking code for errors and preparing repair...",
                                           data={"model_id": model_id})
                     continue
@@ -625,6 +717,7 @@ class AgentOrchestrator:
                     critique = await self._run_vision_critique(
                         render_paths, user_message, geometry_stats, project_id, model_id,
                         plan=plan,
+                        recipe_context=recipe_context,
                     )
                 elif render_paths:
                     await self._emit_status(
@@ -732,6 +825,7 @@ class AgentOrchestrator:
         current_model_id: Optional[str],
         selection: Optional[SelectionContext] = None,
         research_context: str = "",
+        recipe_context: str = "",
         project_id: str = "",
         plan_text: str = "",
     ) -> str:
@@ -766,7 +860,7 @@ class AgentOrchestrator:
 
         if current_source:
             effective_user_message = (
-                f"{selection_context}{research_context}{plan_block}"
+                f"{selection_context}{research_context}{recipe_context}\n\n{plan_block}"
                 "The project has one model with versioned checkpoints. "
                 f"Use checkpoint `{current_model_id}` as the current base model and edit it for this request.\n\n"
                 "## Current CadQuery Source\n"
@@ -779,7 +873,7 @@ class AgentOrchestrator:
             )
         else:
             effective_user_message = (
-                f"{selection_context}{research_context}{plan_block}"
+                f"{selection_context}{research_context}{recipe_context}\n\n{plan_block}"
                 f"## Requested Change\n{user_message}\n\n"
                 "Follow the Design Plan above. Declare the named parameters at the top of the source so they are editable later."
             )
@@ -853,6 +947,7 @@ class AgentOrchestrator:
         self, render_paths: Dict[str, str], user_intent: str,
         geometry_stats: Dict, project_id: str, model_id: str,
         plan: Optional[DesignPlan] = None,
+        recipe_context: str = "",
     ) -> Optional[CritiqueReport]:
         await self._emit_status("critiquing", "Analyzing geometry with vision AI...",
                               details="Running a multi-modal LLM over the rendered images. The verifier is given the plan's key-features checklist and must explicitly mark each present/missing.")
@@ -862,7 +957,13 @@ class AgentOrchestrator:
             if not available:
                 return None
 
-            critique_result = await critic.critique(render_paths, user_intent, geometry_stats, plan=plan)
+            critique_result = await critic.critique(
+                render_paths,
+                user_intent,
+                geometry_stats,
+                plan=plan,
+                recipe_context=recipe_context,
+            )
             await self._emit_debug("vision_response", "Vision critique response received", {
                 "success": critique_result.success,
                 "message": critique_result.message,
@@ -895,6 +996,7 @@ class AgentOrchestrator:
         intent: str,
         iter: int,
         plan_text: str = "",
+        recipe_context: str = "",
     ) -> str:
         issues_text = "\n".join(
             f"- [{i.severity.upper()}] {i.issue_type} ({i.location_hint or 'unknown location'}): {i.description}"
@@ -910,11 +1012,13 @@ class AgentOrchestrator:
             )
 
         plan_block = f"\n{plan_text}\n" if plan_text else ""
+        recipe_block = f"\n## CAD Recipe / Product Archetype Context\n{recipe_context}\n" if recipe_context else ""
 
         return f"""The CAD model was rendered and reviewed by a vision verifier. Repair it.
 
 ## User Intent
 {intent}
+{recipe_block}
 {plan_block}
 ## Current Code
 ```python
@@ -936,6 +1040,7 @@ class AgentOrchestrator:
 - Output ONLY a single ```python block with the corrected code.
 - Keep the same named parameters at the top so the design stays editable.
 - Make the fewest changes needed to address every listed issue.
+- If required features are missing, rework the structure using the recipe/archetype; do not merely resize the existing boxes.
 """
 
     def _build_final_response(self, mid, iter, res, critique, score, repair_notes: List[str] = None) -> str:

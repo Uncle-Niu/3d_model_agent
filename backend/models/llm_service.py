@@ -360,6 +360,8 @@ class LLMService:
         current_source: str = "",
         current_model_id: Optional[str] = None,
         research_context: str = "",
+        recipe_context: str = "",
+        plan_feedback: str = "",
         hard_constraints: Optional[HardConstraints] = None,
         soft_constraints: Optional[SoftConstraints] = None,
         on_chunk: Optional[Callable[[str], Any]] = None,
@@ -426,6 +428,11 @@ class LLMService:
             "- The component list MUST be enough that an experienced engineer could implement it "
             "  in CadQuery from the plan alone, without seeing the original prompt.\n"
             "- For each cut/hole, list it as a separate component with operation=cut and its own dimensions.\n"
+            "- Treat negative space as real design content: slots, notches, cavities, cable pass-throughs, and clearance reliefs "
+            "  MUST appear as explicit cut components when they are functionally expected.\n"
+            "- If recipe context is provided, every required feature from that recipe must appear in components or key_features.\n"
+            "- Avoid under-modeled placeholder designs. A functional product should not degrade to a few primitive boxes when "
+            "  a known archetype calls for lips, ribs, clearances, holes, slots, or cutouts.\n"
             "- For multi-part assemblies, name parts so the names match the final cq.Assembly children.\n"
             "- `key_features` is a checklist used by the vision verifier — list every distinct visible feature.\n"
         )
@@ -433,6 +440,15 @@ class LLMService:
         user_parts = []
         if research_context:
             user_parts.append(research_context)
+        if recipe_context:
+            user_parts.append(recipe_context)
+        if plan_feedback:
+            user_parts.append(
+                "## Previous Plan Quality Feedback\n"
+                "The previous plan was rejected as too incomplete for this product archetype. "
+                "Address every item below in the revised plan:\n"
+                f"{plan_feedback}"
+            )
         if current_source:
             user_parts.append(
                 f"## Current CadQuery source (checkpoint `{current_model_id}`)\n"
@@ -493,6 +509,40 @@ class LLMService:
             plan.raw_reasoning = full_reasoning.strip()
         plan.raw_text = combined
         return plan
+
+    async def repair_design_plan(
+        self,
+        user_message: str,
+        rejected_plan: DesignPlan,
+        quality_feedback: str,
+        chat_history: Optional[list[dict]] = None,
+        current_source: str = "",
+        current_model_id: Optional[str] = None,
+        research_context: str = "",
+        recipe_context: str = "",
+        hard_constraints: Optional[HardConstraints] = None,
+        soft_constraints: Optional[SoftConstraints] = None,
+        on_chunk: Optional[Callable[[str], Any]] = None,
+    ) -> DesignPlan:
+        """Regenerate a plan after the deterministic recipe gate rejects it."""
+        rejected_text = plan_to_prompt_text(rejected_plan) or rejected_plan.raw_text
+        feedback = (
+            f"{quality_feedback}\n\n"
+            "Rejected plan summary for reference:\n"
+            f"{rejected_text[:3000]}"
+        )
+        return await self.plan_design(
+            user_message=user_message,
+            chat_history=chat_history,
+            current_source=current_source,
+            current_model_id=current_model_id,
+            research_context=research_context,
+            recipe_context=recipe_context,
+            plan_feedback=feedback,
+            hard_constraints=hard_constraints,
+            soft_constraints=soft_constraints,
+            on_chunk=on_chunk,
+        )
 
     async def decide_research(self, user_message: str, chat_history: Optional[list[dict]] = None) -> tuple[Optional[str], str]:
         """
