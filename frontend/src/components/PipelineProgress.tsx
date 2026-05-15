@@ -433,7 +433,13 @@ function LocalRecallCard({ data }: PlanArtifactProps) {
   const uncertain = Array.isArray(data.uncertain_fields) ? (data.uncertain_fields as string[]) : [];
   const contributors = Array.isArray(data.contributing_models) ? (data.contributing_models as string[]) : [];
   const perModel = Array.isArray(data.per_model_responses)
-    ? (data.per_model_responses as Array<{ model: string; latency_s: number; field_count: number; error?: string }>)
+    ? (data.per_model_responses as Array<{
+        model: string;
+        latency_s: number;
+        field_count: number;
+        error?: string;
+        fields?: Record<string, { value: unknown; confidence: number; note?: string }>;
+      }>)
     : [];
 
   if (!subject) return null;
@@ -495,14 +501,40 @@ function LocalRecallCard({ data }: PlanArtifactProps) {
         <details className="recall-card-models-details">
           <summary>Per-model breakdown ({perModel.length})</summary>
           <ul className="recall-card-model-list">
-            {perModel.map((m, i) => (
-              <li key={i} className={`recall-model-row${m.error ? ' is-error' : ''}`}>
-                <span className="recall-model-name">{m.model}</span>
-                <span className="recall-model-stat">
-                  {m.error ? `error: ${m.error}` : `${m.field_count} field(s) · ${m.latency_s.toFixed(1)}s`}
-                </span>
-              </li>
-            ))}
+            {perModel.map((m, i) => {
+              const fieldEntries = m.fields ? Object.entries(m.fields) : [];
+              // Show null-valued fields too — "model said it didn't know" is
+              // useful signal when comparing models against each other.
+              return (
+                <li key={i} className={`recall-model-row${m.error ? ' is-error' : ''}`}>
+                  <div className="recall-model-row-head">
+                    <span className="recall-model-name">{m.model}</span>
+                    <span className="recall-model-stat">
+                      {m.error ? `error: ${m.error}` : `${m.field_count} field(s) · ${m.latency_s.toFixed(1)}s`}
+                    </span>
+                  </div>
+                  {fieldEntries.length > 0 && (
+                    <ul className="recall-model-fields">
+                      {fieldEntries.map(([fname, fv]) => (
+                        <li
+                          key={fname}
+                          className={`recall-model-field${fv.value == null ? ' is-null' : ''}`}
+                        >
+                          <span className="recall-model-field-name">{fname}</span>
+                          <span className="recall-model-field-value">{renderVal(fv.value)}</span>
+                          <span
+                            className="recall-model-field-conf"
+                            title={fv.note || `${m.model}'s confidence in this value`}
+                          >
+                            {(fv.confidence * 100).toFixed(0)}%
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </details>
       )}

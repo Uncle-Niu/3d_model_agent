@@ -1807,16 +1807,52 @@ body {
   margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 8px;
 }
 .recall-model-row {
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
   font-family: var(--font-mono);
+}
+.recall-model-row-head {
+  display: flex;
+  gap: 8px;
 }
 .recall-model-row.is-error .recall-model-stat { color: var(--error); }
 .recall-model-name { color: var(--text-secondary); }
 .recall-model-stat { color: var(--text-muted); margin-left: auto; }
+
+/* Per-model field/value list — what each model in the chain actually
+   answered, so the user can compare answers (and outliers) across models. */
+.recall-model-fields {
+  list-style: none;
+  margin: 0 0 0 14px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr max-content;
+  column-gap: 10px;
+  row-gap: 1px;
+  font-size: 10.5px;
+}
+.recall-model-field {
+  display: contents;
+}
+.recall-model-field-name {
+  color: var(--text-muted);
+}
+.recall-model-field-value {
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.recall-model-field-conf {
+  color: var(--text-muted);
+  text-align: right;
+}
+.recall-model-field.is-null .recall-model-field-value {
+  color: var(--text-muted);
+  font-style: italic;
+}
 
 .critique-card {
   margin: 0;

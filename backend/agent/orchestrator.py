@@ -357,6 +357,17 @@ class AgentOrchestrator:
                                 "field_count": sum(1 for v in r.fields.values() if v.value is not None),
                                 "error": r.error,
                                 "raw_preview": r.raw_response[:400],
+                                # Each model's actual field → {value, confidence,
+                                # note} map, so the UI can show what each one
+                                # answered (not just a count).
+                                "fields": {
+                                    fname: {
+                                        "value": fv.value,
+                                        "confidence": fv.confidence,
+                                        "note": fv.note,
+                                    }
+                                    for fname, fv in r.fields.items()
+                                },
                             }
                             for r in consensus.all_responses
                         ],
@@ -400,17 +411,31 @@ class AgentOrchestrator:
 
         current_source = ""
         current_model_id = base_model_id
-        if current_model_id:
-            current_source = self.storage.get_model_source_text(project_id, current_model_id)
+        # The strategy decision is purely "do we have a prior checkpoint to
+        # edit?" — it does NOT consult the user prompt. Track the two probes
+        # so the UI's Inputs row shows what the agent actually looked at.
+        strategy_probes: list[str] = []
+        if base_model_id:
+            strategy_probes.append(f"base model id from request: `{base_model_id}`")
+            current_source = self.storage.get_model_source_text(project_id, current_model_id or "")
+            strategy_probes.append(
+                f"source for `{base_model_id}`: {'found' if current_source else 'missing'}"
+            )
+        else:
+            strategy_probes.append("base model id from request: none")
         if not current_source:
             latest_model = self.storage.latest_successful_model(project_id)
             if latest_model:
                 current_model_id = latest_model.model_id
                 current_source = self.storage.get_model_source_text(project_id, latest_model.model_id)
+                strategy_probes.append(
+                    f"latest successful checkpoint in project: `{latest_model.model_id}`"
+                )
+            else:
+                strategy_probes.append("latest successful checkpoint in project: none")
 
-        # `context_used` doubles as the "inputs" list the planner / generator
-        # were given. We do NOT add "new model from scratch" here because that
-        # describes the strategy *decision*, not an input.
+        # `context_used` is the list of CONTEXT pieces the planner / generator
+        # will receive (used downstream — distinct from the strategy probes).
         context_used = []
         if current_source:
             context_used.append(f"base model `{current_model_id}` source")
@@ -418,7 +443,6 @@ class AgentOrchestrator:
             context_used.append(f"active selection `{selection.feature_name}`")
         if citations:
             context_used.append(f"{len(citations)} research citation(s)")
-        strategy_inputs = list(context_used) or ["user prompt"]
         await self._emit_status(
             "planning",
             (
@@ -435,7 +459,10 @@ class AgentOrchestrator:
                     if current_source
                     else "No suitable base model found — start fresh."
                 ),
-                "inputs": strategy_inputs,
+                # `inputs` here lists the project-state probes the strategy
+                # decision actually consulted (NOT the user prompt — strategy
+                # is a function of project history only).
+                "inputs": strategy_probes,
             },
         )
 

@@ -353,10 +353,9 @@ class LLMService:
         # give the model enough headroom for a complete rewrite if needed.
         return await self.generate(repair_prompt, system_prompt, max_tokens=6144)
 
-    async def plan_design(
-        self,
+    @staticmethod
+    def build_planning_prompt(
         user_message: str,
-        chat_history: Optional[list[dict]] = None,
         current_source: str = "",
         current_model_id: Optional[str] = None,
         research_context: str = "",
@@ -364,13 +363,10 @@ class LLMService:
         plan_feedback: str = "",
         hard_constraints: Optional[HardConstraints] = None,
         soft_constraints: Optional[SoftConstraints] = None,
-        on_chunk: Optional[Callable[[str], Any]] = None,
-    ) -> DesignPlan:
-        """Generate a structured design plan for the request *before* writing code.
-
-        The plan is streamed (if `on_chunk` is provided) so the user can see the
-        agent's reasoning. The result is a parsed `DesignPlan`; the raw text is
-        preserved in `plan.raw_text` for debugging.
+    ) -> tuple[str, str]:
+        """Build the (system_prompt, user_message) pair that ``plan_design``
+        will send to the LLM. Exposed as a static method so the orchestrator
+        can show the user the exact prompt without re-running the LLM.
         """
         hc = hard_constraints or HardConstraints()
         sc = soft_constraints or SoftConstraints()
@@ -457,6 +453,37 @@ class LLMService:
             )
         user_parts.append(f"## Request\n{user_message}")
         user_msg = "\n\n".join(user_parts)
+        return system_prompt, user_msg
+
+    async def plan_design(
+        self,
+        user_message: str,
+        chat_history: Optional[list[dict]] = None,
+        current_source: str = "",
+        current_model_id: Optional[str] = None,
+        research_context: str = "",
+        recipe_context: str = "",
+        plan_feedback: str = "",
+        hard_constraints: Optional[HardConstraints] = None,
+        soft_constraints: Optional[SoftConstraints] = None,
+        on_chunk: Optional[Callable[[str], Any]] = None,
+    ) -> DesignPlan:
+        """Generate a structured design plan for the request *before* writing code.
+
+        The plan is streamed (if `on_chunk` is provided) so the user can see the
+        agent's reasoning. The result is a parsed `DesignPlan`; the raw text is
+        preserved in `plan.raw_text` for debugging.
+        """
+        system_prompt, user_msg = self.build_planning_prompt(
+            user_message=user_message,
+            current_source=current_source,
+            current_model_id=current_model_id,
+            research_context=research_context,
+            recipe_context=recipe_context,
+            plan_feedback=plan_feedback,
+            hard_constraints=hard_constraints,
+            soft_constraints=soft_constraints,
+        )
 
         messages = [{"role": "system", "content": system_prompt}]
         if chat_history:
