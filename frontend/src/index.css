@@ -82,10 +82,6 @@ body {
   height: 100vh;
   width: 100vw;
   overflow: hidden;
-  /* Reserve space for the fixed bottom dock so the chat input and other
-     bottom-aligned content are never hidden behind it. Matches collapsed
-     .dock height (36px). */
-  padding-bottom: 36px;
 }
 
 .app-header {
