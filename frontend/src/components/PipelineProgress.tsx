@@ -23,6 +23,7 @@ interface PipelineProgressProps {
 
 const STAGE_META: Record<string, { icon: string; label: string; tone: 'neutral' | 'good' | 'bad' | 'warn' }> = {
   planning:     { icon: '◴', label: 'Planning',     tone: 'neutral' },
+  recalling:    { icon: '◈', label: 'Recalling',    tone: 'neutral' },
   researching:  { icon: '⌕', label: 'Researching',  tone: 'neutral' },
   generating:   { icon: '✦', label: 'Generating',   tone: 'neutral' },
   executing:    { icon: '▶', label: 'Executing',    tone: 'neutral' },
@@ -49,6 +50,8 @@ const SUB_STAGE_LABELS: Record<string, string> = {
   results: 'Results',
   no_results: 'No results',
   error: 'Error',
+  recall_start: 'Querying',
+  recall_done: 'Consensus',
 };
 
 function stageMeta(stage: string) {
@@ -142,20 +145,82 @@ function outcomeSource(step: PipelineStep): 'agent' | 'planner' | 'vision' {
 /**
  * Detect whether a step has substantive expandable content. Casual `data`
  * objects (like a lone iteration tag) don't count.
+ *
+ * Note: `details` is intentionally NOT considered here — it now flows into the
+ * header `?` tooltip rather than the expanded body, so a step whose only extra
+ * content is `details` is no longer expandable.
  */
 function hasMeaningfulDetails(step: PipelineStep): boolean {
-  if (step.details && step.details.trim()) return true;
   const d = step.data;
   if (!d) return false;
-  const keys = Object.keys(d).filter((k) => !['iteration', 'in_progress', 'reasoning_channel', 'sub_stage', 'model_id'].includes(k));
+  const keys = Object.keys(d).filter((k) => ![
+    'iteration', 'in_progress', 'reasoning_channel', 'sub_stage', 'model_id',
+    // Agent-authored boilerplate now surfaced via tooltip, not body.
+    'rationale_source', 'outcome_source',
+  ].includes(k));
   for (const k of keys) {
     const v = (d as Record<string, unknown>)[k];
     if (v == null) continue;
     if (typeof v === 'string' && v.trim() === '') continue;
     if (Array.isArray(v) && v.length === 0) continue;
+    // `rationale` only counts as meaningful when it's LLM-sourced (planner /
+    // vision) — agent-authored rationales are now in the header tooltip.
+    if (k === 'rationale') {
+      const src = typeof d.rationale_source === 'string'
+        ? d.rationale_source : rationaleSource(step);
+      if (src === 'agent') continue;
+    }
     return true;
   }
   return false;
+}
+
+/**
+ * Build the explanatory tooltip shown when the user hovers the (?) icon next
+ * to a step's stage label. Combines the agent-authored boilerplate that used
+ * to clutter the expanded body: `details` (long-form prose explaining what
+ * the step does) plus `rationale` when it was authored by the orchestrator
+ * (not by an LLM).
+ */
+function stepHelpTooltip(step: PipelineStep): string | null {
+  const parts: string[] = [];
+  if (step.details && step.details.trim()) parts.push(step.details.trim());
+  const data = step.data || {};
+  const rationale = typeof data.rationale === 'string' ? data.rationale.trim()
+    : (typeof data.why === 'string' ? data.why.trim() : '');
+  if (rationale) {
+    const src = typeof data.rationale_source === 'string'
+      ? data.rationale_source : rationaleSource(step);
+    if (src === 'agent') parts.push(rationale);
+  }
+  const text = parts.join('\n\n');
+  return text || null;
+}
+
+// Keys whose values we surface verbatim in the per-step "Arguments" section so
+// the user can see the exact query/inputs the orchestrator passed in. Order
+// here = render order. Anything not in this list is left to the existing
+// dedicated renderers (recipes, vision_issues, etc.).
+const ARGUMENT_KEY_LABELS: Array<[string, string]> = [
+  ['subject', 'Subject'],
+  ['requested_fields', 'Requested fields'],
+  ['model_chain', 'Model chain'],
+  ['model_id', 'Model ID'],
+  ['iteration', 'Iteration'],
+  ['query', 'Search query'],
+  ['failure_type', 'Failure type'],
+  ['repair_kind', 'Repair kind'],
+  ['system_prompt', 'System prompt'],
+  ['prompt', 'User prompt'],
+];
+
+function renderArgValue(v: unknown): string {
+  if (v == null) return '∅';
+  if (Array.isArray(v)) return v.map((x) => renderArgValue(x)).join(', ');
+  if (typeof v === 'object') {
+    try { return JSON.stringify(v); } catch { return String(v); }
+  }
+  return String(v);
 }
 
 // ---------------------------------------------------------------------------
@@ -354,6 +419,97 @@ function VisionCritiqueCard({ data }: PlanArtifactProps) {
   );
 }
 
+/**
+ * Highlight card for the local-LLM knowledge recall step. Shows the agreed
+ * facts (with which models contributed), uncertain fields that the agent
+ * decided to fall through to web search for, and a compact per-model status
+ * line so the user can see latency / coverage of each model in the chain.
+ */
+function LocalRecallCard({ data }: PlanArtifactProps) {
+  if (!data) return null;
+  const subject = typeof data.subject === 'string' ? data.subject : null;
+  const agreedRaw = (data.agreed_fields && typeof data.agreed_fields === 'object')
+    ? (data.agreed_fields as Record<string, { value: unknown; confidence: number; note?: string }>) : null;
+  const uncertain = Array.isArray(data.uncertain_fields) ? (data.uncertain_fields as string[]) : [];
+  const contributors = Array.isArray(data.contributing_models) ? (data.contributing_models as string[]) : [];
+  const perModel = Array.isArray(data.per_model_responses)
+    ? (data.per_model_responses as Array<{ model: string; latency_s: number; field_count: number; error?: string }>)
+    : [];
+
+  if (!subject) return null;
+  const agreedEntries = agreedRaw ? Object.entries(agreedRaw) : [];
+  if (agreedEntries.length === 0 && uncertain.length === 0 && perModel.length === 0) return null;
+
+  const renderVal = (v: unknown): string => {
+    if (v == null) return 'null';
+    if (Array.isArray(v)) return `[${v.map(renderVal).join(', ')}]`;
+    if (typeof v === 'object') {
+      try { return JSON.stringify(v); } catch { return String(v); }
+    }
+    return String(v);
+  };
+
+  return (
+    <div className="recall-card">
+      <div className="recall-card-header">
+        <span className="recall-card-icon" aria-hidden="true">◈</span>
+        <span className="recall-card-title">Local-LLM recall</span>
+        <LLMBadge source="local consensus" />
+        <span className="recall-card-subject">{subject}</span>
+        {contributors.length > 0 && (
+          <span
+            className="recall-card-models"
+            title={`Models that contributed agreeing values: ${contributors.join(', ')}`}
+          >
+            ✓ {contributors.length} agreed
+          </span>
+        )}
+      </div>
+
+      {agreedEntries.length > 0 && (
+        <ul className="recall-card-fields">
+          {agreedEntries.map(([fname, fv]) => (
+            <li key={fname} className="recall-field">
+              <span className="recall-field-name">{fname}</span>
+              <span className="recall-field-value">{renderVal(fv.value)}</span>
+              <span
+                className="recall-field-conf"
+                title={`Mean confidence across agreeing models${fv.note ? ' · ' + fv.note : ''}`}
+              >
+                {(fv.confidence * 100).toFixed(0)}%
+              </span>
+              {fv.note && <span className="recall-field-note">{fv.note}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {uncertain.length > 0 && (
+        <div className="recall-card-uncertain">
+          <span className="recall-card-uncertain-label">Uncertain (no two models agreed):</span>
+          <span>{uncertain.join(', ')}</span>
+        </div>
+      )}
+
+      {perModel.length > 0 && (
+        <details className="recall-card-models-details">
+          <summary>Per-model breakdown ({perModel.length})</summary>
+          <ul className="recall-card-model-list">
+            {perModel.map((m, i) => (
+              <li key={i} className={`recall-model-row${m.error ? ' is-error' : ''}`}>
+                <span className="recall-model-name">{m.model}</span>
+                <span className="recall-model-stat">
+                  {m.error ? `error: ${m.error}` : `${m.field_count} field(s) · ${m.latency_s.toFixed(1)}s`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Individual step row
 // ---------------------------------------------------------------------------
@@ -479,6 +635,19 @@ function PipelineStepRow({
         >
           <span className="pipeline-step-stage">{meta.label}</span>
           {subStageLabel && <span className="pipeline-step-substage">{subStageLabel}</span>}
+          {(() => {
+            const help = stepHelpTooltip(step);
+            return help ? (
+              <span
+                className="pipeline-step-help"
+                title={help}
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => e.stopPropagation()}
+                aria-label="What this step does"
+                tabIndex={0}
+              >?</span>
+            ) : null;
+          })()}
           {/* The message text is wrapped in its own selectable span so the
               user can highlight / copy it without the parent's click handler
               swallowing the drag. The headline's click handler still toggles
@@ -539,18 +708,58 @@ function PipelineStepRow({
           </div>
         )}
 
+        {/* Local-LLM recall card is the natural artifact for the recall_done
+            step — render it inline as part of that step's row instead of
+            floating above the timeline. Visible without expanding. */}
+        {step.stage === 'recalling' && step.data?.sub_stage === 'recall_done' && (
+          <LocalRecallCard data={step.data} />
+        )}
+
         {isExpanded && hasDetails && (
           <div className="pipeline-step-body">
-            {step.details && step.details.trim() && (
-              <div className="pipeline-step-details">{step.details}</div>
-            )}
-
-            {rationale && (
+            {/* Agent-authored `details` and `rationale` are intentionally
+                NOT rendered here — they now live in the (?) header tooltip.
+                Only LLM-sourced rationale (planner / vision) shows up below. */}
+            {rationale && rationaleSrc !== 'agent' && (
               <p className={`pipeline-step-rationale pipeline-step-rationale-${rationaleSrc}`}>
-                {rationaleSrc !== 'agent' && <LLMBadge source={rationaleSrc} />}
+                <LLMBadge source={rationaleSrc} />
                 <span>{rationale}</span>
               </p>
             )}
+
+            {(() => {
+              // "Arguments" — the exact technical inputs this step received.
+              // Surfaces query strings, requested fields, model chains, the
+              // raw recall prompt sent to each model, etc., so the user can
+              // audit what the orchestrator actually passed in.
+              const argEntries: Array<readonly [string, string, unknown]> = [];
+              ARGUMENT_KEY_LABELS.forEach(([key, label]) => {
+                const v = (data as Record<string, unknown>)[key];
+                if (v == null) return;
+                if (typeof v === 'string' && v.trim() === '') return;
+                if (Array.isArray(v) && v.length === 0) return;
+                argEntries.push([key, label, v] as const);
+              });
+              if (argEntries.length === 0) return null;
+              return (
+                <div className="pipeline-step-arguments">
+                  <div className="pipeline-step-section-label">Arguments / inputs used</div>
+                  <dl className="pipeline-step-arglist">
+                    {argEntries.map(([key, label, v]) => {
+                      const isLong = typeof v === 'string' && v.length > 120;
+                      return (
+                        <div key={key} className="pipeline-step-argrow">
+                          <dt>{label}</dt>
+                          {isLong
+                            ? <dd><pre className="pipeline-step-argpre">{v as string}</pre></dd>
+                            : <dd><code>{renderArgValue(v)}</code></dd>}
+                        </div>
+                      );
+                    })}
+                  </dl>
+                </div>
+              );
+            })()}
 
             {plannerIntent && (
               <p className="pipeline-step-planner-intent">
@@ -873,7 +1082,10 @@ export default function PipelineProgress({ steps, isLive = false }: PipelineProg
         </div>
       </div>
 
-      {/* Promoted artifact cards — visible without expanding the timeline */}
+      {/* Promoted artifact cards — visible without expanding the timeline.
+          The Local-LLM recall card is rendered inline inside its own step
+          row (see PipelineStepRow), not here, so the per-subject summary
+          stays attached to the recalling step it summarises. */}
       {planStep && <DesignPlanCard data={planStep.data} />}
       {critiqueStep && <VisionCritiqueCard data={critiqueStep.data} />}
 

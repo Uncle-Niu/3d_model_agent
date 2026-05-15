@@ -429,6 +429,127 @@ body {
 }
 
 /* ================================================================
+   Root workspace chooser
+   ================================================================ */
+
+.landing {
+  min-height: 100vh;
+  width: 100vw;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+}
+
+.landing-header {
+  height: var(--header-height);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 20px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+}
+
+.landing-main {
+  width: min(1040px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 32px 0 48px;
+}
+
+.landing-title-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.landing-title-row h2 {
+  font-size: 22px;
+  font-weight: 650;
+  margin-bottom: 6px;
+}
+
+.landing-title-row p,
+.landing-empty p {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.landing-error {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(217, 74, 90, 0.45);
+  border-left: 3px solid var(--error);
+  border-radius: var(--radius-sm);
+  background: rgba(217, 74, 90, 0.08);
+  color: #f0a0aa;
+  font-size: 13px;
+}
+
+.landing-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 24px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+
+.landing-empty h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.landing-project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.landing-project-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 116px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
+}
+
+.landing-project-card:hover {
+  background: var(--bg-tertiary);
+  border-color: var(--accent-dim);
+  transform: translateY(-1px);
+}
+
+.landing-project-name {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.landing-project-meta {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* ================================================================
    Viewport overlays
    ================================================================ */
 
@@ -1260,6 +1381,81 @@ body {
   line-height: 1.5;
 }
 
+/* Help "?" icon next to the step stage label. Hovering shows the agent-
+   authored explanation (long-form `details` + agent `rationale`) that used to
+   clutter the expanded body. */
+.pipeline-step-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-muted);
+  background: var(--surface-2, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 50%;
+  cursor: help;
+  flex-shrink: 0;
+  user-select: none;
+}
+.pipeline-step-help:hover,
+.pipeline-step-help:focus {
+  color: var(--accent);
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* "Arguments / inputs used" — the structured technical inputs each step
+   actually received. A two-column dl: label on the left, value on the right,
+   with long string values (e.g. the recall prompt) rendered as a scrollable
+   <pre>. */
+.pipeline-step-arguments {
+  margin-top: 8px;
+}
+.pipeline-step-arglist {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 4px 0 0 0;
+  font-size: 11px;
+}
+.pipeline-step-argrow {
+  display: contents;
+}
+.pipeline-step-argrow dt {
+  color: var(--text-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.pipeline-step-argrow dd {
+  margin: 0;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+.pipeline-step-argrow dd code {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+}
+.pipeline-step-argpre {
+  margin: 0;
+  padding: 6px 8px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  border-radius: var(--radius-sm);
+  max-height: 220px;
+  overflow: auto;
+}
+
 .pipeline-step-error {
   margin: 0;
   font-size: 10px;
@@ -1511,6 +1707,117 @@ body {
 .plan-comp-desc { color: var(--text-muted); font-size: 10px; margin-top: 1px; }
 
 /* ----- Vision critique promoted card ----- */
+/* Local-LLM recall highlight card. Visually parallel to the design-plan and
+   vision-verifier cards but tinted to signal "cross-checked local knowledge"
+   rather than "single LLM voice". */
+.recall-card {
+  margin: 0;
+  padding: 10px 14px;
+  background: rgba(122, 178, 255, 0.04);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.recall-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.recall-card-icon { color: #7ab2ff; font-size: 14px; }
+.recall-card-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.3px;
+}
+.recall-card-subject {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.recall-card-models {
+  font-size: 10px;
+  color: #7fbf8f;
+  margin-left: auto;
+  font-family: var(--font-mono);
+  cursor: help;
+}
+.recall-card-fields {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr max-content;
+  gap: 2px 10px;
+  font-size: 11px;
+}
+.recall-field {
+  display: contents;
+}
+.recall-field-name {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+.recall-field-value {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  word-break: break-word;
+}
+.recall-field-conf {
+  color: #7fbf8f;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: right;
+  cursor: help;
+}
+.recall-field-note {
+  grid-column: 1 / -1;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding-left: 8px;
+}
+.recall-card-uncertain {
+  font-size: 11px;
+  color: var(--warning);
+  font-family: var(--font-mono);
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.recall-card-uncertain-label {
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.4px;
+}
+.recall-card-models-details {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.recall-card-models-details > summary {
+  cursor: pointer;
+  user-select: none;
+}
+.recall-card-model-list {
+  list-style: none;
+  padding: 4px 0 0 12px;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.recall-model-row {
+  display: flex;
+  gap: 8px;
+  font-family: var(--font-mono);
+}
+.recall-model-row.is-error .recall-model-stat { color: var(--error); }
+.recall-model-name { color: var(--text-secondary); }
+.recall-model-stat { color: var(--text-muted); margin-left: auto; }
+
 .critique-card {
   margin: 0;
   padding: 10px 14px;

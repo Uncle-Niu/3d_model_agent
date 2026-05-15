@@ -158,6 +158,15 @@ export interface WSReasoningChunk {
   content: string;
 }
 
+export interface WSRunState {
+  type: 'run_state';
+  running: boolean;
+  project_id: string;
+  thread_id: string;
+  started_at?: string;
+  steps?: PipelineStep[];
+}
+
 export type WSMessage =
   | WSStatus
   | WSModelReady
@@ -166,7 +175,8 @@ export type WSMessage =
   | WSError
   | WSDebugLog
   | WSCritiqueResult
-  | WSReasoningChunk;
+  | WSReasoningChunk
+  | WSRunState;
 
 // Debug log entry for the store
 export interface DebugEntry {

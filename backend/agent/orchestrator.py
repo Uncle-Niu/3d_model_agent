@@ -36,6 +36,8 @@ from ..models.llm_service import (
     extract_code_from_response,
     plan_to_prompt_text,
 )
+from ..knowledge import LocalKnowledgeService
+from ..knowledge.local_recall import format_recall_for_prompt
 from ..storage import StorageService
 from ..tools.web_research import search_web, get_research_prompt_extension
 from ..vision.critic import VisionCritic
@@ -51,6 +53,7 @@ class AgentOrchestrator:
         self,
         storage: StorageService,
         llm: Optional[LLMService] = None,
+        local_knowledge: Optional[LocalKnowledgeService] = None,
         on_status: Optional[Callable[[str, str, Optional[str], Optional[Dict]], Any]] = None,
         on_chunk: Optional[Callable[[str], Any]] = None,
         on_debug: Optional[Callable[[str, str, Optional[Dict]], Any]] = None,
@@ -62,6 +65,10 @@ class AgentOrchestrator:
     ):
         self.storage = storage
         self.llm = llm or LLMService()
+        self.local_knowledge = local_knowledge or LocalKnowledgeService(
+            base_url=self.llm.base_url,
+            api_key=self.llm.api_key,
+        )
 
         # Callbacks for real-time updates
         self.on_status = on_status
@@ -261,112 +268,135 @@ class AgentOrchestrator:
             },
         )
 
-        # 2.1 Research step
-        citations = []
-        research_context = ""
-        research_decision = await self.llm.decide_research(user_message, chat_ctx)
-        if isinstance(research_decision, tuple):
-            search_query, research_reasoning = research_decision
-        else:
-            search_query = research_decision
-            research_reasoning = "Research decision did not include detailed reasoning."
-
-        if search_query:
-            await self._emit_status(
-                "researching",
-                f"Searching the web: “{search_query}”",
-                details=None,
-                data={
-                    "sub_stage": "search",
-                    # The headline already shows the query — don't duplicate
-                    # it into `inputs`. `rationale` here is the planner's own
-                    # reasoning for why this search is needed (LLM-sourced).
-                    "rationale": research_reasoning,
-                    "rationale_source": "planner",
-                    "query": search_query,
-                },
+        # 2.0 Local-LLM knowledge recall.
+        #
+        # Before considering any web search, ask multiple local LLMs (different
+        # providers, different training corpora) for structured facts about
+        # any real-world subject in the user's prompt. The chain stops as soon
+        # as 2+ models agree on enough fields. Anything no two models agreed
+        # on falls through to the web-search step as the explicit residual
+        # gap — turning "did we search?" into "what gaps remain?".
+        recall_consensuses: list = []
+        recall_context = ""
+        try:
+            recall_subjects = await self.local_knowledge.detect_subjects(
+                user_message, main_model=self.llm.model,
             )
-            search_error = ""
-            try:
-                citations = await search_web(search_query)
-            except Exception as e:
-                search_error = str(e)
-                citations = []
+        except Exception:
+            recall_subjects = []
 
-            if citations:
-                research_context = get_research_prompt_extension(citations)
-                await self._emit_debug("research_result", f"Found {len(citations)} results", {
-                    "query": search_query,
-                    "citations": [c.model_dump() for c in citations],
-                })
+        if recall_subjects:
+            for subj in recall_subjects:
                 await self._emit_status(
-                    "researching",
-                    f"Pulled {len(citations)} reference source(s).",
-                    details=None,
-                    data={
-                        "sub_stage": "results",
-                        "outcome": f"Added {len(citations)} citation(s) into the planning prompt.",
-                        "found": [f"{c.title} ({c.source})" for c in citations],
-                        "research_results": [c.model_dump() for c in citations],
-                        "query": search_query,
-                    },
-                )
-            elif search_error:
-                await self._emit_status(
-                    "researching",
-                    "Web search failed — continuing without external sources.",
-                    details=None,
-                    data={
-                        "sub_stage": "error",
-                        "outcome": (
-                            "The search provider returned an error (often a "
-                            "DuckDuckGo ratelimit). The plan will rely on "
-                            "internal context and reasonable defaults."
-                        ),
-                        "error": search_error,
-                        "query": search_query,
-                    },
-                )
-            else:
-                await self._emit_status(
-                    "researching",
-                    f"No results matched “{search_query}”.",
+                    "recalling",
+                    f"Cross-checking local LLMs: {subj.subject}",
                     details=(
-                        "DuckDuckGo returned an empty result set for this query. "
-                        "Common reasons:\n"
-                        "  • The query was too narrow or contained brand/model "
-                        "names that DuckDuckGo's text endpoint doesn't index "
-                        "well.\n"
-                        "  • The free DuckDuckGo endpoint silently ratelimits "
-                        "after a few requests in quick succession and returns "
-                        "an empty body instead of an error.\n"
-                        "  • The query landed on a paywalled or JavaScript-only "
-                        "result page that the text endpoint cannot scrape.\n\n"
-                        "The pipeline continues with internal CAD recipes and "
-                        "the planner's own assumptions about the requested "
-                        "product."
+                        "Queries up to 5 local Ollama models in priority order "
+                        "and stops as soon as two of them agree on enough "
+                        "fields. Each model is asked the same structured-JSON "
+                        "question; the consensus is what gets fed to the "
+                        "planner. Fields no two models agreed on are listed "
+                        "as 'uncertain' and the agent decides whether to fall "
+                        "back to a web search for them."
                     ),
                     data={
-                        "sub_stage": "no_results",
-                        "outcome": "Web search returned zero results. Continuing with internal context only.",
-                        "query": search_query,
-                        "planner_intent": research_reasoning,
+                        "sub_stage": "recall_start",
+                        "rationale": subj.reasoning,
+                        "rationale_source": "planner",
+                        "subject": subj.subject,
+                        "requested_fields": subj.fields,
+                        "model_chain": list(self.local_knowledge.model_chain),
+                        "in_progress": True,
                     },
                 )
-        else:
-            await self._emit_status(
-                "planning",
-                "Skipped web research.",
-                details=None,
-                data={
-                    "sub_stage": "research_skipped",
-                    # The planner's own justification, surfaced as LLM text.
-                    "rationale": research_reasoning,
-                    "rationale_source": "planner",
-                    "outcome": "Internal context is sufficient — no external lookup needed.",
-                    "skipped": ["web search"],
-                },
-            )
+                async def _recall_step(event: str, payload: Dict):
+                    # Forward each model's start/finish as a debug log so the
+                    # WS layer can show live progress without flooding the
+                    # main timeline with per-model rows.
+                    await self._emit_debug(f"recall_{event}", f"{payload.get('model','?')}: {event}", payload)
+                consensus = await self.local_knowledge.extract_knowledge(
+                    subject=subj.subject,
+                    fields=subj.fields,
+                    on_step=_recall_step,
+                )
+                recall_consensuses.append(consensus)
+                # Build the exact prompt sent to each model so the UI's
+                # Arguments section can show what the LLM actually saw.
+                recall_prompt_text = self.local_knowledge.build_recall_prompt(
+                    subj.subject, subj.fields,
+                )
+                await self._emit_status(
+                    "recalling",
+                    (
+                        f"{subj.subject}: {len(consensus.fields)} fact(s) "
+                        f"agreed by {len(consensus.contributing_models)} model(s)."
+                        if consensus.fields else
+                        f"{subj.subject}: no two models agreed."
+                    ),
+                    details=None,
+                    data={
+                        "sub_stage": "recall_done",
+                        "subject": consensus.subject,
+                        "requested_fields": subj.fields,
+                        "model_chain": list(self.local_knowledge.model_chain),
+                        "system_prompt": self.local_knowledge.RECALL_SYSTEM_PROMPT,
+                        "prompt": recall_prompt_text,
+                        "outcome": (
+                            "All required fields covered by local recall — web search not needed."
+                            if consensus.is_complete(subj.fields, self.local_knowledge.min_agreement_ratio)
+                            else f"Recalled {len(consensus.fields)} field(s); {len(consensus.uncertain_fields)} remain uncertain."
+                        ),
+                        "outcome_source": "agent",
+                        "agreed_fields": {k: v.model_dump() for k, v in consensus.fields.items()},
+                        "uncertain_fields": consensus.uncertain_fields,
+                        "contributing_models": consensus.contributing_models,
+                        "per_model_responses": [
+                            {
+                                "model": r.model,
+                                "latency_s": r.latency_s,
+                                "field_count": sum(1 for v in r.fields.values() if v.value is not None),
+                                "error": r.error,
+                                "raw_preview": r.raw_response[:400],
+                            }
+                            for r in consensus.all_responses
+                        ],
+                    },
+                )
+
+            recall_context = format_recall_for_prompt(recall_consensuses)
+
+        # Local-recall knowledge feeds the same downstream slot as web research
+        # — both are external-fact context for the planner. We prepend recall
+        # because it's higher-trust (cross-checked across providers).
+        def _merge_external_context(*parts: str) -> str:
+            return "\n\n".join(p for p in parts if p)
+
+        # 2.1 Research step — DISABLED.
+        #
+        # DuckDuckGo's free text endpoint returns empty / rate-limited results
+        # too often to be useful. We now rely entirely on local-LLM recall
+        # consensus for external knowledge. Re-enable by flipping
+        # WEB_SEARCH_ENABLED to True and the original research path will run.
+        WEB_SEARCH_ENABLED = False
+        citations: list = []
+        research_context = ""
+        await self._emit_status(
+            "researching",
+            "Web search disabled — using local-LLM recall only.",
+            details=(
+                "Web research is currently turned off. The agent relies on the "
+                "local-LLM recall consensus above for any real-world facts the "
+                "planner needs. To re-enable, set WEB_SEARCH_ENABLED=True in "
+                "backend/agent/orchestrator.py."
+            ),
+            data={
+                "sub_stage": "research_skipped",
+                "rationale": "Web search disabled in orchestrator config.",
+                "rationale_source": "agent",
+                "outcome": "No external lookup performed.",
+                "skipped": ["web search"],
+            },
+        )
 
         current_source = ""
         current_model_id = base_model_id
@@ -509,7 +539,7 @@ class AgentOrchestrator:
                 chat_history=chat_ctx,
                 current_source=current_source,
                 current_model_id=current_model_id,
-                research_context=research_context,
+                research_context=_merge_external_context(recall_context, research_context),
                 recipe_context=planning_reference_context,
                 hard_constraints=config.hard_constraints,
                 soft_constraints=config.soft_constraints,
@@ -550,7 +580,7 @@ class AgentOrchestrator:
                     chat_history=chat_ctx,
                     current_source=current_source,
                     current_model_id=current_model_id,
-                    research_context=research_context,
+                    research_context=_merge_external_context(recall_context, research_context),
                     recipe_context=planning_reference_context,
                     hard_constraints=config.hard_constraints,
                     soft_constraints=config.soft_constraints,
@@ -658,7 +688,7 @@ class AgentOrchestrator:
                     last_code = await self._generate_code_streaming(
                         user_message, system_prompt, chat_ctx,
                         current_source, base_model_id, selection,
-                        research_context=research_context,
+                        research_context=_merge_external_context(recall_context, research_context),
                         recipe_context=generation_reference_context,
                         project_id=project_id,
                         plan_text=plan_text,

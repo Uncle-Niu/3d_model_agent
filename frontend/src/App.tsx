@@ -17,16 +17,115 @@ import type { ChatMessage, ChatThread, ChatThreadSummary, ModelInfo, Project } f
 import { confirmDialog, promptDialog, DialogHost } from './components/ui/ConfirmDialog';
 import { toast, ToastHost } from './components/ui/Toast';
 
+interface AppRoute {
+  isLanding: boolean;
+  projectId: string | null;
+  threadId: string | null;
+  modelId: string | null;
+}
+
+function readRoute(): AppRoute {
+  const path = window.location.pathname;
+  const modelId = new URLSearchParams(window.location.search).get('model');
+  const match = path.match(/^\/projects\/([^/]+)(?:\/chats\/([^/]+))?\/?$/);
+  if (!match) {
+    return { isLanding: true, projectId: null, threadId: null, modelId };
+  }
+  return {
+    isLanding: false,
+    projectId: decodeURIComponent(match[1]),
+    threadId: match[2] ? decodeURIComponent(match[2]) : null,
+    modelId,
+  };
+}
+
+function buildWorkspaceUrl(projectId: string, threadId?: string | null, modelId?: string | null): string {
+  const path = threadId
+    ? `/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(threadId)}`
+    : `/projects/${encodeURIComponent(projectId)}`;
+  const query = modelId ? `?model=${encodeURIComponent(modelId)}` : '';
+  return `${path}${query}`;
+}
+
+function LandingPage({
+  projects,
+  loadError,
+  onOpenProject,
+  onNewProject,
+}: {
+  projects: Project[];
+  loadError: string | null;
+  onOpenProject: (projectId: string) => void;
+  onNewProject: () => void;
+}) {
+  return (
+    <div className="landing">
+      <header className="landing-header">
+        <div className="app-header-brand">
+          <span className="app-logo" aria-hidden="true">
+            <AppIcon size={26} />
+          </span>
+          <h1>Mission Crafter</h1>
+        </div>
+        <button className="btn btn-primary" type="button" onClick={onNewProject}>
+          New project
+        </button>
+      </header>
+
+      <main className="landing-main">
+        <div className="landing-title-row">
+          <div>
+            <h2>Open a workspace</h2>
+            <p>Choose a saved project, then use its URL to return to the same chat and model version.</p>
+          </div>
+        </div>
+
+        {loadError && <div className="landing-error">{loadError}</div>}
+
+        {projects.length === 0 ? (
+          <div className="landing-empty">
+            <h3>No projects yet</h3>
+            <p>Create a project to start a chat and generate model versions.</p>
+            <button className="btn btn-primary" type="button" onClick={onNewProject}>
+              Create project
+            </button>
+          </div>
+        ) : (
+          <div className="landing-project-grid">
+            {projects.map((item) => (
+              <button
+                key={item.project_id}
+                className="landing-project-card"
+                type="button"
+                onClick={() => onOpenProject(item.project_id)}
+              >
+                <span className="landing-project-name">{item.name}</span>
+                <span className="landing-project-meta">ID {item.project_id}</span>
+                <span className="landing-project-meta">Saved {formatLocalDateTime(item.updated_at)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </main>
+
+      <DialogHost />
+      <ToastHost />
+    </div>
+  );
+}
+
 function App() {
   const { project, setProject } = useProjectStore();
   const chat = useChatStore();
   const viewport = useViewportStore();
   const selection = useSelectionStore();
+  const [route, setRoute] = useState<AppRoute>(() => readRoute());
   const [projects, setProjects] = useState<Project[]>([]);
   const [chatThreads, setChatThreads] = useState<ChatThreadSummary[]>([]);
   const [modelVersions, setModelVersions] = useState<ModelInfo[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [initializing, setInitializing] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [constraintPanelOpen, setConstraintPanelOpen] = useState(false);
   const [historySidebarOpen, setHistorySidebarOpen] = useState(true);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
@@ -64,28 +163,74 @@ function App() {
     };
   }, [projectMenuOpen, exportMenuOpen]);
 
-  // On mount: create or load a project
   useEffect(() => {
-    initProject();
+    function handlePopState() {
+      setRoute(readRoute());
+    }
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  async function initProject() {
-    try {
-      // Try to load existing projects
-      const projects = await api.get<Project[]>('/api/projects');
-      setProjects(projects);
-      if (projects.length > 0) {
-        setProject(projects[0]);
+  function navigateWorkspace(
+    projectId: string,
+    threadId?: string | null,
+    modelId?: string | null,
+    replace = false,
+  ) {
+    const nextUrl = buildWorkspaceUrl(projectId, threadId, modelId);
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+    if (nextUrl !== currentUrl) {
+      if (replace) {
+        window.history.replaceState(null, '', nextUrl);
       } else {
-        // Create a new project
-        const newProject = await api.post<Project>('/api/projects', {
-          name: 'My First Project',
-        });
-        setProjects([newProject]);
-        setProject(newProject);
+        window.history.pushState(null, '', nextUrl);
       }
+      setRoute(readRoute());
+    }
+  }
+
+  function navigateLanding() {
+    if (window.location.pathname !== '/' || window.location.search) {
+      window.history.pushState(null, '', '/');
+      setRoute(readRoute());
+    }
+  }
+
+  // On route change: load projects, or show the root chooser.
+  useEffect(() => {
+    initProject(route);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route.isLanding, route.projectId]);
+
+  async function initProject(currentRoute: AppRoute) {
+    setInitializing(true);
+    setLoadError(null);
+    try {
+      const loadedProjects = await api.get<Project[]>('/api/projects');
+      setProjects(loadedProjects);
+
+      if (currentRoute.isLanding) {
+        setProject(null);
+        setChatThreads([]);
+        setModelVersions([]);
+        setActiveThreadId(null);
+        chat.reset();
+        viewport.reset();
+        return;
+      }
+
+      const nextProject = loadedProjects.find((item) => item.project_id === currentRoute.projectId);
+      if (!nextProject) {
+        setProject(null);
+        setLoadError(`Project ${currentRoute.projectId} was not found.`);
+        return;
+      }
+
+      setProject(nextProject);
     } catch (err) {
       console.error('Failed to initialize project:', err);
+      setProject(null);
+      setLoadError(`Could not connect to backend: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setInitializing(false);
     }
@@ -93,10 +238,15 @@ function App() {
 
   useEffect(() => {
     if (!project) return;
-    loadChatThreads(project.project_id);
-    loadModelVersions(project.project_id);
+    loadChatThreads(project.project_id, route.threadId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [project?.project_id]);
+  }, [project?.project_id, route.threadId]);
+
+  useEffect(() => {
+    if (!project) return;
+    loadModelVersions(project.project_id, route.modelId ?? undefined);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.project_id, route.modelId]);
 
   useEffect(() => {
     async function handleModelReady(event: Event) {
@@ -113,6 +263,7 @@ function App() {
       }
 
       loadModelVersions(project.project_id, detail.modelId);
+      navigateWorkspace(project.project_id, activeThreadId ?? route.threadId, detail.modelId, true);
     }
 
     window.addEventListener('cad-model-ready', handleModelReady);
@@ -120,7 +271,7 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [project?.project_id]);
 
-  async function loadChatThreads(projectId: string) {
+  async function loadChatThreads(projectId: string, preferredThreadId?: string | null) {
     try {
       const threads = await api.get<ChatThreadSummary[]>(`/api/projects/${projectId}/chat_threads`);
       if (threads.length === 0) {
@@ -130,13 +281,17 @@ function App() {
         const summary = toThreadSummary(thread);
         setChatThreads([summary]);
         setActiveThreadId(thread.thread_id);
+        navigateWorkspace(projectId, thread.thread_id, route.modelId, true);
         loadMessages(projectId, thread.thread_id);
         return;
       }
 
       setChatThreads(threads);
-      const nextThreadId = threads[0].thread_id;
+      const nextThreadId =
+        (preferredThreadId && threads.find((thread) => thread.thread_id === preferredThreadId)?.thread_id) ||
+        threads[0].thread_id;
       setActiveThreadId(nextThreadId);
+      navigateWorkspace(projectId, nextThreadId, route.modelId, true);
       loadMessages(projectId, nextThreadId);
     } catch (err) {
       console.error('Failed to load chat threads:', err);
@@ -153,7 +308,16 @@ function App() {
       );
       chat.setMessages(messages);
       chat.clearStream();
-      chat.setGenerating(false);
+      const run = await api.get<{ running: boolean; steps?: ChatMessage['steps'] }>(
+        `/api/projects/${projectId}/chat_threads/${threadId}/active_run`
+      );
+      if (run.running) {
+        chat.removeTrailingGeneratingPlaceholder();
+        chat.setGenerating(true);
+        chat.setLiveSteps(run.steps ?? []);
+      } else {
+        chat.setGenerating(false);
+      }
     } catch (err) {
       console.error('Failed to load messages:', err);
       chat.reset();
@@ -171,17 +335,24 @@ function App() {
       // For viewport selection we still need a model with GLB. Prefer the
       // explicit preferred id, then the latest final, then any model with GLB.
       const renderable = models.filter((m) => m.has_glb);
+      const preferredMeta = preferredModelId
+        ? models.find((m) => m.model_id === preferredModelId)
+        : null;
       const preferred =
-        renderable.find((m) => m.model_id === preferredModelId) ??
+        preferredMeta ??
         [...renderable].reverse().find((m) => m.is_final) ??
         renderable.at(-1);
 
       if (preferred) {
         viewport.setModel(
           preferred.model_id,
-          api.url(`/api/projects/${projectId}/models/${preferred.model_id}/glb`),
-          projectId
+          preferred.has_glb ? api.url(`/api/projects/${projectId}/models/${preferred.model_id}/glb`) : null,
+          projectId,
+          { isWip: preferred.is_final === false }
         );
+        if (preferred.model_id !== route.modelId) {
+          navigateWorkspace(projectId, activeThreadId ?? route.threadId, preferred.model_id, true);
+        }
       } else {
         viewport.reset();
         viewport.setProjectId(projectId);
@@ -200,11 +371,13 @@ function App() {
       ? api.url(`/api/projects/${project.project_id}/models/${modelId}/glb`)
       : null;
     viewport.setModel(modelId, glbUrl, project.project_id, { isWip: meta?.is_final === false });
+    navigateWorkspace(project.project_id, activeThreadId, modelId);
   }
 
   async function handleProjectChange(projectId: string) {
     const nextProject = projects.find((p) => p.project_id === projectId);
     if (!nextProject || nextProject.project_id === project?.project_id) return;
+    navigateWorkspace(projectId);
     setProject(nextProject);
     setChatThreads([]);
     setModelVersions([]);
@@ -223,6 +396,7 @@ function App() {
     setActiveThreadId(null);
     chat.reset();
     viewport.reset();
+    navigateWorkspace(newProject.project_id);
   }
 
   async function handleRenameProject(newName: string) {
@@ -253,10 +427,11 @@ function App() {
     if (remaining.length > 0) {
       setProjects(remaining);
       setProject(remaining[0]);
+      navigateWorkspace(remaining[0].project_id, null, null, true);
     } else {
-      const replacement = await api.post<Project>('/api/projects', { name: 'Untitled Project 1' });
-      setProjects([replacement]);
-      setProject(replacement);
+      setProjects([]);
+      setProject(null);
+      navigateLanding();
     }
 
     setChatThreads([]);
@@ -295,6 +470,7 @@ function App() {
   async function handleThreadChange(threadId: string) {
     if (!project || threadId === activeThreadId) return;
     setActiveThreadId(threadId);
+    navigateWorkspace(project.project_id, threadId, viewport.currentModelId);
     await loadMessages(project.project_id, threadId);
   }
 
@@ -307,6 +483,7 @@ function App() {
     setActiveThreadId(thread.thread_id);
     chat.reset();
     viewport.reset();
+    navigateWorkspace(project.project_id, thread.thread_id, null);
   }
 
   async function handleRenameThread(threadId: string, nextTitle?: string) {
@@ -350,7 +527,7 @@ function App() {
     if (!confirmed) return;
 
     await api.delete(`/api/projects/${project.project_id}/chat_threads/${threadId}`);
-    await loadChatThreads(project.project_id);
+    await loadChatThreads(project.project_id, threadId === activeThreadId ? null : activeThreadId);
     if (threadId === activeThreadId) {
       chat.reset();
       viewport.reset();
@@ -398,6 +575,17 @@ function App() {
         <div className="app-loading-spinner" />
         <p>Connecting to Mission Crafter...</p>
       </div>
+    );
+  }
+
+  if (route.isLanding) {
+    return (
+      <LandingPage
+        projects={projects}
+        loadError={loadError}
+        onOpenProject={(projectId) => navigateWorkspace(projectId)}
+        onNewProject={handleNewProject}
+      />
     );
   }
 

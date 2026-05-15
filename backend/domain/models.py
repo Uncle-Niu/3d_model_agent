@@ -271,6 +271,66 @@ class WebSearchProvider(str, enum.Enum):
     SEARXNG = "searxng"
 
 
+# ---------------------------------------------------------------------------
+# Local-LLM knowledge recall
+# ---------------------------------------------------------------------------
+#
+# Before falling back to a web search, the agent queries several local LLMs
+# (different providers, different training corpora) and aggregates their
+# answers. The "consensus" of two or more models is treated as a trustworthy
+# fact; fields that no two models agree on stay in `uncertain_fields` and are
+# what the web search (if any) actually targets.
+
+class FieldValue(BaseModel):
+    """A single fact about a subject — what the LLM thinks the value is, plus
+    how confident it claims to be. `value` can be a number, string, or list,
+    depending on the field. `null` means the model declined to answer."""
+    value: Any = None
+    confidence: float = 0.0
+    note: Optional[str] = None
+
+
+class ModelRecallResponse(BaseModel):
+    """One model's raw answer about a subject. Stored verbatim so we can
+    inspect the source of any field in the UI ('which model said the camera
+    bump was 38mm?')."""
+    model: str
+    subject: str
+    fields: dict[str, FieldValue] = Field(default_factory=dict)
+    latency_s: float = 0.0
+    raw_response: str = ""
+    error: Optional[str] = None
+
+
+class KnowledgeConsensus(BaseModel):
+    """Aggregated facts about a subject after at least two models agreed
+    (or the chain ran out). `fields` is the merged result; uncertain fields
+    are listed separately so the orchestrator can decide whether to do a
+    web search to fill them."""
+    subject: str
+    fields: dict[str, FieldValue] = Field(default_factory=dict)
+    contributing_models: list[str] = Field(default_factory=list)
+    uncertain_fields: list[str] = Field(default_factory=list)
+    all_responses: list[ModelRecallResponse] = Field(default_factory=list)
+
+    def is_complete(self, required_fields: list[str], min_ratio: float = 0.7) -> bool:
+        """True when enough required fields have consensus values to skip web."""
+        if not required_fields:
+            return bool(self.fields)
+        hits = sum(1 for f in required_fields if f in self.fields and self.fields[f].value is not None)
+        return hits / len(required_fields) >= min_ratio
+
+
+class RecallSubject(BaseModel):
+    """A single 'thing' the agent wants to look up. Subjects are identified
+    by the planner LLM from the user request — e.g. for "iphone 16 pro max
+    holder" the subject is "iPhone 16 Pro Max" and the fields are the
+    mechanical specs needed to design a holder for it."""
+    subject: str
+    fields: list[str] = Field(default_factory=list)
+    reasoning: Optional[str] = None
+
+
 class CadFeature(BaseModel):
     """Represents a specific CAD operation/feature in the source code."""
     id: str

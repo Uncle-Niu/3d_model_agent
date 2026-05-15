@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request, UploadFile, File
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..cad.engine import process_cadquery_code, execute_cadquery_code, export_part_stl, export_part_step
 from ..cad.parameters import inject_parameters
@@ -33,6 +33,7 @@ from ..domain.models import (
     GlobalSettings,
 )
 from ..storage import StorageService
+from .websocket import get_chat_run_manager
 
 router = APIRouter()
 
@@ -157,6 +158,14 @@ class ChatThreadResponse(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     messages: list[dict]
+
+
+class ActiveChatRunResponse(BaseModel):
+    running: bool
+    project_id: str
+    thread_id: str
+    started_at: Optional[str] = None
+    steps: list[dict] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -793,6 +802,28 @@ async def get_chat_thread(project_id: str, thread_id: str, request: Request):
     if not thread:
         raise HTTPException(status_code=404, detail="Chat thread not found")
     return thread
+
+
+@router.get("/projects/{project_id}/chat_threads/{thread_id}/active_run", response_model=ActiveChatRunResponse)
+async def get_active_chat_run(project_id: str, thread_id: str, request: Request):
+    """Return the active generation run for a chat thread, if any."""
+    storage = _get_storage(request)
+    config = storage.get_project(project_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Project not found")
+    manager = get_chat_run_manager(request.app)
+    return manager.status(project_id, thread_id)
+
+
+@router.post("/projects/{project_id}/chat_threads/{thread_id}/cancel")
+async def cancel_active_chat_run(project_id: str, thread_id: str, request: Request):
+    """Cancel the active generation run for a chat thread."""
+    storage = _get_storage(request)
+    config = storage.get_project(project_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Project not found")
+    manager = get_chat_run_manager(request.app)
+    return {"ok": True, "cancelled": manager.cancel(project_id, thread_id)}
 
 
 @router.put("/projects/{project_id}/chat_threads/{thread_id}", response_model=ChatThreadResponse)

@@ -9,65 +9,92 @@ import type { WSMessage } from '../types';
 
 export function useWebSocket(projectId: string | null, threadId: string | null) {
   const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
   const chat = useChatStore();
   const viewport = useViewportStore();
   const debug = useDebugStore();
   const critique = useCritiqueStore();
   const [isConnected, setIsConnected] = useState(false);
 
-  // Connect to WebSocket
   useEffect(() => {
     if (!projectId || !threadId) return;
 
-    const ws = new WebSocket(api.ws(projectId, threadId));
-    wsRef.current = ws;
+    const activeProjectId = projectId;
+    const activeThreadId = threadId;
+    let disposed = false;
+    let retry = 0;
 
-    ws.onopen = () => {
-      if (wsRef.current !== ws) return;
-      setIsConnected(true);
-      console.log('[WS] Connected to project:', projectId);
-      debug.addEntry({
-        timestamp: new Date().toISOString(),
-        category: 'ws',
-        message: `WebSocket connected to project ${projectId}`,
-        data: { thread_id: threadId },
-      });
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg: WSMessage = JSON.parse(event.data);
-        handleMessage(msg);
-      } catch (e) {
-        console.error('[WS] Failed to parse message:', e);
+    function clearReconnectTimer() {
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
       }
-    };
+    }
 
-    ws.onclose = () => {
-      if (wsRef.current !== ws) return;
-      console.log('[WS] Disconnected');
-      debug.addEntry({
-        timestamp: new Date().toISOString(),
-        category: 'ws',
-        message: 'WebSocket disconnected',
-      });
-      setIsConnected(false);
-      wsRef.current = null;
-    };
+    function connect() {
+      if (disposed) return;
 
-    ws.onerror = (err) => {
-      console.error('[WS] Error:', err);
-      debug.addEntry({
-        timestamp: new Date().toISOString(),
-        category: 'ws',
-        message: 'WebSocket error',
-        data: { error: String(err) },
-      });
-    };
+      const ws = new WebSocket(api.ws(activeProjectId, activeThreadId));
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (wsRef.current !== ws) return;
+        retry = 0;
+        setIsConnected(true);
+        console.log('[WS] Connected to project:', activeProjectId);
+        debug.addEntry({
+          timestamp: new Date().toISOString(),
+          category: 'ws',
+          message: `WebSocket connected to project ${activeProjectId}`,
+          data: { thread_id: activeThreadId },
+        });
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg: WSMessage = JSON.parse(event.data);
+          handleMessage(msg);
+        } catch (e) {
+          console.error('[WS] Failed to parse message:', e);
+        }
+      };
+
+      ws.onclose = () => {
+        if (wsRef.current !== ws) return;
+        console.log('[WS] Disconnected');
+        debug.addEntry({
+          timestamp: new Date().toISOString(),
+          category: 'ws',
+          message: 'WebSocket disconnected',
+        });
+        setIsConnected(false);
+        wsRef.current = null;
+
+        if (!disposed) {
+          const delay = Math.min(5000, 500 * 2 ** retry);
+          retry += 1;
+          reconnectTimerRef.current = window.setTimeout(connect, delay);
+        }
+      };
+
+      ws.onerror = (err) => {
+        console.error('[WS] Error:', err);
+        debug.addEntry({
+          timestamp: new Date().toISOString(),
+          category: 'ws',
+          message: 'WebSocket error',
+          data: { error: String(err) },
+        });
+      };
+    }
+
+    connect();
 
     return () => {
-      ws.close();
-      if (wsRef.current === ws) {
+      disposed = true;
+      clearReconnectTimer();
+      if (wsRef.current) {
+        wsRef.current.close();
         wsRef.current = null;
       }
       setIsConnected(false);
@@ -77,15 +104,26 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
 
   const handleMessage = useCallback((msg: WSMessage) => {
     switch (msg.type) {
+      case 'run_state':
+        if (msg.running) {
+          chat.removeTrailingGeneratingPlaceholder();
+          chat.clearStream();
+          chat.setGenerating(true);
+          chat.setLiveSteps(msg.steps ?? []);
+        } else if (chat.isGenerating) {
+          chat.setGenerating(false);
+        }
+        break;
+
       case 'status':
-        console.log(`[WS] Status: ${msg.stage} — ${msg.message}`);
+        console.log(`[WS] Status: ${msg.stage}: ${msg.message}`);
         chat.setStage(msg.stage, msg.message, msg.details, msg.data);
         if (msg.data?.model_id) {
           viewport.setModel(
             msg.data.model_id as string,
-            null, // No GLB yet
+            null,
             projectId || '',
-            { isWip: true }
+            { isWip: true },
           );
         }
         break;
@@ -99,10 +137,7 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
         break;
 
       case 'model_ready':
-        console.log(`[WS] Model ready: ${msg.model_id} → ${msg.glb_url}`);
-        // While the agent is still iterating, every model_ready is a WIP
-        // checkpoint — flag it so the source panel can show "WIP — locked"
-        // styling. The flag is cleared when the chat_response arrives.
+        console.log(`[WS] Model ready: ${msg.model_id} -> ${msg.glb_url}`);
         viewport.setModel(
           msg.model_id,
           api.url(msg.glb_url),
@@ -115,8 +150,8 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
         break;
 
       case 'chat_response':
-        // Finalize: move streaming content to a proper message
         chat.clearStream();
+        chat.removeTrailingGeneratingPlaceholder();
         chat.addMessage({
           role: 'assistant',
           content: msg.content,
@@ -125,8 +160,6 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
           steps: msg.steps ?? chat.currentSteps,
         });
         chat.setGenerating(false);
-        // Turn ended successfully — the currently displayed model is now the
-        // accepted final, no longer WIP.
         viewport.setWip(false);
         break;
 
@@ -135,12 +168,10 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
         chat.clearStream();
         chat.addMessage({
           role: 'assistant',
-          content: `❌ Error: ${msg.message}`,
+          content: `Error: ${msg.message}`,
           timestamp: new Date().toISOString(),
         });
         chat.setGenerating(false);
-        // The current model — if any — is the last WIP we saw; unlock edits
-        // by clearing the WIP flag so the user can recover from the error.
         viewport.setWip(false);
         break;
 
@@ -172,7 +203,6 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
     }
   }, [projectId, chat, viewport, debug, critique]);
 
-  // Send a chat message
   const sendMessage = useCallback(
     (content: string) => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
@@ -199,30 +229,29 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
           content,
           thread_id: threadId,
           base_model_id: viewport.currentModelId,
-        })
+        }),
       );
     },
-    [threadId, viewport.currentModelId]
+    [chat, threadId, viewport.currentModelId],
   );
 
-  /**
-   * Send any arbitrary JSON message over the WebSocket (e.g. selection events).
-   * Silently drops if not connected.
-   */
   const sendRawMessage = useCallback((msg: object) => {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(JSON.stringify(msg));
   }, []);
 
-  /**
-   * Ask the backend to stop the in-flight chat turn. The backend cancels the
-   * pipeline asyncio task and emits a `chat_response` marker that flips the
-   * UI back out of generating state.
-   */
   const cancelChat = useCallback(() => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-    wsRef.current.send(JSON.stringify({ type: 'cancel_chat' }));
-  }, []);
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'cancel_chat' }));
+      return;
+    }
+
+    if (projectId && threadId) {
+      void api.post(`/api/projects/${projectId}/chat_threads/${threadId}/cancel`).catch((err) => {
+        console.error('[WS] Failed to cancel via REST:', err);
+      });
+    }
+  }, [projectId, threadId]);
 
   return { sendMessage, sendRawMessage, cancelChat, isConnected };
 }

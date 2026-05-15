@@ -35,10 +35,12 @@ interface ChatState {
   currentSteps: PipelineStep[];
   setMessages: (messages: ChatMessage[]) => void;
   addMessage: (msg: ChatMessage) => void;
+  removeTrailingGeneratingPlaceholder: () => void;
   appendStreamChunk: (chunk: string) => void;
   appendReasoningChunk: (chunk: string) => void;
   clearStream: () => void;
   setGenerating: (generating: boolean) => void;
+  setLiveSteps: (steps: PipelineStep[]) => void;
   setStage: (stage: string, status: string, details?: string, data?: any) => void;
   reset: () => void;
 }
@@ -57,6 +59,18 @@ export const useChatStore = create<ChatState>((set) => ({
   addMessage: (msg) =>
     set((s) => ({ messages: [...s.messages, msg] })),
 
+  removeTrailingGeneratingPlaceholder: () =>
+    set((s) => {
+      const last = s.messages.at(-1);
+      if (
+        last?.role === 'assistant' &&
+        (last.content === 'Generating model...' || last.content === 'Starting generation...')
+      ) {
+        return { messages: s.messages.slice(0, -1) };
+      }
+      return {};
+    }),
+
   appendStreamChunk: (chunk) =>
     set((s) => ({ streamingContent: s.streamingContent + chunk })),
 
@@ -67,6 +81,15 @@ export const useChatStore = create<ChatState>((set) => ({
 
   setGenerating: (generating) =>
     set({ isGenerating: generating, ...(generating ? { currentSteps: [], streamingReasoning: '' } : { currentStage: '', currentStatus: '', currentSteps: [], streamingReasoning: '' }) }),
+
+  setLiveSteps: (steps) => {
+    const last = steps.at(-1);
+    set({
+      currentSteps: steps,
+      currentStage: last?.stage ?? '',
+      currentStatus: last?.message ?? '',
+    });
+  },
 
   setStage: (stage, status, details, data) =>
     set((s) => ({
@@ -86,6 +109,7 @@ export const useChatStore = create<ChatState>((set) => ({
     set({
       messages: [],
       streamingContent: '',
+      streamingReasoning: '',
       isGenerating: false,
       currentStage: '',
       currentStatus: '',
