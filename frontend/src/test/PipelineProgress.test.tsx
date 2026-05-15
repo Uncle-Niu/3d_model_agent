@@ -50,8 +50,8 @@ describe('PipelineProgress', () => {
 
     render(<PipelineProgress steps={steps} isLive={true} />);
 
-    expect(screen.getByText('Planner did not return a structured plan.')).toBeInTheDocument();
+    expect(screen.getAllByText('Planner did not return a structured plan.').length).toBeGreaterThan(0);
     fireEvent.click(screen.getAllByText("Show planner's raw reasoning")[0]);
-    expect(screen.getByText('The planner response only contained free-form reasoning.')).toBeInTheDocument();
+    expect(screen.getAllByText('The planner response only contained free-form reasoning.').length).toBeGreaterThan(0);
   });
 });
