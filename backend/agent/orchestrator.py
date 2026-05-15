@@ -278,12 +278,47 @@ class AgentOrchestrator:
         # gap — turning "did we search?" into "what gaps remain?".
         recall_consensuses: list = []
         recall_context = ""
+        await self._emit_status(
+            "recalling",
+            "Detecting real-world references that may need exact specs.",
+            details=(
+                "This asks the main local LLM whether the request mentions a "
+                "real product, part, or standard whose dimensions would improve "
+                "the CAD plan. If none are found, the heavier multi-model recall "
+                "step is skipped."
+            ),
+            data={
+                "sub_stage": "subject_detection",
+                "rationale": "Separates project-context setup from the LLM call that decides whether external specs are needed.",
+                "rationale_source": "agent",
+                "inputs": ["user prompt", f"main model `{self.llm.model}`"],
+                "in_progress": True,
+            },
+        )
         try:
             recall_subjects = await self.local_knowledge.detect_subjects(
                 user_message, main_model=self.llm.model,
             )
         except Exception:
             recall_subjects = []
+        await self._emit_status(
+            "recalling",
+            (
+                f"Found {len(recall_subjects)} reference subject(s) to cross-check."
+                if recall_subjects
+                else "No external reference specs needed."
+            ),
+            details=None,
+            data={
+                "sub_stage": "subject_detection_done",
+                "outcome": (
+                    ", ".join(subj.subject for subj in recall_subjects)
+                    if recall_subjects
+                    else "The request appears fully specified or purely parametric."
+                ),
+                "outcome_source": "agent",
+            },
+        )
 
         if recall_subjects:
             for subj in recall_subjects:
@@ -542,6 +577,19 @@ class AgentOrchestrator:
                 },
             )
 
+        # Build the exact system + user prompt that will be sent to the planner
+        # LLM, so the UI can show the user what the model actually saw.
+        merged_external_context = _merge_external_context(recall_context, research_context)
+        plan_system_prompt, plan_user_prompt = self.llm.build_planning_prompt(
+            user_message=user_message,
+            current_source=current_source,
+            current_model_id=current_model_id,
+            research_context=merged_external_context,
+            recipe_context=planning_reference_context,
+            hard_constraints=config.hard_constraints,
+            soft_constraints=config.soft_constraints,
+        )
+
         await self._emit_status(
             "planning",
             "Developing the design plan…",
@@ -550,6 +598,8 @@ class AgentOrchestrator:
                 "sub_stage": "plan_drafting",
                 "rationale": "Catches dimensional errors early before writing complex CadQuery code.",
                 "inputs": context_used + (["research results"] if research_context else []) + ["user prompt", "retrieved recipes / examples"],
+                "system_prompt": plan_system_prompt,
+                "prompt": plan_user_prompt,
                 # Marks this step as the slot under which streaming planner
                 # reasoning should be shown live.
                 "reasoning_channel": "planning",
@@ -566,7 +616,7 @@ class AgentOrchestrator:
                 chat_history=chat_ctx,
                 current_source=current_source,
                 current_model_id=current_model_id,
-                research_context=_merge_external_context(recall_context, research_context),
+                research_context=merged_external_context,
                 recipe_context=planning_reference_context,
                 hard_constraints=config.hard_constraints,
                 soft_constraints=config.soft_constraints,
@@ -575,6 +625,40 @@ class AgentOrchestrator:
         except Exception as e:
             await self._emit_debug("planning_error", f"Planner failed: {e}", {"traceback": traceback.format_exc()})
             plan = DesignPlan(raw_text="", summary="(planner failed — proceeding without a structured plan)")
+
+        # Emit the first-draft plan as its own step so the user can see what
+        # the planner produced BEFORE the quality-gate decides whether to
+        # repair. Carries the same structured fields as the eventual
+        # `plan_ready` step so the frontend can render the same plan card
+        # inline. We use sub_stage='plan_draft' so the above-timeline final
+        # plan card (which only matches `plan_ready`) is not shadowed.
+        draft_label = plan.summary
+        if not draft_label:
+            draft_bits = []
+            if plan.components:
+                draft_bits.append(f"{len(plan.components)} component{'s' if len(plan.components) != 1 else ''}")
+            if plan.key_features:
+                draft_bits.append(f"{len(plan.key_features)} feature{'s' if len(plan.key_features) != 1 else ''}")
+            draft_label = ", ".join(draft_bits) if draft_bits else "(no summary)"
+
+        await self._emit_status(
+            "planning",
+            f"First-draft plan · {draft_label}",
+            details=None,
+            data={
+                "sub_stage": "plan_draft",
+                "outcome": plan.summary,
+                "outcome_source": "planner",
+                "summary": plan.summary,
+                "overall_dimensions_mm": plan.overall_dimensions_mm,
+                "raw_reasoning": plan.raw_reasoning,
+                "components": [c.model_dump() for c in plan.components],
+                "key_features": plan.key_features,
+                "assumptions": plan.assumptions,
+                "risks": plan.risks,
+                "parameters": plan.parameters,
+            },
+        )
 
         quality_report = validate_plan_against_recipes(plan, recipe_cards)
         if not quality_report.is_sufficient:

@@ -622,19 +622,28 @@ def parse_design_plan(raw_text: str) -> DesignPlan:
     plan = DesignPlan(raw_text=raw_text)
 
     # 1. Pull out <thinking> ... </thinking>
-    think_match = re.search(r"<thinking>\s*(.*?)\s*</thinking>", raw_text, re.DOTALL | re.IGNORECASE)
+    think_match = re.search(r"<thinking\b[^>]*>\s*(.*?)\s*</thinking>", raw_text, re.DOTALL | re.IGNORECASE)
     if think_match:
         plan.raw_reasoning = think_match.group(1).strip()
     else:
         # If no tags, try to find text before the XML block
-        xml_start = raw_text.find("<design_plan>")
-        if xml_start > 0:
-            plan.raw_reasoning = raw_text[:xml_start].strip()
+        xml_start = re.search(r"<design_plan\b[^>]*>", raw_text, re.IGNORECASE)
+        if xml_start and xml_start.start() > 0:
+            plan.raw_reasoning = raw_text[:xml_start.start()].strip()
 
     # 2. Extract <design_plan> block content
-    plan_match = re.search(r"<design_plan>(.*?)</design_plan>", raw_text, re.DOTALL | re.IGNORECASE)
+    plan_match = re.search(r"<design_plan\b[^>]*>(.*?)</design_plan>", raw_text, re.DOTALL | re.IGNORECASE)
     if plan_match:
         content = plan_match.group(1)
+    elif re.search(r"<summary\b[^>]*>|<component\b[^>]*>|<key_features\b[^>]*>", raw_text, re.IGNORECASE):
+        # Some local models omit the outer wrapper while still emitting the
+        # requested inner XML. Treat that as usable planner output instead of
+        # hiding it behind an empty "(no summary)" draft.
+        content = re.sub(r"<thinking\b[^>]*>.*?</thinking>", "", raw_text, flags=re.DOTALL | re.IGNORECASE)
+    else:
+        content = ""
+
+    if content:
         # Attempt XML parsing
         try:
             # Wrap in root to handle potentially malformed XML if the model missed the outer tag
@@ -702,16 +711,16 @@ def parse_design_plan(raw_text: str) -> DesignPlan:
         except Exception:
             # Robust Fallback: Regex extraction if XML parsing fails
             if not plan.summary:
-                sum_match = re.search(r"<summary>(.*?)</summary>", content, re.DOTALL | re.IGNORECASE)
+                sum_match = re.search(r"<summary\b[^>]*>(.*?)</summary>", content, re.DOTALL | re.IGNORECASE)
                 if sum_match:
                     plan.summary = sum_match.group(1).strip()
             
             if not plan.components:
-                comp_matches = re.finditer(r"<component>(.*?)</component>", content, re.DOTALL | re.IGNORECASE)
+                comp_matches = re.finditer(r"<component\b[^>]*>(.*?)</component>", content, re.DOTALL | re.IGNORECASE)
                 for m in comp_matches:
                     c_inner = m.group(1)
-                    name_m = re.search(r"<name>(.*?)</name>", c_inner, re.IGNORECASE)
-                    desc_m = re.search(r"<description>(.*?)</description>", c_inner, re.IGNORECASE)
+                    name_m = re.search(r"<name\b[^>]*>(.*?)</name>", c_inner, re.DOTALL | re.IGNORECASE)
+                    desc_m = re.search(r"<description\b[^>]*>(.*?)</description>", c_inner, re.DOTALL | re.IGNORECASE)
                     if name_m:
                         plan.components.append(DesignComponent(
                             name=name_m.group(1).strip(),
@@ -719,7 +728,18 @@ def parse_design_plan(raw_text: str) -> DesignPlan:
                         ))
             
             if not plan.key_features:
-                plan.key_features = re.findall(r"<feature>(.*?)</feature>", content, re.IGNORECASE)
+                plan.key_features = [
+                    f.strip()
+                    for f in re.findall(r"<feature\b[^>]*>(.*?)</feature>", content, re.DOTALL | re.IGNORECASE)
+                    if f.strip()
+                ]
+
+        # If XML parsing succeeded but the summary was missing due to a
+        # malformed/namespaced tag, still try the same cheap fallback.
+        if not plan.summary:
+            sum_match = re.search(r"<summary\b[^>]*>(.*?)</summary>", content, re.DOTALL | re.IGNORECASE)
+            if sum_match:
+                plan.summary = sum_match.group(1).strip()
 
     # If nothing was parsed, treat whole response as reasoning so it stays visible
     if not plan.summary and not plan.components and not plan.raw_reasoning:

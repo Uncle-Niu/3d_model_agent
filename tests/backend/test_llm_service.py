@@ -12,6 +12,7 @@ from backend.models.llm_service import (
     build_repair_prompt,
     build_system_prompt,
     extract_code_from_response,
+    parse_design_plan,
 )
 
 
@@ -171,6 +172,40 @@ class TestExtractCodeFromResponse(unittest.TestCase):
         response = "```python\nresult = cq.Workplane().box(1,1,1)\n```\n```python\nresult = cq.Workplane().box(2,2,2)\n```"
         code = extract_code_from_response(response)
         self.assertIn("box(1,1,1)", code)
+
+
+class TestParseDesignPlan(unittest.TestCase):
+
+    def test_accepts_design_plan_with_attributes(self):
+        raw = """<thinking>Use a flat print orientation.</thinking>
+<design_plan version="1">
+  <summary>Bracket with screw holes</summary>
+  <components>
+    <component>
+      <name>base_plate</name>
+      <description>flat mounting base</description>
+    </component>
+  </components>
+</design_plan>"""
+
+        plan = parse_design_plan(raw)
+
+        self.assertEqual(plan.summary, "Bracket with screw holes")
+        self.assertEqual(plan.raw_reasoning, "Use a flat print orientation.")
+        self.assertEqual(plan.components[0].name, "base_plate")
+
+    def test_accepts_inner_xml_without_design_plan_wrapper(self):
+        raw = """<thinking>Keep walls thick enough.</thinking>
+<summary>Phone stand with a cable slot</summary>
+<key_features>
+  <feature>angled back support</feature>
+  <feature>front lip</feature>
+</key_features>"""
+
+        plan = parse_design_plan(raw)
+
+        self.assertEqual(plan.summary, "Phone stand with a cable slot")
+        self.assertEqual(plan.key_features, ["angled back support", "front lip"])
 
 
 if __name__ == "__main__":

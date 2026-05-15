@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -38,6 +39,8 @@ class ActiveChatRun:
     started_at: str = field(default_factory=_now_iso)
     events: list[dict[str, Any]] = field(default_factory=list)
     subscribers: set[asyncio.Queue] = field(default_factory=set)
+    cancel_requested: bool = False
+    cancel_requested_at: Optional[str] = None
 
     @property
     def running(self) -> bool:
@@ -229,11 +232,28 @@ class ChatRunManager:
                     selection=selection,
                 )
                 await self._publish_latest_assistant(run_ref["run"])
-            except asyncio.CancelledError:
-                await self._persist_cancelled(run_ref["run"])
+            except asyncio.CancelledError as exc:
+                run = run_ref["run"]
+                if run.cancel_requested:
+                    await self._persist_cancelled(run)
+                else:
+                    await self._persist_failed(
+                        run,
+                        "Generation stopped unexpectedly: the backend task was cancelled "
+                        "without a user cancel request. This usually means the backend "
+                        "process restarted, the event loop shut down, or an upstream "
+                        "dependency cancelled the request.",
+                        failure_type="unexpected_cancel",
+                        exc=exc,
+                    )
                 raise
             except Exception as exc:
-                await on_error(str(exc))
+                await self._persist_failed(
+                    run_ref["run"],
+                    f"{type(exc).__name__}: {exc}",
+                    failure_type="backend_exception",
+                    exc=exc,
+                )
             finally:
                 current = self._runs.get(self._key(project_id, thread_id))
                 if current is run_ref.get("run"):
@@ -299,14 +319,62 @@ class ChatRunManager:
             ],
         })
 
+    async def _persist_failed(
+        self,
+        run: ActiveChatRun,
+        error_message: str,
+        failure_type: str = "backend_exception",
+        exc: BaseException | None = None,
+    ) -> None:
+        content = f"Generation failed: {error_message}"
+        message = ChatMessage(
+            role="assistant",
+            content=content,
+            steps=run.orchestrator.current_steps,
+        )
+        messages = self.storage.get_chat_thread_messages(run.project_id, run.thread_id)
+        if messages and messages[-1].role == "assistant":
+            self.storage.update_last_chat_thread_message(run.project_id, run.thread_id, message)
+        else:
+            self.storage.append_chat_thread_message(run.project_id, run.thread_id, message)
+
+        debug_data: dict[str, Any] = {"failure_type": failure_type}
+        if exc is not None:
+            debug_data.update({
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+                "traceback": "".join(
+                    traceback.format_exception(type(exc), exc, exc.__traceback__)
+                ),
+            })
+
+        run.publish({
+            "type": "debug_log",
+            "timestamp": _now_iso(),
+            "category": failure_type,
+            "message": content,
+            "data": debug_data,
+        })
+        run.publish({
+            "type": "chat_response",
+            "content": message.content,
+            "model_id": None,
+            "steps": [
+                step.model_dump(mode="json")
+                for step in message.steps
+            ],
+        })
+
     def cancel(self, project_id: str, thread_id: str) -> bool:
         run = self.get_run(project_id, thread_id)
         if not run:
             return False
+        run.cancel_requested = True
+        run.cancel_requested_at = _now_iso()
         run.task.cancel()
         run.publish({
             "type": "debug_log",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": _now_iso(),
             "category": "cancel",
             "message": "Chat cancellation requested by user",
         })

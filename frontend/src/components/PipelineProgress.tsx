@@ -41,6 +41,7 @@ const SUB_STAGE_LABELS: Record<string, string> = {
   recipes: 'Recipes',
   example_bank: 'Examples',
   plan_drafting: 'Drafting',
+  plan_draft: 'Plan draft',
   plan_repair: 'Plan repair',
   plan_repair_partial: 'Plan repair · partial',
   plan_repair_ok: 'Plan repair · ok',
@@ -50,6 +51,8 @@ const SUB_STAGE_LABELS: Record<string, string> = {
   results: 'Results',
   no_results: 'No results',
   error: 'Error',
+  subject_detection: 'Detecting refs',
+  subject_detection_done: 'Detection',
   recall_start: 'Querying',
   recall_done: 'Consensus',
 };
@@ -231,10 +234,52 @@ interface PlanArtifactProps {
   data: PipelineStep['data'];
 }
 
+function hasPlanArtifactData(data: PipelineStep['data']): boolean {
+  if (!data) return false;
+  const hasSummary = typeof data.summary === 'string' && data.summary.trim() !== ''
+    || typeof data.plan_summary === 'string' && data.plan_summary.trim() !== '';
+  const hasRawReasoning = typeof data.raw_reasoning === 'string' && data.raw_reasoning.trim() !== '';
+  const hasComponents = Array.isArray(data.components) && data.components.length > 0;
+  const hasFeatures = Array.isArray(data.key_features) && data.key_features.length > 0;
+  const hasAssumptions = Array.isArray(data.assumptions) && data.assumptions.length > 0;
+  const hasRisks = Array.isArray(data.risks) && data.risks.length > 0;
+  const hasParameters = !!(
+    data.parameters
+    && typeof data.parameters === 'object'
+    && Object.keys(data.parameters as Record<string, unknown>).length > 0
+  );
+  const hasDimensions = Array.isArray(data.overall_dimensions_mm)
+    ? data.overall_dimensions_mm.length > 0
+    : !!(
+      data.overall_dimensions_mm
+      && typeof data.overall_dimensions_mm === 'object'
+      && Object.keys(data.overall_dimensions_mm as Record<string, unknown>).length > 0
+    );
+  return hasSummary || hasRawReasoning || hasComponents || hasFeatures
+    || hasAssumptions || hasRisks || hasParameters || hasDimensions;
+}
+
+function isPlanArtifactStep(step: PipelineStep): boolean {
+  if (step.stage !== 'planning') return false;
+  const subStage = step.data?.sub_stage;
+  return subStage === 'plan_draft' || subStage === 'plan_ready' || hasPlanArtifactData(step.data);
+}
+
+function formatPlanDimensions(value: unknown): string | null {
+  if (Array.isArray(value) && value.length >= 3) {
+    const labels = ['x', 'y', 'z'];
+    return value.slice(0, 3).map((v, i) => `${labels[i]}: ${v} mm`).join(' · ');
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > 0) return entries.map(([k, v]) => `${k}: ${v} mm`).join(' · ');
+  }
+  return null;
+}
+
 function DesignPlanCard({ data }: PlanArtifactProps) {
   if (!data) return null;
   const summary = (data.summary || data.plan_summary) as string | undefined;
-  const dims = data.overall_dimensions_mm as Record<string, number> | undefined;
   const components = Array.isArray(data.components) ? (data.components as Array<Record<string, unknown>>) : null;
   const keyFeatures = Array.isArray(data.key_features) ? (data.key_features as string[]) : null;
   const assumptions = Array.isArray(data.assumptions) ? (data.assumptions as string[]) : null;
@@ -243,9 +288,7 @@ function DesignPlanCard({ data }: PlanArtifactProps) {
     ? (data.parameters as Record<string, unknown>) : null;
   const rawReasoning = typeof data.raw_reasoning === 'string' ? data.raw_reasoning : null;
 
-  const dimText = dims
-    ? Object.entries(dims).map(([k, v]) => `${k}: ${v} mm`).join(' · ')
-    : null;
+  const dimText = formatPlanDimensions(data.overall_dimensions_mm);
 
   // Whether the planner produced any structured content. If everything is
   // empty, the card shows an explicit "empty plan" notice with the raw
@@ -759,6 +802,8 @@ function PipelineStepRow({
               </p>
             )}
 
+            {isPlanArtifactStep(step) && <DesignPlanCard data={step.data} />}
+
             {(() => {
               // "Arguments" — the exact technical inputs this step received.
               // Surfaces query strings, requested fields, model chains, the
@@ -778,13 +823,25 @@ function PipelineStepRow({
                   <div className="pipeline-step-section-label">Arguments / inputs used</div>
                   <dl className="pipeline-step-arglist">
                     {argEntries.map(([key, label, v]) => {
-                      const isLong = typeof v === 'string' && v.length > 120;
+                      // Prompt-like keys carry natural-language text, not
+                      // code/identifiers, so they render in the regular UI
+                      // font (block, wraps + preserves newlines) instead of
+                      // the monospace pill used for model IDs, field lists,
+                      // etc. Keeps prose readable across recall, planner,
+                      // and any other step that surfaces a prompt.
+                      const isPromptKey = key === 'prompt' || key === 'system_prompt';
+                      if (isPromptKey && typeof v === 'string') {
+                        return (
+                          <div key={key} className="pipeline-step-argrow">
+                            <dt>{label}</dt>
+                            <dd><div className="pipeline-step-argprompt">{v}</div></dd>
+                          </div>
+                        );
+                      }
                       return (
                         <div key={key} className="pipeline-step-argrow">
                           <dt>{label}</dt>
-                          {isLong
-                            ? <dd><pre className="pipeline-step-argpre">{v as string}</pre></dd>
-                            : <dd><code>{renderArgValue(v)}</code></dd>}
+                          <dd><code>{renderArgValue(v)}</code></dd>
                         </div>
                       );
                     })}
@@ -990,13 +1047,13 @@ export default function PipelineProgress({ steps, isLive = false }: PipelineProg
   // Pull out highlight artifacts (plan + most recent critique) so we can
   // surface them above the timeline.
   const planStep = useMemo(() => {
-    // Prefer a step that already carries `plan_ready` sub_stage, else the
-    // most recent planning step with components in it.
+    // Prefer the final plan, else surface the most recent draft/plan artifact
+    // so planner output is visible while repair/validation continues.
     for (let i = steps.length - 1; i >= 0; i--) {
       const s = steps[i];
       if (s.stage !== 'planning') continue;
       if (s.data?.sub_stage === 'plan_ready') return s;
-      if (Array.isArray(s.data?.components) && (s.data!.components as unknown[]).length > 0) return s;
+      if (isPlanArtifactStep(s)) return s;
     }
     return null;
   }, [steps]);
