@@ -24,7 +24,6 @@ const SUGGESTIONS: Array<{ label: string; prompt: string }> = [
 
 export default function Chat({ onSend, disabled = false }: ChatProps) {
   const [input, setInput] = useState('');
-  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { selectedFeatureName } = useSelectionStore();
@@ -61,11 +60,6 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
       e.preventDefault();
       handleSubmit(e);
     }
-  }
-
-  function pickSuggestion(prompt: string) {
-    setSuggestionsOpen(false);
-    onSend(prompt);
   }
 
   function insertSelectedReference() {
@@ -152,26 +146,9 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
         <div ref={messagesEndRef} />
       </div>
 
-      {suggestionsOpen && !isEmpty && (
-        <div className="chat-suggestions-popover">
-          {SUGGESTIONS.map((s) => (
-            <button key={s.label} onClick={() => pickSuggestion(s.prompt)}>{s.label}</button>
-          ))}
-        </div>
-      )}
-
       <form className="chat-input-form" onSubmit={handleSubmit}>
-        <div className="chat-input-tools">
-          <button
-            type="button"
-            className="chat-tool-btn"
-            onClick={() => setSuggestionsOpen((v) => !v)}
-            title="Insert a prompt suggestion"
-            disabled={disabled}
-          >
-            +
-          </button>
-          {selectedFeatureName && (
+        {selectedFeatureName && (
+          <div className="chat-input-tools">
             <button
               type="button"
               className="chat-tool-btn chat-tool-selected"
@@ -181,8 +158,8 @@ export default function Chat({ onSend, disabled = false }: ChatProps) {
             >
               @{selectedFeatureName.length > 18 ? `${selectedFeatureName.slice(0, 17)}…` : selectedFeatureName}
             </button>
-          )}
-        </div>
+          </div>
+        )}
         <div className="chat-input-row">
           <textarea
             ref={inputRef}

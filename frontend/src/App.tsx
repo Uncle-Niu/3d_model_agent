@@ -452,14 +452,6 @@ function App() {
                 >
                   <div className="project-dropdown-name">＋ New project</div>
                 </button>
-                <button
-                  role="menuitem"
-                  onClick={() => { setProjectMenuOpen(false); handleOpenProjectFolder(); }}
-                  type="button"
-                  title={project.project_path}
-                >
-                  <div className="project-dropdown-name">📂 Open project folder</div>
-                </button>
               </div>
             )}
           </div>
@@ -585,6 +577,7 @@ function App() {
         onClose={() => setConstraintPanelOpen(false)}
         onRenameProject={handleRenameProject}
         onDeleteProject={handleDeleteProject}
+        onOpenProjectFolder={handleOpenProjectFolder}
       />
 
       <DialogHost />

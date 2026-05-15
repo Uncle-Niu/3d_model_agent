@@ -99,11 +99,12 @@ interface Props {
   onClose: () => void;
   onRenameProject: (newName: string) => void;
   onDeleteProject: () => void;
+  onOpenProjectFolder: () => void;
 }
 
 type EditMode = 'project' | 'global';
 
-export default function ProjectSettingsPanel({ isOpen, onClose, onRenameProject, onDeleteProject }: Props) {
+export default function ProjectSettingsPanel({ isOpen, onClose, onRenameProject, onDeleteProject, onOpenProjectFolder }: Props) {
   const { project, setProject } = useProjectStore();
   const [hard, setHard] = useState<HardConstraints | null>(null);
   const [soft, setSoft] = useState<SoftConstraints | null>(null);
@@ -315,7 +316,7 @@ export default function ProjectSettingsPanel({ isOpen, onClose, onRenameProject,
 
             <div className="constraint-field" style={{ marginBottom: 0 }}>
               <label className="constraint-label">Project Path</label>
-              <div className="constraint-input-row">
+              <div className="constraint-input-row" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                 <input
                   type="text"
                   className="constraint-input constraint-input--readonly"
@@ -324,7 +325,16 @@ export default function ProjectSettingsPanel({ isOpen, onClose, onRenameProject,
                   spellCheck={false}
                   title={project?.project_path}
                   onFocus={(e) => e.currentTarget.select()}
+                  style={{ flex: 1 }}
                 />
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={onOpenProjectFolder}
+                  title="Open project folder in file explorer"
+                >
+                  📂 Open folder
+                </button>
               </div>
             </div>
           </section>
