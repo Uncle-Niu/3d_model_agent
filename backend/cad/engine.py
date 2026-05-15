@@ -418,6 +418,20 @@ def process_cadquery_code(
         "cad_source": code,
     }
 
+    # Always persist the source code first — even if validation/execution fails
+    # later. Otherwise failed iterations have no source.py on disk and the
+    # frontend gets a 404 when it tries to show the failing code.
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        source_path = output_dir / "source.py"
+        source_path.write_text(code, encoding="utf-8")
+        result["files"]["source"] = str(source_path)
+    except Exception:
+        # Source persistence is best-effort; downstream rendering can still
+        # work in-memory if the disk write fails.
+        pass
+
     # 1. Validate code (AST)
     valid, msg = validate_cadquery_code(code)
     if not valid:

@@ -40,54 +40,110 @@ class PlanQualityReport:
 RECIPE_SOURCE_ROOT = Path("data") / "cad_sources"
 
 
-RECIPES: tuple[CadRecipe, ...] = (
-    CadRecipe(
-        recipe_id="phone_holder_desktop",
-        title="Desktop phone holder / charging stand",
-        tags=("phone", "iphone", "holder", "stand", "cradle", "dock", "charger"),
-        source_refs=(
-            "cadquery-contrib examples: tray, reinforce junction, remote enclosure",
-            "build123d examples: pegboard hook, handle, multiple workplanes",
-            "OpenSCAD MCAD patterns: triangles/gussets, polyholes/printable holes",
-        ),
-        required_features=(
-            "stable base plate sized wider/deeper than the phone footprint",
-            "angled backrest so the phone leans, not a vertical slab",
-            "front retaining lip or ledge that prevents sliding",
-            "case-friendly clearance slot or cradle sized from phone width/thickness",
-            "two separated front supports or side guides that leave access in the middle",
-            "rounded/chamfered printable edges",
-        ),
-        negative_space_features=(
-            "center charging-cable notch cut through the front lip/base",
-        ),
-        construction_strategy=(
-            "Prefer a side-profile polyline extruded across width for the base, front lip, and angled backrest.",
-            "Use boolean cuts for the cable notch and clearance reliefs.",
-            "Add triangular ribs/gussets or side cheeks if the backrest is tall.",
-            "Declare phone dimensions and case clearance as named parameters.",
-        ),
-        cadquery_patterns=(
-            'cq.Workplane("YZ").polyline(profile).close().extrude(width)',
-            "body.cut(cable_notch_cutter)",
-            "base.union(backrest).union(front_lip)",
-            ".edges().fillet(fillet_radius) or .edges().chamfer(chamfer_size)",
-        ),
-        validation_rules=(
-            "A base plus one plain box/slab is insufficient for a phone holder.",
-            "The cable notch must be visibly open from the front/top unless explicitly omitted.",
-            "The slot must exceed phone thickness plus case clearance.",
-        ),
-        feature_keywords={
-            "stable base plate sized wider/deeper than the phone footprint": ("base", "plate", "footprint", "stable"),
-            "angled backrest so the phone leans, not a vertical slab": ("angled", "backrest", "lean", "tilt", "support"),
-            "front retaining lip or ledge that prevents sliding": ("front", "lip", "ledge", "stop", "retaining"),
-            "case-friendly clearance slot or cradle sized from phone width/thickness": ("slot", "cradle", "clearance", "case", "thickness"),
-            "two separated front supports or side guides that leave access in the middle": ("side", "guide", "cheek", "rail", "separated", "supports"),
-            "rounded/chamfered printable edges": ("fillet", "chamfer", "rounded", "edge"),
-            "center charging-cable notch cut through the front lip/base": ("cable", "charging", "notch", "cut", "center"),
-        },
+GENERAL_REQUIREMENT_CUES: dict[str, tuple[str, ...]] = {
+    "fastener interfaces": (
+        "bolt",
+        "screw",
+        "mount",
+        "bracket",
+        "wall",
+        "fixture",
+        "attach",
+        "fasten",
+        "hole",
+        "m3",
+        "m4",
+        "m5",
+        "m6",
     ),
+    "clearance and access cutouts": (
+        "cable",
+        "wire",
+        "usb",
+        "charger",
+        "port",
+        "access",
+        "slot",
+        "notch",
+        "pass",
+    ),
+    "internal cavities or shells": (
+        "box",
+        "case",
+        "enclosure",
+        "container",
+        "tray",
+        "cup",
+        "holder",
+        "organizer",
+        "bin",
+    ),
+    "retention geometry": (
+        "clip",
+        "clamp",
+        "snap",
+        "holder",
+        "latch",
+        "grip",
+        "hook",
+        "catch",
+        "retainer",
+    ),
+    "load-bearing reinforcement": (
+        "support",
+        "stand",
+        "bracket",
+        "mount",
+        "arm",
+        "shelf",
+        "holder",
+        "heavy",
+        "load",
+    ),
+    "moving or mating interfaces": (
+        "hinge",
+        "slide",
+        "drawer",
+        "lid",
+        "cap",
+        "joint",
+        "gear",
+        "bearing",
+        "thread",
+        "knob",
+    ),
+}
+
+
+FEATURE_FAMILY_REQUIREMENTS: dict[str, tuple[str, ...]] = {
+    "fastener interfaces": (
+        "Explicitly model fastener geometry as cut components: through holes, counterbores, countersinks, slots, or bosses.",
+        "Include nominal diameters, clearances, and placement pattern dimensions as named parameters.",
+    ),
+    "clearance and access cutouts": (
+        "Represent ports, cable paths, hand access, and reliefs as negative-space/cut components.",
+        "Keep cutouts visible in the key-feature checklist so vision can verify them.",
+    ),
+    "internal cavities or shells": (
+        "Do not make a solid block when the object implies storage, containment, or insertion.",
+        "Use shelling or explicit inner cutters and include wall thickness as a named parameter.",
+    ),
+    "retention geometry": (
+        "Add lips, hooks, side guides, detents, clips, jaws, or stops that physically retain the target object.",
+        "Include clearance/tolerance assumptions for the retained object.",
+    ),
+    "load-bearing reinforcement": (
+        "Add ribs, gussets, thickened junctions, broad bases, or triangular supports where loads change direction.",
+        "Avoid tall thin slabs/posts unless they are reinforced.",
+    ),
+    "moving or mating interfaces": (
+        "Define mating clearances, pivots, rails, stops, thread/gear/bearing assumptions, and assembly orientation.",
+        "Separate mating parts or named features so later edits can target them.",
+    ),
+}
+
+
+RECIPES: tuple[CadRecipe, ...] = (
     CadRecipe(
         recipe_id="tray_or_organizer",
         title="Tray / organizer / bin",
@@ -267,6 +323,57 @@ def build_recipe_prompt_context(user_message: str, cards: list[CadRecipe] | None
     return "\n".join(lines)
 
 
+def infer_requirement_families(user_message: str) -> list[str]:
+    """Infer broad functional requirement families from the request text."""
+    query_tokens = _tokens(user_message)
+    inferred: list[tuple[int, str]] = []
+    for family, cues in GENERAL_REQUIREMENT_CUES.items():
+        hits = sum(1 for cue in cues if cue in query_tokens or cue in user_message.lower())
+        if hits:
+            inferred.append((hits, family))
+    inferred.sort(key=lambda item: (-item[0], item[1]))
+    return [family for _, family in inferred]
+
+
+def build_adaptive_recipe_context(user_message: str) -> str:
+    """Build a general recipe-synthesis rubric for any product request.
+
+    Static recipe cards are intentionally limited. This adaptive context teaches
+    the planner to synthesize a recipe from the user's object/function words and
+    the retrieved example bank instead of waiting for a hand-authored card.
+    """
+    families = infer_requirement_families(user_message)
+    lines = [
+        "## Adaptive CAD Recipe Synthesis",
+        "If no exact recipe exists, synthesize a product-specific recipe before planning. Use the user's object/function words and the retrieved local CAD examples to decide what features are required.",
+        "A sufficient plan must describe:",
+        "- Primary body or load path",
+        "- Interfaces to the thing being held, mounted, enclosed, moved, or joined",
+        "- Required negative-space features such as holes, slots, ports, cavities, notches, clearances, and reliefs",
+        "- Manufacturing details: wall thickness, fillets/chamfers, ribs/gussets, print orientation, and named parameters",
+        "- A key-feature checklist detailed enough for visual verification",
+        "Reject placeholder designs that are only primitive boxes/cylinders when the request implies functional interfaces, cuts, retention, cavities, or reinforcement.",
+    ]
+
+    if families:
+        lines.append("Inferred requirement families for this request:")
+        for family in families:
+            lines.append(f"### {family}")
+            for requirement in FEATURE_FAMILY_REQUIREMENTS[family]:
+                lines.append(f"- {requirement}")
+
+    return "\n".join(lines)
+
+
+def build_combined_recipe_context(user_message: str, cards: list[CadRecipe] | None = None) -> str:
+    """Return static recipe cards plus the adaptive recipe-synthesis rubric."""
+    parts = [
+        build_recipe_prompt_context(user_message, cards),
+        build_adaptive_recipe_context(user_message),
+    ]
+    return "\n\n".join(part for part in parts if part)
+
+
 def validate_plan_against_recipes(plan: DesignPlan, cards: list[CadRecipe]) -> PlanQualityReport:
     """Check that the plan is detailed enough before code generation."""
     if not cards:
@@ -296,10 +403,8 @@ def validate_plan_against_recipes(plan: DesignPlan, cards: list[CadRecipe]) -> P
             if not (has_keyword and has_cut_component):
                 missing_negative.append(feature)
 
-    if component_count < 3 and cards[0].recipe_id in {"phone_holder_desktop", "bracket_or_mount", "enclosure"}:
+    if component_count < 3 and cards[0].recipe_id in {"bracket_or_mount", "enclosure"}:
         missing.append("at least three named components/sub-shapes with dimensions")
-    if key_feature_count < 4 and cards[0].recipe_id == "phone_holder_desktop":
-        missing.append("a key-feature checklist detailed enough for visual verification")
 
     # Preserve order while removing duplicates.
     missing = list(dict.fromkeys(missing))

@@ -16,7 +16,7 @@ import httpx
 from ..cad.engine import process_cadquery_code
 from ..cad.example_bank import build_example_bank_prompt_context, retrieve_example_snippets
 from ..cad.recipes import (
-    build_recipe_prompt_context,
+    build_combined_recipe_context,
     retrieve_recipe_cards,
     validate_plan_against_recipes,
 )
@@ -278,8 +278,11 @@ class AgentOrchestrator:
                 details=None,
                 data={
                     "sub_stage": "search",
+                    # The headline already shows the query — don't duplicate
+                    # it into `inputs`. `rationale` here is the planner's own
+                    # reasoning for why this search is needed (LLM-sourced).
                     "rationale": research_reasoning,
-                    "used": [search_query],
+                    "rationale_source": "planner",
                     "query": search_query,
                 },
             )
@@ -303,6 +306,7 @@ class AgentOrchestrator:
                     data={
                         "sub_stage": "results",
                         "outcome": f"Added {len(citations)} citation(s) into the planning prompt.",
+                        "found": [f"{c.title} ({c.source})" for c in citations],
                         "research_results": [c.model_dump() for c in citations],
                         "query": search_query,
                     },
@@ -314,7 +318,11 @@ class AgentOrchestrator:
                     details=None,
                     data={
                         "sub_stage": "error",
-                        "outcome": "The search provider returned an error (often a DuckDuckGo ratelimit). The plan will rely on internal context and reasonable defaults.",
+                        "outcome": (
+                            "The search provider returned an error (often a "
+                            "DuckDuckGo ratelimit). The plan will rely on "
+                            "internal context and reasonable defaults."
+                        ),
                         "error": search_error,
                         "query": search_query,
                     },
@@ -323,11 +331,26 @@ class AgentOrchestrator:
                 await self._emit_status(
                     "researching",
                     f"No results matched “{search_query}”.",
-                    details=None,
+                    details=(
+                        "DuckDuckGo returned an empty result set for this query. "
+                        "Common reasons:\n"
+                        "  • The query was too narrow or contained brand/model "
+                        "names that DuckDuckGo's text endpoint doesn't index "
+                        "well.\n"
+                        "  • The free DuckDuckGo endpoint silently ratelimits "
+                        "after a few requests in quick succession and returns "
+                        "an empty body instead of an error.\n"
+                        "  • The query landed on a paywalled or JavaScript-only "
+                        "result page that the text endpoint cannot scrape.\n\n"
+                        "The pipeline continues with internal CAD recipes and "
+                        "the planner's own assumptions about the requested "
+                        "product."
+                    ),
                     data={
                         "sub_stage": "no_results",
                         "outcome": "Web search returned zero results. Continuing with internal context only.",
                         "query": search_query,
+                        "planner_intent": research_reasoning,
                     },
                 )
         else:
@@ -337,7 +360,9 @@ class AgentOrchestrator:
                 details=None,
                 data={
                     "sub_stage": "research_skipped",
+                    # The planner's own justification, surfaced as LLM text.
                     "rationale": research_reasoning,
+                    "rationale_source": "planner",
                     "outcome": "Internal context is sufficient — no external lookup needed.",
                     "skipped": ["web search"],
                 },
@@ -353,15 +378,17 @@ class AgentOrchestrator:
                 current_model_id = latest_model.model_id
                 current_source = self.storage.get_model_source_text(project_id, latest_model.model_id)
 
+        # `context_used` doubles as the "inputs" list the planner / generator
+        # were given. We do NOT add "new model from scratch" here because that
+        # describes the strategy *decision*, not an input.
         context_used = []
         if current_source:
             context_used.append(f"base model `{current_model_id}` source")
-        else:
-            context_used.append("new model from scratch")
         if selection:
             context_used.append(f"active selection `{selection.feature_name}`")
         if citations:
             context_used.append(f"{len(citations)} research citation(s)")
+        strategy_inputs = list(context_used) or ["user prompt"]
         await self._emit_status(
             "planning",
             (
@@ -378,7 +405,7 @@ class AgentOrchestrator:
                     if current_source
                     else "No suitable base model found — start fresh."
                 ),
-                "used": context_used,
+                "inputs": strategy_inputs,
             },
         )
 
@@ -387,7 +414,7 @@ class AgentOrchestrator:
         # repair iteration AND given to the vision verifier, so the generator and
         # the critic evaluate against the same explicit goal.
         recipe_cards = retrieve_recipe_cards(user_message)
-        recipe_context = build_recipe_prompt_context(user_message, recipe_cards)
+        recipe_context = build_combined_recipe_context(user_message, recipe_cards)
         planning_example_context = build_example_bank_prompt_context(
             user_message,
             max_snippets=5,
@@ -408,11 +435,18 @@ class AgentOrchestrator:
             await self._emit_status(
                 "planning",
                 f"Matched {len(recipe_cards)} CAD recipe pattern(s).",
-                details=None,
+                details=(
+                    "Recipes are pre-authored product archetypes shipped with "
+                    "the agent (defined in backend/cad/recipes.py). The retriever "
+                    "scores them against the user prompt and feeds the matches "
+                    "into the planner so it knows what features a typical "
+                    "“phone holder”, “bracket”, etc. needs to include. They are "
+                    "local data, not LLM output."
+                ),
                 data={
                     "sub_stage": "recipes",
                     "rationale": "Grounds the plan in known CAD/product patterns before code generation.",
-                    "used": [f"{card.title} (`{card.recipe_id}`)" for card in recipe_cards],
+                    "found": [f"{card.title} (`{card.recipe_id}`)" for card in recipe_cards],
                     "recipes": [
                         {
                             "recipe_id": card.recipe_id,
@@ -429,11 +463,16 @@ class AgentOrchestrator:
             await self._emit_status(
                 "planning",
                 f"Retrieved {len(example_hits)} local CAD example(s).",
-                details=None,
+                details=(
+                    "Examples are real open-source CadQuery / build123d files "
+                    "cloned under data/cad_sources/. The retriever picks the "
+                    "ones whose path/title best matches the prompt so the "
+                    "planner has concrete code patterns to anchor on."
+                ),
                 data={
                     "sub_stage": "example_bank",
                     "rationale": "Uses local open-source CAD patterns as retrieval context instead of relying only on a small hand-written prompt library.",
-                    "used": [f"{hit.source_kind}: data/cad_sources/{hit.path}" for hit in example_hits],
+                    "found": [f"{hit.source_kind}: data/cad_sources/{hit.path}" for hit in example_hits],
                     "examples": [
                         {
                             "path": hit.path,
@@ -453,7 +492,7 @@ class AgentOrchestrator:
             data={
                 "sub_stage": "plan_drafting",
                 "rationale": "Catches dimensional errors early before writing complex CadQuery code.",
-                "used": context_used + (["research results"] if research_context else []),
+                "inputs": context_used + (["research results"] if research_context else []) + ["user prompt", "retrieved recipes / examples"],
                 # Marks this step as the slot under which streaming planner
                 # reasoning should be shown live.
                 "reasoning_channel": "planning",
@@ -485,13 +524,22 @@ class AgentOrchestrator:
             await self._emit_status(
                 "planning",
                 "Plan is missing required product details — repairing.",
-                details=None,
+                details=(
+                    "A rule-based quality gate compared the planner's output "
+                    "against the retrieved CAD recipe checklist and found gaps. "
+                    "The planner LLM is now asked to rewrite the plan with the "
+                    "missing features filled in. The missing-features list "
+                    "below comes from the rule check; the rewritten plan in the "
+                    "next step is LLM output."
+                ),
                 data={
                     "sub_stage": "plan_repair",
                     "rationale": "A weak plan leads to simplistic geometry, so the plan is repaired before CadQuery code is generated.",
                     "missing_features": list(quality_report.missing_features),
                     "missing_negative_space": list(quality_report.missing_negative_space),
                     "feedback": quality_report.feedback,
+                    "reasoning_channel": "planning",
+                    "in_progress": True,
                 },
             )
             try:
@@ -523,6 +571,9 @@ class AgentOrchestrator:
                         "missing_features": list(quality_report.missing_features),
                         "missing_negative_space": list(quality_report.missing_negative_space),
                         "feedback": quality_report.feedback,
+                        # The LLM did try to repair; surface its post-repair
+                        # summary so the user can see what it returned.
+                        "llm_revised_summary": plan.summary,
                     },
                 )
             else:
@@ -532,7 +583,8 @@ class AgentOrchestrator:
                     details=None,
                     data={
                         "sub_stage": "plan_repair_ok",
-                        "outcome": "The revised plan now satisfies the retrieved CAD recipe checklist.",
+                        "outcome": plan.summary or "The revised plan now satisfies the retrieved CAD recipe checklist.",
+                        "outcome_source": "planner",
                     },
                 )
 

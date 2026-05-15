@@ -984,12 +984,106 @@ body {
   flex-shrink: 0;
 }
 
-.pipeline-step-duration {
+/* "LLM" provenance badge — sits in front of any text block that is pure
+   language-model output (planner, code generator, vision verifier). The
+   tooltip names the specific source. */
+.llm-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: #1d1500;
+  background: linear-gradient(135deg, #f6c454 0%, #e0a040 100%);
+  text-transform: uppercase;
+  flex-shrink: 0;
+  vertical-align: middle;
+  margin-right: 6px;
+  cursor: help;
+  box-shadow: 0 0 0 1px rgba(224, 160, 64, 0.4);
+}
+.plan-card-header .llm-badge,
+.critique-card-header .llm-badge {
+  margin-left: 2px;
+}
+.pipeline-step-rationale .llm-badge,
+.pipeline-step-outcome .llm-badge,
+.plan-card-summary .llm-badge,
+.pipeline-step-reasoning-label .llm-badge,
+.pipeline-step-vision-issues .pipeline-step-section-label .llm-badge {
+  margin-right: 6px;
+}
+
+/* Make sections that opt into a badge align nicely as flex rows. */
+.plan-card-summary {
+  display: flex;
+  gap: 0;
+  align-items: baseline;
+}
+.pipeline-step-rationale,
+.pipeline-step-outcome {
+  display: flex;
+  gap: 0;
+  align-items: baseline;
+}
+.pipeline-step-reasoning-label {
+  display: flex !important;
+  align-items: center;
+  gap: 0;
+}
+.pipeline-step-vision-issues .pipeline-step-section-label {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.pipeline-step-start {
   font-size: 10px;
   color: var(--text-muted);
   font-family: var(--font-mono);
   margin-left: auto;
   flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.pipeline-step-duration {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.pipeline-step-duration-running {
+  color: var(--accent);
+  background: var(--accent-glow);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Larger ticking timer shown under the live step's headline. */
+.pipeline-step-live-timer {
+  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.pipeline-step-live-timer strong {
+  font-weight: 700;
+  font-family: var(--font-mono);
+}
+.pipeline-step-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+  animation: pulse 1.2s infinite;
 }
 
 .pipeline-total-duration {
@@ -997,6 +1091,30 @@ body {
   color: var(--text-muted);
   font-family: var(--font-mono);
   margin-left: 4px;
+}
+
+/* Turn-level start time + live ticker shown in the header. */
+.pipeline-turn-started {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+.pipeline-turn-elapsed {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.pipeline-turn-elapsed-running {
+  color: var(--accent);
+  background: var(--accent-glow);
 }
 
 /* Active step pulse — applied to the icon while a live run is in progress. */

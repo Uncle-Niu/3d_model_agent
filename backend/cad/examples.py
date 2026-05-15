@@ -146,23 +146,19 @@ result = (
 )
 ''',
     },
-    "phone_stand": {
-        "description": "A case-friendly phone holder with angled backrest, split front lip, cable notch, and ribs",
+    "angled_support_stand": {
+        "description": "A generic angled support stand with a base, leaning support, retaining ledge, and ribs",
         "code": '''import cadquery as cq
 
-# Phone holder archetype: base, angled backrest, front retaining lips,
-# center cable gap, side guides, and triangular ribs.
-phone_width = 77.6
-phone_thickness = 8.25
-case_clearance = 3.0
-stand_width = phone_width + 22
+# Generic support stand: base, angled support panel, front ledge,
+# and triangular ribs. Adapt dimensions to the object being supported.
+stand_width = 90
 base_depth = 92
 base_thickness = 5
-back_height = 105
-back_thickness = 6
-lip_height = 17
-lip_depth = phone_thickness + case_clearance + 5
-cable_gap = 24
+support_height = 95
+support_thickness = 6
+ledge_height = 14
+ledge_depth = 16
 fillet_radius = 1.5
 
 base = (
@@ -172,30 +168,20 @@ base = (
     .fillet(4)
 )
 
-backrest = (
+support_panel = (
     cq.Workplane("XY")
-    .box(stand_width - 10, back_thickness, back_height)
-    .translate((0, 18, base_thickness + back_height / 2))
+    .box(stand_width - 10, support_thickness, support_height)
+    .translate((0, 18, base_thickness + support_height / 2))
     .rotate((0, 18, base_thickness), (stand_width, 18, base_thickness), -12)
     .edges()
     .fillet(fillet_radius)
 )
 
-lip_w = (stand_width - cable_gap) / 2
-left_lip = (
+ledge = (
     cq.Workplane("XY")
-    .box(lip_w, lip_depth, lip_height)
-    .translate((-(cable_gap + lip_w) / 2, -base_depth / 2 + lip_depth / 2, base_thickness + lip_height / 2))
+    .box(stand_width - 18, ledge_depth, ledge_height)
+    .translate((0, -base_depth / 2 + ledge_depth / 2, base_thickness + ledge_height / 2))
 )
-right_lip = left_lip.mirror("YZ")
-
-side_guide_w = 5
-left_guide = (
-    cq.Workplane("XY")
-    .box(side_guide_w, lip_depth + 8, lip_height + 7)
-    .translate((-stand_width / 2 + side_guide_w / 2, -base_depth / 2 + lip_depth / 2, base_thickness + (lip_height + 7) / 2))
-)
-right_guide = left_guide.mirror("YZ")
 
 rib_profile = [(0, 0), (32, 0), (32, 45)]
 left_rib = (
@@ -208,9 +194,8 @@ left_rib = (
 right_rib = left_rib.mirror("YZ")
 
 result = (
-    base.union(backrest)
-    .union(left_lip).union(right_lip)
-    .union(left_guide).union(right_guide)
+    base.union(support_panel)
+    .union(ledge)
     .union(left_rib).union(right_rib)
 )
 ''',
