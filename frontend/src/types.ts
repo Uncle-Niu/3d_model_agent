@@ -55,8 +55,14 @@ export interface PipelineStep {
   details?: string;
   data?: {
     why?: string;
+    rationale?: string;
     used?: string[];
     skipped?: string[];
+    outcome?: string;
+    sub_stage?: string;
+    iteration?: number;
+    in_progress?: boolean;
+    reasoning_channel?: string;
     [key: string]: unknown;
   };
   timestamp: string;

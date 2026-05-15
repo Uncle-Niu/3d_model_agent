@@ -971,6 +971,356 @@ body {
   color: var(--text-muted);
 }
 
+/* ---------- New UX additions: sub-stage, duration, in-progress ---------- */
+
+.pipeline-step-substage {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-glow);
+  padding: 1px 6px;
+  border-radius: 10px;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+.pipeline-step-duration {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.pipeline-total-duration {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-left: 4px;
+}
+
+/* Active step pulse — applied to the icon while a live run is in progress. */
+.pipeline-step-icon-running {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 0 0 var(--accent-glow);
+  animation: stepPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes stepPulse {
+  0%   { box-shadow: 0 0 0 0 var(--accent-glow); }
+  60%  { box-shadow: 0 0 0 8px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.pipeline-step-active .pipeline-step-message {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* Body content blocks */
+.pipeline-step-details {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
+.pipeline-step-error {
+  margin: 0;
+  font-size: 10px;
+  color: var(--error);
+  background: rgba(217, 74, 90, 0.08);
+  border: 1px solid rgba(217, 74, 90, 0.25);
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  max-height: 160px;
+  overflow: auto;
+}
+
+.pipeline-step-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.4px;
+  margin-bottom: 4px;
+}
+
+.pipeline-step-missing ul,
+.pipeline-step-research-list,
+.pipeline-step-vision-issues ul {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.pipeline-step-research-list a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.pipeline-step-research-list a:hover { text-decoration: underline; }
+.pipeline-step-research-host {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.pipeline-step-research-snippet {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.pipeline-step-recipes .pipeline-recipe {
+  margin-top: 6px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--radius-sm);
+  border-left: 2px solid var(--accent-dim);
+}
+.pipeline-recipe-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.pipeline-recipe-subsection {
+  font-size: 10px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+.pipeline-recipe-label {
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  font-size: 9px;
+}
+.pipeline-recipe-subsection ul {
+  margin: 2px 0 0 0;
+  padding-left: 14px;
+}
+
+.pipeline-step-feedback {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.pipeline-step-feedback summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+.pipeline-step-feedback pre {
+  margin: 4px 0 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+/* Streaming reasoning inline panel */
+.pipeline-step-reasoning {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.18);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--accent);
+}
+.pipeline-step-reasoning-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--accent);
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.pipeline-step-reasoning-body {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  max-height: 200px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
+/* Iteration grouping */
+.pipeline-iteration-group + .pipeline-iteration-group {
+  margin-top: 8px;
+  border-top: 1px dashed var(--border-subtle);
+  padding-top: 8px;
+}
+.pipeline-iteration-header {
+  margin-bottom: 6px;
+}
+.pipeline-iteration-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: var(--accent-glow);
+  padding: 2px 8px;
+  border-radius: 10px;
+  letter-spacing: 0.5px;
+}
+
+/* ----- Design plan promoted card ----- */
+.plan-card {
+  margin: 0;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.025);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.plan-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.plan-card-icon {
+  font-size: 14px;
+  color: var(--accent);
+}
+.plan-card-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+}
+.plan-card-dims {
+  margin-left: auto;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+.plan-card-summary {
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+.plan-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.plan-card-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.4px;
+  margin-bottom: 4px;
+}
+.plan-card-list {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+.plan-card-list-compact {
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.plan-comp-name { color: var(--text-primary); font-weight: 600; }
+.plan-comp-op { color: var(--accent); font-size: 10px; }
+.plan-comp-meta { color: var(--text-muted); font-size: 10px; }
+.plan-comp-desc { color: var(--text-muted); font-size: 10px; margin-top: 1px; }
+
+/* ----- Vision critique promoted card ----- */
+.critique-card {
+  margin: 0;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.025);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.critique-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.critique-card-icon { font-size: 14px; color: var(--accent); }
+.critique-card-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--accent);
+}
+.critique-card-score {
+  font-size: 12px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--bg-tertiary);
+}
+.critique-card-score.good { color: var(--success); background: rgba(76, 175, 122, 0.12); }
+.critique-card-score.warn { color: var(--warning); background: rgba(224, 160, 64, 0.12); }
+.critique-card-score.bad  { color: var(--error);   background: rgba(217, 74, 90, 0.12); }
+
+.critique-card-intent {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+.critique-card-intent.good { color: var(--success); background: rgba(76, 175, 122, 0.12); }
+.critique-card-intent.bad  { color: var(--error);   background: rgba(217, 74, 90, 0.12); }
+
+.critique-card-issues {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.critique-issue {
+  display: flex;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.2);
+}
+.critique-issue-sev {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  height: fit-content;
+}
+.critique-issue-error .critique-issue-sev   { color: #fff; background: var(--error); }
+.critique-issue-warning .critique-issue-sev { color: #1d1500; background: var(--warning); }
+.critique-issue-info .critique-issue-sev    { color: var(--text-primary); background: var(--bg-tertiary); }
+.critique-issue-type {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.critique-issue-loc { font-size: 10px; color: var(--text-muted); }
+.critique-issue-desc {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }

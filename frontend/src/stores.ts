@@ -69,11 +69,15 @@ export const useChatStore = create<ChatState>((set) => ({
     set({ isGenerating: generating, ...(generating ? { currentSteps: [], streamingReasoning: '' } : { currentStage: '', currentStatus: '', currentSteps: [], streamingReasoning: '' }) }),
 
   setStage: (stage, status, details, data) =>
-    set((s) => ({ 
-      currentStage: stage, 
+    set((s) => ({
+      currentStage: stage,
       currentStatus: status,
+      // Each new step starts its own reasoning window. Without this reset the
+      // planner's accumulated reasoning would bleed into the next stage's
+      // streaming-reasoning panel.
+      streamingReasoning: '',
       currentSteps: [
-        ...s.currentSteps, 
+        ...s.currentSteps,
         { stage, message: status, details, data, timestamp: new Date().toISOString() }
       ]
     })),

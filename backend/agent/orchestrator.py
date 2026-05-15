@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, List, Optional
 import httpx
 
 from ..cad.engine import process_cadquery_code
+from ..cad.example_bank import build_example_bank_prompt_context, retrieve_example_snippets
 from ..cad.recipes import (
     build_recipe_prompt_context,
     retrieve_recipe_cards,
@@ -247,14 +248,15 @@ class AgentOrchestrator:
 
         await self._emit_status(
             "planning",
-            "Preparing modeling context...",
-            details="Gathering project constraints, chat history, and active selection.",
+            "Gathered project context.",
+            details=None,
             data={
-                "rationale": "Ensures the model is grounded in the current project context.",
+                "sub_stage": "context",
+                "rationale": "Grounds the design in this project's constraints, recent chat, and any active selection.",
                 "used": [
-                    f"{len(chat_ctx)} chat messages",
-                    "hard constraints",
-                    "soft constraints",
+                    f"{len(chat_ctx)} prior chat message(s)",
+                    "hard constraints (bounding box, wall thickness)",
+                    "soft constraints (material, finishing preferences)",
                 ],
             },
         )
@@ -262,30 +264,25 @@ class AgentOrchestrator:
         # 2.1 Research step
         citations = []
         research_context = ""
-        await self._emit_status(
-            "planning",
-            "Checking research needs...",
-            details="Determining if external dimensions or hardware standards are required.",
-            data={
-                "rationale": "Only search when technical facts (like bolt sizes) are missing from context.",
-                "used": ["user prompt", "chat history"],
-            },
-        )
         research_decision = await self.llm.decide_research(user_message, chat_ctx)
         if isinstance(research_decision, tuple):
             search_query, research_reasoning = research_decision
         else:
             search_query = research_decision
             research_reasoning = "Research decision did not include detailed reasoning."
+
         if search_query:
-            await self._emit_status("researching", f"Searching for: {search_query}", 
-                                  details=research_reasoning,
-                                  data={
-                                      "rationale": "Need accurate dimensions to ensure standard hardware compatibility.",
-                                      "outcome": f"Research initiated: {search_query}",
-                                      "used": [search_query],
-                                      "why": research_reasoning
-                                  })
+            await self._emit_status(
+                "researching",
+                f"Searching the web: “{search_query}”",
+                details=None,
+                data={
+                    "sub_stage": "search",
+                    "rationale": research_reasoning,
+                    "used": [search_query],
+                    "query": search_query,
+                },
+            )
             search_error = ""
             try:
                 citations = await search_web(search_query)
@@ -293,34 +290,55 @@ class AgentOrchestrator:
                 search_error = str(e)
                 citations = []
 
-            # Create a concise summary of results for the status message
-            results_summary = "No specific specifications found in search snippets."
             if citations:
                 research_context = get_research_prompt_extension(citations)
                 await self._emit_debug("research_result", f"Found {len(citations)} results", {
                     "query": search_query,
-                    "citations": [c.model_dump() for c in citations]
+                    "citations": [c.model_dump() for c in citations],
                 })
-                results_summary = "\n".join([f"- {c.title}: {c.snippet[:100]}..." for c in citations[:3]])
+                await self._emit_status(
+                    "researching",
+                    f"Pulled {len(citations)} reference source(s).",
+                    details=None,
+                    data={
+                        "sub_stage": "results",
+                        "outcome": f"Added {len(citations)} citation(s) into the planning prompt.",
+                        "research_results": [c.model_dump() for c in citations],
+                        "query": search_query,
+                    },
+                )
             elif search_error:
-                results_summary = f"Search failed: {search_error}. This usually means a search provider ratelimit; the design will proceed with default assumptions."
-                
-            await self._emit_status("researching", "Web research complete.",
-                                  details=f"Retrieved {len(citations)} external specifications for the design.\n\n{results_summary}",
-                                  data={
-                                      "outcome": f"Found {len(citations)} relevant sources." if citations else ("Search error" if search_error else "No relevant sources found."),
-                                      "research_results": [c.model_dump() for c in citations],
-                                      "error": search_error
-                                  })
+                await self._emit_status(
+                    "researching",
+                    "Web search failed — continuing without external sources.",
+                    details=None,
+                    data={
+                        "sub_stage": "error",
+                        "outcome": "The search provider returned an error (often a DuckDuckGo ratelimit). The plan will rely on internal context and reasonable defaults.",
+                        "error": search_error,
+                        "query": search_query,
+                    },
+                )
+            else:
+                await self._emit_status(
+                    "researching",
+                    f"No results matched “{search_query}”.",
+                    details=None,
+                    data={
+                        "sub_stage": "no_results",
+                        "outcome": "Web search returned zero results. Continuing with internal context only.",
+                        "query": search_query,
+                    },
+                )
         else:
             await self._emit_status(
                 "planning",
-                "Skipping web research.",
-                details=research_reasoning,
+                "Skipped web research.",
+                details=None,
                 data={
-                    "rationale": "Internal context is sufficient for this design.",
-                    "outcome": "No external research required.",
-                    "why": research_reasoning,
+                    "sub_stage": "research_skipped",
+                    "rationale": research_reasoning,
+                    "outcome": "Internal context is sufficient — no external lookup needed.",
                     "skipped": ["web search"],
                 },
             )
@@ -346,11 +364,20 @@ class AgentOrchestrator:
             context_used.append(f"{len(citations)} research citation(s)")
         await self._emit_status(
             "planning",
-            "Modeling strategy selected.",
-            details="Determined whether to edit a checkpoint or start a new part.",
+            (
+                "Strategy: edit existing checkpoint."
+                if current_source
+                else "Strategy: build a new model from scratch."
+            ),
+            details=None,
             data={
-                "rationale": "Minimizes unnecessary geometry changes by reusing relevant base models.",
-                "outcome": f"Generate new model from scratch" if not current_source else f"Modify existing checkpoint `{current_model_id}`",
+                "sub_stage": "strategy",
+                "rationale": "Reuses existing geometry when relevant; otherwise starts fresh.",
+                "outcome": (
+                    f"Modify checkpoint `{current_model_id}`."
+                    if current_source
+                    else "No suitable base model found — start fresh."
+                ),
                 "used": context_used,
             },
         )
@@ -361,27 +388,76 @@ class AgentOrchestrator:
         # the critic evaluate against the same explicit goal.
         recipe_cards = retrieve_recipe_cards(user_message)
         recipe_context = build_recipe_prompt_context(user_message, recipe_cards)
+        planning_example_context = build_example_bank_prompt_context(
+            user_message,
+            max_snippets=5,
+            cadquery_only=False,
+        )
+        code_example_context = build_example_bank_prompt_context(
+            user_message,
+            max_snippets=5,
+            cadquery_only=True,
+        )
+        planning_reference_context = "\n\n".join(
+            part for part in [recipe_context, planning_example_context] if part
+        )
+        generation_reference_context = "\n\n".join(
+            part for part in [recipe_context, code_example_context] if part
+        )
         if recipe_cards:
             await self._emit_status(
                 "planning",
-                "Retrieved CAD recipe patterns.",
-                details=(
-                    "Matched product archetypes: "
-                    + ", ".join(f"{card.title} (`{card.recipe_id}`)" for card in recipe_cards)
-                ),
+                f"Matched {len(recipe_cards)} CAD recipe pattern(s).",
+                details=None,
                 data={
+                    "sub_stage": "recipes",
                     "rationale": "Grounds the plan in known CAD/product patterns before code generation.",
-                    "used": [card.recipe_id for card in recipe_cards],
+                    "used": [f"{card.title} (`{card.recipe_id}`)" for card in recipe_cards],
+                    "recipes": [
+                        {
+                            "recipe_id": card.recipe_id,
+                            "title": card.title,
+                            "required_features": list(card.required_features),
+                            "negative_space_features": list(card.negative_space_features),
+                        }
+                        for card in recipe_cards
+                    ],
+                },
+            )
+        example_hits = retrieve_example_snippets(user_message, max_snippets=5, cadquery_only=False)
+        if example_hits:
+            await self._emit_status(
+                "planning",
+                f"Retrieved {len(example_hits)} local CAD example(s).",
+                details=None,
+                data={
+                    "sub_stage": "example_bank",
+                    "rationale": "Uses local open-source CAD patterns as retrieval context instead of relying only on a small hand-written prompt library.",
+                    "used": [f"{hit.source_kind}: data/cad_sources/{hit.path}" for hit in example_hits],
+                    "examples": [
+                        {
+                            "path": hit.path,
+                            "title": hit.title,
+                            "source_kind": hit.source_kind,
+                            "score": hit.score,
+                        }
+                        for hit in example_hits
+                    ],
                 },
             )
 
         await self._emit_status(
             "planning",
-            "Developing design plan...",
-            details="Decomposing request into shapes, dimensions, and manufacturing features.",
+            "Developing the design plan…",
+            details=None,
             data={
+                "sub_stage": "plan_drafting",
                 "rationale": "Catches dimensional errors early before writing complex CadQuery code.",
                 "used": context_used + (["research results"] if research_context else []),
+                # Marks this step as the slot under which streaming planner
+                # reasoning should be shown live.
+                "reasoning_channel": "planning",
+                "in_progress": True,
             },
         )
 
@@ -395,7 +471,7 @@ class AgentOrchestrator:
                 current_source=current_source,
                 current_model_id=current_model_id,
                 research_context=research_context,
-                recipe_context=recipe_context,
+                recipe_context=planning_reference_context,
                 hard_constraints=config.hard_constraints,
                 soft_constraints=config.soft_constraints,
                 on_chunk=_plan_chunk,
@@ -408,12 +484,14 @@ class AgentOrchestrator:
         if not quality_report.is_sufficient:
             await self._emit_status(
                 "planning",
-                "Plan is missing required product details.",
-                details=quality_report.feedback,
+                "Plan is missing required product details — repairing.",
+                details=None,
                 data={
+                    "sub_stage": "plan_repair",
                     "rationale": "A weak plan leads to simplistic geometry, so the plan is repaired before CadQuery code is generated.",
                     "missing_features": list(quality_report.missing_features),
                     "missing_negative_space": list(quality_report.missing_negative_space),
+                    "feedback": quality_report.feedback,
                 },
             )
             try:
@@ -425,7 +503,7 @@ class AgentOrchestrator:
                     current_source=current_source,
                     current_model_id=current_model_id,
                     research_context=research_context,
-                    recipe_context=recipe_context,
+                    recipe_context=planning_reference_context,
                     hard_constraints=config.hard_constraints,
                     soft_constraints=config.soft_constraints,
                     on_chunk=_plan_chunk,
@@ -437,20 +515,25 @@ class AgentOrchestrator:
             if not quality_report.is_sufficient:
                 await self._emit_status(
                     "planning",
-                    "Plan still has gaps; continuing with explicit recipe constraints.",
-                    details=quality_report.feedback,
+                    "Plan still has gaps — proceeding with explicit recipe constraints.",
+                    details=None,
                     data={
+                        "sub_stage": "plan_repair_partial",
                         "rationale": "Proceeding keeps the pipeline usable, but code generation and vision critique will still receive the recipe checklist.",
                         "missing_features": list(quality_report.missing_features),
                         "missing_negative_space": list(quality_report.missing_negative_space),
+                        "feedback": quality_report.feedback,
                     },
                 )
             else:
                 await self._emit_status(
                     "planning",
-                    "Plan repaired with required product details.",
-                    details="The revised plan now satisfies the retrieved CAD recipe checklist.",
-                    data={"outcome": "Plan quality gate passed after repair."},
+                    "Plan repair passed quality gate.",
+                    details=None,
+                    data={
+                        "sub_stage": "plan_repair_ok",
+                        "outcome": "The revised plan now satisfies the retrieved CAD recipe checklist.",
+                    },
                 )
 
         await self._emit_plan(plan)
@@ -466,21 +549,24 @@ class AgentOrchestrator:
         })
 
         plan_text = plan_to_prompt_text(plan)
-        
-        # Build a clean design plan summary for the UI
-        comp_parts = [f"- {c.name}: {c.description}" for c in plan.components] if plan.components else ["- (No specific components listed)"]
-        component_list = "\n".join(comp_parts)
-        goal_text = plan.summary if plan.summary else "Generate a valid CAD model based on the prompt."
-        # Use plain text as UI doesn't render markdown here
-        plan_details = f"Goal: {goal_text}\n\nComponents:\n{component_list}"
-        
+
+        # Headline: prefer the planner's own one-line summary so the user can
+        # read the plan goal directly without expanding the row. All structured
+        # fields go into `data` so the frontend's PlanArtifacts card can render
+        # them properly (with newlines preserved, etc.).
+        goal_text = plan.summary or "Plan ready for code generation."
         await self._emit_status(
             "planning",
-            "Design plan finalized.",
-            details=plan_details,
+            f"Design plan ready · {goal_text}",
+            details=None,
             data={
-                "outcome": plan.summary or "Plan ready for code generation.",
+                "sub_stage": "plan_ready",
+                # Match the frontend PlanArtifacts contract — `summary` is the
+                # canonical key for the design goal. (`plan_summary` is kept as
+                # an alias for any legacy debug consumers.)
+                "summary": plan.summary,
                 "plan_summary": plan.summary,
+                "overall_dimensions_mm": plan.overall_dimensions_mm,
                 "raw_reasoning": plan.raw_reasoning,
                 "components": [c.model_dump() for c in plan.components],
                 "key_features": plan.key_features,
@@ -507,34 +593,48 @@ class AgentOrchestrator:
 
                 # ── Step A: Generate or Repair code ──────────────────────────
                 if iteration == 1:
-                    await self._emit_status("generating", "Writing CadQuery code...", 
-                                          details=f"Synthesizing Python source for iteration {iteration} (`{model_id}`).",
+                    await self._emit_status("generating", f"Writing CadQuery code (`{model_id}`)…",
+                                          details=None,
                                           data={
-                                              "rationale": "CadQuery allows parametric control over mechanical geometry.",
+                                              "iteration": iteration,
+                                              "rationale": "CadQuery lets us control mechanical geometry parametrically.",
                                               "used": context_used + ["CadQuery API", "design plan"],
-                                              "model_id": model_id
+                                              "model_id": model_id,
+                                              "reasoning_channel": "generating",
+                                              "in_progress": True,
                                           })
                     last_code = await self._generate_code_streaming(
                         user_message, system_prompt, chat_ctx,
                         current_source, base_model_id, selection,
                         research_context=research_context,
-                        recipe_context=recipe_context,
+                        recipe_context=generation_reference_context,
                         project_id=project_id,
                         plan_text=plan_text,
                     )
                 elif last_critique and last_critique.issues:
                     # Vision-driven repair
-                    await self._emit_status("repairing", 
-                        f"Vision-driven repair (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS})...",
-                        details=f"The vision AI identified {len(last_critique.issues)} issues. Attempting repair in `{model_id}`.",
+                    await self._emit_status("repairing",
+                        f"Repairing for vision feedback (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS}) · `{model_id}`",
+                        details=None,
                         data={
+                            "iteration": iteration,
+                            "repair_kind": "vision",
                             "rationale": "The rendered model passed execution but did not meet the visual/printability quality threshold.",
-                            "outcome": f"Initiated repair for {len(last_critique.issues)} vision issues.",
+                            "outcome": f"Fixing {len(last_critique.issues)} vision issue(s).",
                             "used": [
                                 f"vision score {last_critique.overall_printability:.2f}",
                                 f"{len(last_critique.issues)} critique issue(s)",
                             ],
-                            "model_id": model_id
+                            "vision_issues": [
+                                {
+                                    "severity": i.severity,
+                                    "issue_type": i.issue_type,
+                                    "description": i.description,
+                                    "location_hint": i.location_hint,
+                                }
+                                for i in last_critique.issues
+                            ],
+                            "model_id": model_id,
                         })
                     repair_prompt = self._build_vision_repair_prompt(
                         last_code,
@@ -542,7 +642,7 @@ class AgentOrchestrator:
                         user_message,
                         iteration,
                         plan_text=plan_text,
-                        recipe_context=recipe_context,
+                        recipe_context=generation_reference_context,
                     )
                     await self._emit_debug("repair_request", f"Vision repair attempt {iteration}", {
                         "score": last_critique.overall_printability,
@@ -560,13 +660,19 @@ class AgentOrchestrator:
                     last_code = extract_code_from_response(repair_response)
                 else:
                     # Execution-error repair
-                    await self._emit_status("repairing", 
-                        f"Repairing code (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS})...",
-                        details="The previous code failed with an execution error. Analyzing traceback to correct the logic.",
+                    failure_label = (last_failure_type or "execution_error").replace("_", " ")
+                    err_first = last_error.splitlines()[0][:120] if last_error else "previous attempt failed"
+                    await self._emit_status("repairing",
+                        f"Repairing {failure_label} (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS}) · `{model_id}`",
+                        details=None,
                         data={
+                            "iteration": iteration,
+                            "repair_kind": "execution",
                             "rationale": "The previous generated source did not produce valid geometry, so the next LLM call is constrained by the failure.",
-                            "outcome": "Initiated syntax/logic repair.",
-                            "used": [last_failure_type or "execution_error", last_error.splitlines()[0] if last_error else "previous failure"],
+                            "outcome": f"Trying to fix: {err_first}",
+                            "used": [last_failure_type or "execution_error", err_first],
+                            "error_excerpt": (last_error[:600] if last_error else None),
+                            "model_id": model_id,
                         })
                     await self._emit_debug("repair_request", f"Error repair attempt {iteration}", {
                         "original_code": last_code, "error_message": last_error[:500],
@@ -608,11 +714,13 @@ class AgentOrchestrator:
                 consecutive_empty = 0
 
                 # ── Step B: Execute CadQuery ──────────────────────────────────
-                await self._emit_status("executing", "Executing geometry engine...",
-                                      details="Running script to produce 3D B-Rep (Boundary Representation) solids.",
+                await self._emit_status("executing", "Running the geometry engine…",
+                                      details=None,
                                       data={
-                                          "rationale": "Validation requires checking if the source produces manifold geometry.",
+                                          "iteration": iteration,
+                                          "rationale": "Builds the 3D B-Rep solids and checks they are manifold.",
                                           "used": ["CadQuery source"],
+                                          "in_progress": True,
                                       })
                 
                 model_dir = self.storage.create_model_dir(project_id, model_id)
@@ -661,17 +769,26 @@ class AgentOrchestrator:
                     current_model_id = model_id # Track latest WIP
                     
                     # Notify UI of WIP model even if it failed, so source is visible
-                    await self._emit_status("executing", f"Execution failed: {exec_result.get('message', 'unknown error')}",
-                                          details="Checking code for errors and preparing repair...",
-                                          data={"model_id": model_id})
+                    msg_first = (exec_result.get("message") or "unknown error").splitlines()[0][:160]
+                    await self._emit_status("failed", f"Execution failed: {msg_first}",
+                                          details=None,
+                                          data={
+                                              "iteration": iteration,
+                                              "model_id": model_id,
+                                              "failure_type": last_failure_type,
+                                              "error_excerpt": (last_error[:600] if last_error else None),
+                                              "outcome": "Will retry with a code-repair pass.",
+                                          })
                     continue
 
                 # ── Step C: Success! Render and Critique ──────────────────────
-                await self._emit_status("tessellating", "Generating 3D preview...",
-                                      details="Converting B-Rep solids to GLB mesh for browser display.",
+                await self._emit_status("tessellating", "Building 3D preview mesh…",
+                                      details=None,
                                       data={
-                                          "rationale": "Mesh-based rendering is faster for interactive viewing.",
+                                          "iteration": iteration,
+                                          "rationale": "Convert B-Rep solids to a GLB mesh so the browser can render the model.",
                                           "used": ["B-Rep solids"],
+                                          "in_progress": True,
                                       })
                 
                 preliminary_metadata = ModelMetadata(
@@ -717,15 +834,17 @@ class AgentOrchestrator:
                     critique = await self._run_vision_critique(
                         render_paths, user_message, geometry_stats, project_id, model_id,
                         plan=plan,
-                        recipe_context=recipe_context,
+                        recipe_context=planning_reference_context,
                     )
                 elif render_paths:
                     await self._emit_status(
                         "critiquing",
-                        "Skipping vision critique.",
-                        details="Vision model (Ollama) is disconnected or unavailable.",
+                        "Skipped vision critique — verifier unavailable.",
+                        details=None,
                         data={
-                            "rationale": "Proceeding with geometric validation only to avoid blocking.",
+                            "iteration": iteration,
+                            "rationale": "Proceeding with geometric validation only so the run isn't blocked.",
+                            "outcome": "Vision model (Ollama) is disconnected or unavailable.",
                             "skipped": ["vision-based verification"],
                         },
                     )
@@ -929,8 +1048,13 @@ class AgentOrchestrator:
         return extract_code_from_response(full_response)
 
     async def _run_render(self, shape, model_dir) -> Dict[str, str]:
-        await self._emit_status("rendering", "Generating multi-angle renders...",
-                              details="Capturing high-resolution snapshots from multiple angles (ISO, Top, Front, Side) for vision analysis.")
+        await self._emit_status("rendering", "Rendering ISO / Top / Front / Side views…",
+                              details=None,
+                              data={
+                                  "rationale": "Multi-angle snapshots feed the vision verifier.",
+                                  "used": ["3D shape"],
+                                  "in_progress": True,
+                              })
         try:
             from ..render.renderer import render_shape_multiangle
             result = await asyncio.get_event_loop().run_in_executor(
@@ -949,8 +1073,13 @@ class AgentOrchestrator:
         plan: Optional[DesignPlan] = None,
         recipe_context: str = "",
     ) -> Optional[CritiqueReport]:
-        await self._emit_status("critiquing", "Analyzing geometry with vision AI...",
-                              details="Running a multi-modal LLM over the rendered images. The verifier is given the plan's key-features checklist and must explicitly mark each present/missing.")
+        await self._emit_status("critiquing", "Vision verifier reviewing the renders…",
+                              details=None,
+                              data={
+                                  "rationale": "A multimodal LLM scores each plan key-feature as present / missing.",
+                                  "used": [f"{len(render_paths)} render(s)", "design plan checklist"],
+                                  "in_progress": True,
+                              })
         try:
             critic = VisionCritic()
             available, _ = await critic.is_available()
@@ -971,6 +1100,15 @@ class AgentOrchestrator:
                 "raw_response_preview": (critique_result.raw_response or "")[:1500],
             })
             if not critique_result.success:
+                await self._emit_status(
+                    "critiquing",
+                    "Vision verifier returned no usable feedback — continuing.",
+                    details=None,
+                    data={
+                        "outcome": critique_result.message or "Verifier output could not be parsed.",
+                        "skipped": ["vision repair"],
+                    },
+                )
                 return None
 
             report = critique_result.report
@@ -984,6 +1122,35 @@ class AgentOrchestrator:
 
             report.repair_prompt = critique_result.repair_prompt
             report.matches_intent = critique_result.matches_intent
+
+            # Surface a follow-up step with the verifier's findings so the
+            # timeline shows *why* (or whether) a repair is about to fire.
+            score = report.overall_printability
+            n_errors = sum(1 for i in report.issues if i.severity == "error")
+            n_warnings = sum(1 for i in report.issues if i.severity == "warning")
+            matches = "✓ matches intent" if critique_result.matches_intent else "✗ does NOT match intent"
+            headline = f"Vision score {score:.2f} · {matches} · {n_errors} error(s), {n_warnings} warning(s)"
+            await self._emit_status(
+                "critiquing",
+                headline,
+                details=None,
+                data={
+                    "outcome": (report.repair_prompt or "")[:300] or None,
+                    "vision_score": score,
+                    "matches_intent": critique_result.matches_intent,
+                    "issue_counts": {"error": n_errors, "warning": n_warnings, "info": max(0, len(report.issues) - n_errors - n_warnings)},
+                    "vision_issues": [
+                        {
+                            "severity": i.severity,
+                            "issue_type": i.issue_type,
+                            "description": i.description,
+                            "location_hint": i.location_hint,
+                        }
+                        for i in report.issues
+                    ],
+                },
+            )
+
             return report
         except Exception as e:
             await self._emit_debug("vision_error", str(e))

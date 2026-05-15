@@ -26,6 +26,24 @@ reasoning, CadQuery execution, multi-angle renders, vision critique with
 checklist, and any repair iterations. `--keep` preserves the temp directory so
 you can inspect `renders/*.png` and `metadata.json` afterwards.
 
+## Restore local CAD example banks
+
+The agent uses cloned open-source CAD repositories under `data/cad_sources/` as
+a local RAG/reference bank. `data/` is gitignored, so run this on a new machine:
+
+```
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap_cad_sources.ps1
+```
+
+To update already-cloned banks:
+
+```
+powershell -ExecutionPolicy Bypass -File scripts/bootstrap_cad_sources.ps1 -Update
+```
+
+These repos are reference-only prompt context; generated code still runs in the
+normal CadQuery sandbox.
+
 ## Env vars
 
 - `LLM_MODEL` / `VISION_MODEL` — defaults to `qwen3.6:27b`. Both code-gen and
