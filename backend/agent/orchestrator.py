@@ -440,7 +440,7 @@ class AgentOrchestrator:
                     "the agent (defined in backend/cad/recipes.py). The retriever "
                     "scores them against the user prompt and feeds the matches "
                     "into the planner so it knows what features a typical "
-                    "“phone holder”, “bracket”, etc. needs to include. They are "
+                    "product class or mechanical archetype needs to include. They are "
                     "local data, not LLM output."
                 ),
                 data={

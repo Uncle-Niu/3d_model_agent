@@ -176,10 +176,22 @@ function DesignPlanCard({ data }: PlanArtifactProps) {
   const risks = Array.isArray(data.risks) ? (data.risks as string[]) : null;
   const parameters = (data.parameters && typeof data.parameters === 'object')
     ? (data.parameters as Record<string, unknown>) : null;
+  const rawReasoning = typeof data.raw_reasoning === 'string' ? data.raw_reasoning : null;
 
   const dimText = dims
     ? Object.entries(dims).map(([k, v]) => `${k}: ${v} mm`).join(' · ')
     : null;
+
+  // Whether the planner produced any structured content. If everything is
+  // empty, the card shows an explicit "empty plan" notice with the raw
+  // reasoning (if any) so the user isn't left wondering what happened.
+  const hasStructuredContent = !!(
+    (components && components.length > 0) ||
+    (keyFeatures && keyFeatures.length > 0) ||
+    (parameters && Object.keys(parameters).length > 0) ||
+    (assumptions && assumptions.length > 0) ||
+    (risks && risks.length > 0)
+  );
 
   return (
     <div className="plan-card">
@@ -189,10 +201,36 @@ function DesignPlanCard({ data }: PlanArtifactProps) {
         <LLMBadge source="planner" />
         {dimText && <span className="plan-card-dims">{dimText}</span>}
       </div>
-      {summary && (
+      {summary ? (
         <div className="plan-card-summary">
           <LLMBadge source="planner" />
           <span>{summary}</span>
+        </div>
+      ) : (
+        <div className="plan-card-summary plan-card-summary-empty">
+          <span>(planner did not return a summary)</span>
+        </div>
+      )}
+
+      {!hasStructuredContent && (
+        <div className="plan-card-empty">
+          <div className="plan-card-empty-title">
+            Planner did not return a structured plan.
+          </div>
+          <div className="plan-card-empty-body">
+            No components, key features, or parameters were emitted. The
+            agent will proceed using the recipe checklist and the raw
+            reasoning below (if any) as a fallback.
+          </div>
+          {rawReasoning && (
+            <details className="plan-card-raw-reasoning">
+              <summary>
+                <LLMBadge source="planner" />
+                <span>Show planner's raw reasoning</span>
+              </summary>
+              <pre>{rawReasoning}</pre>
+            </details>
+          )}
         </div>
       )}
 
@@ -349,8 +387,17 @@ function PipelineStepRow({
 
   const rationale = typeof data.rationale === 'string' ? data.rationale : (typeof data.why === 'string' ? data.why : null);
   const outcome = typeof data.outcome === 'string' ? data.outcome : null;
-  const usedInputs = Array.isArray(data.used) ? data.used : null;
-  const skipped = Array.isArray(data.skipped) ? data.skipped : null;
+  // Three semantically distinct list fields:
+  //   - inputs: context fed into this step (agent-side bookkeeping)
+  //   - found:  things this step retrieved / discovered (data sources)
+  //   - skipped: things this step deliberately did not use
+  const inputs = Array.isArray(data.inputs)
+    ? (data.inputs as string[])
+    : Array.isArray(data.used)
+    ? (data.used as string[])
+    : null;
+  const found = Array.isArray(data.found) ? (data.found as string[]) : null;
+  const skipped = Array.isArray(data.skipped) ? (data.skipped as string[]) : null;
   const errorExcerpt = typeof data.error_excerpt === 'string' ? data.error_excerpt
     : typeof data.error === 'string' ? data.error : null;
   const feedback = typeof data.feedback === 'string' ? data.feedback : null;
@@ -359,6 +406,17 @@ function PipelineStepRow({
   const researchResults = Array.isArray(data.research_results) ? (data.research_results as Array<Record<string, string>>) : null;
   const visionIssues = Array.isArray(data.vision_issues) ? (data.vision_issues as VisionIssue[]) : null;
   const recipes = Array.isArray(data.recipes) ? (data.recipes as Array<Record<string, unknown>>) : null;
+  const plannerIntent = typeof data.planner_intent === 'string' ? data.planner_intent : null;
+  const llmRevisedSummary = typeof data.llm_revised_summary === 'string' ? data.llm_revised_summary : null;
+
+  // Explicit per-field source overrides emitted by the orchestrator. These
+  // take priority over the heuristic functions (rationaleSource / outcomeSource).
+  const rationaleSrc = (typeof data.rationale_source === 'string'
+    ? (data.rationale_source as 'agent' | 'planner' | 'vision')
+    : rationaleSource(step));
+  const outcomeSrc = (typeof data.outcome_source === 'string'
+    ? (data.outcome_source as 'agent' | 'planner' | 'vision')
+    : outcomeSource(step));
 
   // The headline is the message. Long content lives in `details` (multiline
   // OK — rendered with pre-wrap) and in the structured `data` fields.
@@ -408,28 +466,59 @@ function PipelineStepRow({
       </div>
 
       <div className="pipeline-step-content">
-        <button
-          type="button"
-          className="pipeline-step-headline"
+        <div
+          className={`pipeline-step-headline${hasDetails ? ' pipeline-step-headline-clickable' : ''}`}
           onClick={hasDetails ? onToggle : undefined}
-          aria-expanded={isExpanded}
-          disabled={!hasDetails}
+          role={hasDetails ? 'button' : undefined}
+          aria-expanded={hasDetails ? isExpanded : undefined}
+          tabIndex={hasDetails ? 0 : -1}
+          onKeyDown={hasDetails
+            ? (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onToggle();
+                }
+              }
+            : undefined}
         >
           <span className="pipeline-step-stage">{meta.label}</span>
           {subStageLabel && <span className="pipeline-step-substage">{subStageLabel}</span>}
-          <span className="pipeline-step-message">{headline}</span>
+          {/* The message text is wrapped in its own selectable span so the
+              user can highlight / copy it without the parent's click handler
+              swallowing the drag. The headline's click handler still toggles
+              expansion when the user actually clicks (no drag). */}
+          <span
+            className="pipeline-step-message"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            {headline}
+          </span>
           {startLabel && (
-            <span className="pipeline-step-start" title={startTitle}>{startLabel}</span>
+            <span className="pipeline-step-start" title={startTitle}>
+              <span className="pipeline-step-start-icon" aria-hidden="true">↦</span>
+              {startLabel}
+            </span>
           )}
           {durationLabel && (
-            <span className={`pipeline-step-duration${isRunning ? ' pipeline-step-duration-running' : ''}`}>
+            <span
+              className={`pipeline-step-duration${isRunning ? ' pipeline-step-duration-running' : ''}`}
+              title={isRunning ? 'How long this step has been running' : 'How long this step took'}
+            >
+              <span className="pipeline-step-duration-icon" aria-hidden="true">⏱</span>
               {durationLabel}
             </span>
           )}
           {hasDetails && (
-            <span className="pipeline-step-chevron" aria-hidden="true">{isExpanded ? '▾' : '▸'}</span>
+            <button
+              type="button"
+              className="pipeline-step-chevron-btn"
+              onClick={(e) => { e.stopPropagation(); onToggle(); }}
+              aria-label={isExpanded ? 'Collapse details' : 'Expand details'}
+            >
+              {isExpanded ? '▾' : '▸'}
+            </button>
           )}
-        </button>
+        </div>
 
         {/* While the step is the live current one, show a larger ticking
             timer below the headline as well, so the user gets a clear
@@ -461,27 +550,50 @@ function PipelineStepRow({
             )}
 
             {rationale && (
-              <p className="pipeline-step-rationale">
-                {rationaleSource(step) === 'planner' && <LLMBadge source="planner" />}
+              <p className={`pipeline-step-rationale pipeline-step-rationale-${rationaleSrc}`}>
+                {rationaleSrc !== 'agent' && <LLMBadge source={rationaleSrc} />}
                 <span>{rationale}</span>
               </p>
             )}
 
-            {outcome && (() => {
-              const src = outcomeSource(step);
-              return (
-                <p className="pipeline-step-outcome">
-                  {src !== 'agent' && <LLMBadge source={src} />}
-                  <span>{outcome}</span>
-                </p>
-              );
-            })()}
+            {plannerIntent && (
+              <p className="pipeline-step-planner-intent">
+                <LLMBadge source="planner" />
+                <span>{plannerIntent}</span>
+              </p>
+            )}
 
-            {(usedInputs && usedInputs.length > 0) && (
-              <p className="pipeline-step-used">Used: {joinNicely(usedInputs)}</p>
+            {outcome && (
+              <p className={`pipeline-step-outcome pipeline-step-outcome-${outcomeSrc}`}>
+                {outcomeSrc !== 'agent' && <LLMBadge source={outcomeSrc} />}
+                <span>{outcome}</span>
+              </p>
+            )}
+
+            {llmRevisedSummary && (
+              <div className="pipeline-step-revised-summary">
+                <div className="pipeline-step-section-label">
+                  <LLMBadge source="planner" />
+                  <span>Planner's rewritten summary</span>
+                </div>
+                <div className="pipeline-step-revised-summary-body">{llmRevisedSummary}</div>
+              </div>
+            )}
+
+            {(inputs && inputs.length > 0) && (
+              <p className="pipeline-step-inputs" title="Context the agent passed into this step">
+                <span className="pipeline-step-list-label">Inputs:</span> {joinNicely(inputs)}
+              </p>
+            )}
+            {(found && found.length > 0) && (
+              <p className="pipeline-step-found" title="What this step retrieved or discovered">
+                <span className="pipeline-step-list-label">Found:</span> {joinNicely(found)}
+              </p>
             )}
             {(skipped && skipped.length > 0) && (
-              <p className="pipeline-step-skipped">Skipped: {joinNicely(skipped)}</p>
+              <p className="pipeline-step-skipped" title="What this step deliberately did not use">
+                <span className="pipeline-step-list-label">Skipped:</span> {joinNicely(skipped)}
+              </p>
             )}
 
             {errorExcerpt && (

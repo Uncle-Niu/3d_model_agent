@@ -74,14 +74,14 @@ def test_bracket_plan_accepts_reinforced_mount_with_holes():
             ),
             DesignComponent(
                 name="mounting_holes",
-                description="through holes and counterbores for fastener interfaces",
+                description="mounting holes, through holes, slots, and counterbores for fastener interfaces",
                 primitive="cylinder",
                 dimensions={"diameter": 5, "counterbore_diameter": 9},
                 operation="cut",
             ),
             DesignComponent(
                 name="stress_relief_fillets",
-                description="fillets and chamfers at stress concentrations",
+                description="fillets and chamfers at stress concentrations and thickened junctions",
                 primitive="fillet",
                 dimensions={"radius": 1.5},
                 operation="fillet",
@@ -135,11 +135,11 @@ def test_combined_recipe_context_exists_without_static_match():
     assert "mating clearances" in context
 
 
-def test_phone_prompt_uses_adaptive_recipe_not_static_phone_card():
+def test_benchmark_holder_prompt_uses_adaptive_recipe_not_exact_static_card():
     cards = retrieve_recipe_cards("Generate a model for iPhone 16 Pro Max holder")
     context = build_combined_recipe_context("Generate a model for iPhone 16 Pro Max holder", cards)
 
-    assert all(card.recipe_id != "phone_holder_desktop" for card in cards)
+    assert all("phone" not in card.recipe_id and "phone" not in card.title.lower() for card in cards)
     assert "Adaptive CAD Recipe Synthesis" in context
     assert "retention geometry" in context
     assert "load-bearing reinforcement" in context

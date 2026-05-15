@@ -166,6 +166,12 @@ RECIPES: tuple[CadRecipe, ...] = (
         ),
         cadquery_patterns=("body.faces('>Z').shell(-wall)", "body.cut(inner_cavity)"),
         validation_rules=("A tray must have an open usable volume, not a solid block.",),
+        feature_keywords={
+            "outer tray body with stable bottom": ("outer", "tray", "body", "stable", "bottom"),
+            "raised perimeter walls with printable wall thickness": ("raised", "perimeter", "walls", "wall", "thickness"),
+            "rounded internal and external corners": ("rounded", "fillet", "corner", "corners"),
+            "open cavity or compartments cut/shelled from the body": ("open", "cavity", "compartment", "compartments", "shell", "shelled", "cut"),
+        },
     ),
     CadRecipe(
         recipe_id="bracket_or_mount",
@@ -191,6 +197,13 @@ RECIPES: tuple[CadRecipe, ...] = (
         ),
         cadquery_patterns=(".pushPoints(points).hole(diameter)", "profile.polyline(...).extrude(width)"),
         validation_rules=("A mount without fastener features is usually incomplete.",),
+        feature_keywords={
+            "primary load-bearing plate or body": ("primary", "load", "bearing", "plate", "body"),
+            "mounting holes or fastener interfaces": ("mounting", "holes", "hole", "fastener", "interfaces"),
+            "ribs/gussets or thickened junctions for stiffness": ("ribs", "rib", "gussets", "gusset", "thickened", "junction", "stiffness"),
+            "fillets/chamfers at stress concentrations": ("fillets", "fillet", "chamfers", "chamfer", "stress", "concentrations"),
+            "through holes, slots, or counterbores for fasteners": ("through", "holes", "slots", "counterbores", "fasteners", "cut"),
+        },
     ),
     CadRecipe(
         recipe_id="enclosure",
@@ -217,6 +230,15 @@ RECIPES: tuple[CadRecipe, ...] = (
         ),
         cadquery_patterns=("body.faces('>Z').shell(-wall)", "boss.faces('>Z').workplane().hole(screw_d)"),
         validation_rules=("A solid box is not a usable enclosure.",),
+        feature_keywords={
+            "outer shell with named wall thickness": ("outer", "shell", "wall", "thickness"),
+            "open cavity or removable lid strategy": ("open", "cavity", "removable", "lid"),
+            "mounting bosses or board standoffs when electronics are implied": ("mounting", "bosses", "boss", "board", "standoffs", "electronics"),
+            "ports/cutouts for connectors when applicable": ("ports", "port", "cutouts", "connector", "connectors"),
+            "edge fillets/chamfers": ("edge", "fillets", "fillet", "chamfers", "chamfer"),
+            "internal cavity created by shell or boolean cut": ("internal", "cavity", "shell", "boolean", "cut"),
+            "connector/port cutouts when requested": ("connector", "port", "cutouts", "cut"),
+        },
     ),
 )
 

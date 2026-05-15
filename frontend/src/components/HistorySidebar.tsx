@@ -115,13 +115,21 @@ export default function HistorySidebar({
                 const isFailed = !!v.failure_type;
                 const isWip = !isFinal;
                 const isActive = v.model_id === currentModelId;
+                // Short badge labels — full text moves to the tooltip.
                 const labelText = isFailed
-                  ? 'Failed iteration'
+                  ? `Failed #${v.iteration}`
                   : isFinal
                   ? 'Final'
                   : v.has_glb
-                  ? `WIP iter ${v.iteration}`
-                  : `WIP iter ${v.iteration} (no geometry)`;
+                  ? `WIP #${v.iteration}`
+                  : `WIP #${v.iteration} ∅`;
+                const labelTitle = isFailed
+                  ? `Failed iteration ${v.iteration}`
+                  : isFinal
+                  ? 'Final accepted model'
+                  : v.has_glb
+                  ? `Work-in-progress iteration ${v.iteration}`
+                  : `Work-in-progress iteration ${v.iteration} — no geometry produced`;
                 const labelClass = isFailed
                   ? 'is-failed'
                   : isFinal
@@ -135,7 +143,7 @@ export default function HistorySidebar({
                   >
                     <div className="sidebar-item-main">
                       <div className="version-row">
-                        <span className={`version-badge ${labelClass}`} title={labelText}>
+                        <span className={`version-badge ${labelClass}`} title={labelTitle}>
                           {labelText}
                         </span>
                         <span className="version-id" title={v.model_id}>#{shortId(v.model_id)}</span>

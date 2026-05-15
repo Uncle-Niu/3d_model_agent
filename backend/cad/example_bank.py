@@ -44,8 +44,6 @@ CAD_KEYWORDS = {
 }
 
 QUERY_EXPANSIONS = {
-    "iphone": {"phone", "holder", "stand", "dock", "case"},
-    "phone": {"holder", "stand", "dock", "cradle", "case"},
     "holder": {"stand", "mount", "clip", "bracket", "support", "cradle"},
     "mount": {"bracket", "support", "plate", "holes", "fastener"},
     "bracket": {"mount", "support", "holes", "gusset", "rib"},

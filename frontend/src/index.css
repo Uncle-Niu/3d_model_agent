@@ -825,14 +825,43 @@ body {
   width: 100%;
   background: transparent;
   border: none;
-  padding: 0;
+  padding: 4px 0;
   text-align: left;
-  cursor: pointer;
   color: var(--text-primary);
+  /* The headline is a div now, not a button. Text inside it (especially the
+     message span) must remain selectable so users can copy step messages. */
+  -webkit-user-select: text;
+  user-select: text;
 }
-.pipeline-step-headline:disabled { cursor: default; }
-.pipeline-step-headline:hover:not(:disabled) .pipeline-step-message {
+.pipeline-step-headline-clickable {
+  cursor: pointer;
+}
+.pipeline-step-headline-clickable:hover .pipeline-step-message {
   color: var(--accent-hover);
+}
+/* The message span explicitly opts into text selection — overriding any
+   parent that might disable it. */
+.pipeline-step-message {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+/* Chevron button is the explicit clickable affordance and stops the parent
+   click from racing with the text-selection mouseup. */
+.pipeline-step-chevron-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+.pipeline-step-chevron-btn:hover {
+  color: var(--accent);
+  background: var(--accent-glow);
 }
 
 .pipeline-step-stage {
@@ -881,12 +910,52 @@ body {
   line-height: 1.5;
 }
 
-/* Level 2: Rationale / Internal Logic (Accent color, Normal weight) */
+/* Level 2: Rationale / Internal Logic.
+   Two distinct styles:
+   - .pipeline-step-rationale-agent  →  orchestrator's own explanation of why
+     this step exists. Rendered as a quiet quoted note: indented, muted gray,
+     no italics. Visually different from anything the LLM wrote.
+   - .pipeline-step-rationale-planner / -vision  →  reasoning text that came
+     directly from an LLM. Italic, accent-blue, with an LLM badge in front.
+*/
 .pipeline-step-rationale {
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  margin: 0;
+}
+.pipeline-step-rationale-agent {
+  font-style: normal;
+  color: var(--text-muted);
+  border-left: 2px solid var(--border);
+  padding: 2px 0 2px 8px;
+  background: transparent;
+  font-family: var(--font-main);
+}
+.pipeline-step-rationale-agent::before {
+  content: 'why: ';
+  font-weight: 700;
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-right: 4px;
+  opacity: 0.7;
+}
+.pipeline-step-rationale-planner,
+.pipeline-step-rationale-vision {
+  font-style: italic;
   color: var(--accent-dim);
+}
+/* Planner-intent block: same family as planner rationale (LLM text). */
+.pipeline-step-planner-intent {
+  margin: 0;
   font-size: 11px;
   font-style: italic;
-  font-weight: 500;
+  color: var(--accent-dim);
+  display: flex;
+  gap: 0;
+  align-items: baseline;
 }
 
 .pipeline-step-combined {
@@ -922,12 +991,39 @@ body {
 }
 
 .pipeline-step-used,
+.pipeline-step-inputs,
+.pipeline-step-found,
 .pipeline-step-skipped {
   margin: 0;
   font-size: 10px;
   font-family: var(--font-mono);
   color: var(--text-muted);
-  opacity: 0.8;
+  opacity: 0.9;
+  line-height: 1.5;
+}
+.pipeline-step-list-label {
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  font-size: 9px;
+  margin-right: 4px;
+  color: var(--text-muted);
+}
+.pipeline-step-inputs .pipeline-step-list-label { color: #8aa0c0; }
+.pipeline-step-found  .pipeline-step-list-label { color: #7fbf8f; }
+.pipeline-step-skipped .pipeline-step-list-label { color: var(--warning); }
+
+.pipeline-step-revised-summary {
+  background: rgba(246, 196, 84, 0.06);
+  border-left: 3px solid #e0a040;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+}
+.pipeline-step-revised-summary-body {
+  font-size: 11px;
+  color: var(--text-primary);
+  line-height: 1.5;
+  margin-top: 4px;
 }
 
 .pipeline-step-message-full {
@@ -1039,28 +1135,48 @@ body {
   gap: 0;
 }
 
+/* Start-offset chip ("+27.2s"): muted, no background — clearly secondary.
+   Means "this step began this far into the turn". */
 .pipeline-step-start {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: 10px;
   color: var(--text-muted);
   font-family: var(--font-mono);
   margin-left: auto;
   flex-shrink: 0;
-  opacity: 0.85;
+  opacity: 0.7;
+}
+.pipeline-step-start-icon {
+  font-size: 9px;
+  opacity: 0.6;
 }
 
+/* Duration chip ("2.3s" or "running 5.1s"): bordered pill — clearly distinct
+   from the start offset. Means "this step took / is taking this long". */
 .pipeline-step-duration {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: 10px;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-family: var(--font-mono);
   flex-shrink: 0;
-  padding: 1px 6px;
+  padding: 1px 7px;
   border-radius: 8px;
+  border: 1px solid var(--border-subtle);
   background: rgba(255, 255, 255, 0.04);
+  font-variant-numeric: tabular-nums;
+}
+.pipeline-step-duration-icon {
+  font-size: 9px;
+  opacity: 0.7;
 }
 .pipeline-step-duration-running {
   color: var(--accent);
   background: var(--accent-glow);
-  font-variant-numeric: tabular-nums;
+  border-color: var(--accent-dim);
 }
 
 /* Larger ticking timer shown under the live step's headline. */
@@ -1323,6 +1439,48 @@ body {
   font-size: 12px;
   color: var(--text-primary);
   line-height: 1.5;
+}
+.plan-card-summary-empty {
+  font-style: italic;
+  color: var(--text-muted);
+}
+.plan-card-empty {
+  padding: 10px 12px;
+  background: rgba(224, 160, 64, 0.06);
+  border: 1px dashed rgba(224, 160, 64, 0.35);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.plan-card-empty-title {
+  color: var(--warning);
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.plan-card-raw-reasoning {
+  margin-top: 8px;
+}
+.plan-card-raw-reasoning > summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.plan-card-raw-reasoning > pre {
+  margin: 6px 0 0 0;
+  padding: 8px;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  font-family: var(--font-mono);
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
 }
 .plan-card-grid {
   display: grid;
