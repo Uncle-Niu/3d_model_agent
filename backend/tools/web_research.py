@@ -6,7 +6,6 @@ Provides search capabilities using DuckDuckGo.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 from duckduckgo_search import DDGS
 from ..domain.models import SearchResult, WebSearchProvider
 

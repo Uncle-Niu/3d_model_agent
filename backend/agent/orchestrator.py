@@ -7,10 +7,8 @@ reusable, structured generation workflow.
 
 import asyncio
 import inspect
-import json
 import time
 import traceback
-from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
@@ -24,9 +22,6 @@ from ..domain.models import (
     GeometryStats,
     ModelMetadata,
     SelectionContext,
-    HardConstraints,
-    SoftConstraints,
-    SearchResult,
     PipelineStep,
 )
 from ..models.llm_service import (
@@ -150,7 +145,7 @@ class AgentOrchestrator:
         """Check if the vision model is available and working."""
         from ..vision.critic import VisionCritic
         critic = VisionCritic()
-        await self._emit_debug("vision", f"Checking vision model availability...")
+        await self._emit_debug("vision", "Checking vision model availability...")
         available, error = await critic.is_available()
         if not available:
             await self._emit_debug("vision_warning", f"Vision model not available: {error}")
@@ -430,7 +425,7 @@ class AgentOrchestrator:
                     # Execution-error repair
                     await self._emit_status("repairing", 
                         f"Repairing code (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS})...",
-                        details=f"The previous code failed with an execution error. Analyzing traceback to correct the logic.",
+                        details="The previous code failed with an execution error. Analyzing traceback to correct the logic.",
                         data={
                             "why": "The previous generated source did not produce valid geometry, so the next LLM call is constrained by the failure.",
                             "used": [last_failure_type or "execution_error", last_error.splitlines()[0] if last_error else "previous failure"],
@@ -812,7 +807,8 @@ class AgentOrchestrator:
         try:
             critic = VisionCritic()
             available, _ = await critic.is_available()
-            if not available: return None
+            if not available:
+                return None
 
             critique_result = await critic.critique(render_paths, user_intent, geometry_stats, plan=plan)
             await self._emit_debug("vision_response", "Vision critique response received", {
@@ -821,7 +817,8 @@ class AgentOrchestrator:
                 "matches_intent": critique_result.matches_intent,
                 "raw_response_preview": (critique_result.raw_response or "")[:1500],
             })
-            if not critique_result.success: return None
+            if not critique_result.success:
+                return None
 
             report = critique_result.report
             render_urls = {

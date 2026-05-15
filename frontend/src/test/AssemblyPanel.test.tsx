@@ -70,14 +70,14 @@ describe('AssemblyPanel', () => {
     const partA = await screen.findByText('PartA');
     expect(partA).toBeDefined();
     expect(screen.getByText('PartB')).toBeDefined();
-    expect(screen.getByText('10.5g')).toBeDefined();
+    expect(screen.getByText('10.5 g')).toBeDefined();
   });
 
   it('toggles part visibility', async () => {
     render(<AssemblyPanel />);
     fireEvent.click(screen.getByText('Assembly'));
     
-    const visibilityBtn = await screen.findAllByTitle('Hide Part');
+    const visibilityBtn = await screen.findAllByTitle('Hide part');
     fireEvent.click(visibilityBtn[0]);
     
     expect(mockToggleVisibility).toHaveBeenCalledWith('PartA');

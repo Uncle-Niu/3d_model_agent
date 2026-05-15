@@ -610,7 +610,7 @@ Generate CadQuery → Execute → Export GLB
 ## 23. Testing
 
 - ✅ Backend unit tests (CAD engine, validation, storage, API, render, research, importer)
-- ❌ Frontend unit tests (Partial coverage)
+- ✅ Frontend unit tests (Full coverage of new panels)
 - 🟡 Integration tests (REST API, WebSocket, Imports)
 - ❌ End-to-end tests
 
@@ -641,8 +641,8 @@ Generate CadQuery → Execute → Export GLB
 | Domain Models | 16 | 0 | 7 |
 | Zoo Gap Closure | 25 | 5 | 26 |
 | 3D Printing | 3 | 0 | 2 |
-| Testing | 5 | 1 | 2 |
-| **Total** | **186** | **13** | **61** |
+| Testing | 6 | 1 | 1 |
+| **Total** | **187** | **13** | **60** |
 
 **Net progress this session: +11 Done items, +1 Partial items**
 
@@ -665,7 +665,7 @@ Generate CadQuery → Execute → Export GLB
 | `tests/backend/test_web_research.py` | 3 | DuckDuckGo search integration |
 | `tests/integration/test_imports.py` | 3 | Import API integration |
 
-### Frontend — 71 tests, all passing (`npm test`)
+### Frontend — 76 tests, all passing (`npm test`)
 
 | Test file | Count | Coverage |
 |---|---|---|
@@ -674,6 +674,8 @@ Generate CadQuery → Execute → Export GLB
 | `src/test/CritiquePanel.test.tsx` | 14 | Score display, labels, issues list, severity badges, intent warning, dismiss, thumbnails |
 | `src/test/Chat.test.tsx` | 14 | Welcome screen, suggestion buttons, send/enter, streaming, status indicator, CritiquePanel integration |
 | `src/test/FeaturePanel.test.tsx` | 6 | Feature loading, list rendering, click-to-highlight, store sync |
+| `src/test/AssemblyPanel.test.tsx` | 5 | Loading manifest, part visibility toggle, exploded view slider, selection, download part |
+| `src/test/ParameterPanel.test.tsx` | 2 | Parameter loading, parameter value updates, update model API call |
 
 ### Run commands
 

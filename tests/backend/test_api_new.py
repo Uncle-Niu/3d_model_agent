@@ -46,7 +46,7 @@ result = cq.Workplane().box(length, width, 10)
     assert resp.status_code == 200
     features = resp.json()
     assert len(features) >= 1
-    assert features[0]["name"] == "part"
+    assert features[0]["name"] == "box_1"
 
 
 def test_update_parameters(client):

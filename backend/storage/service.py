@@ -219,17 +219,27 @@ class StorageService:
 
     def get_model_parameters(self, project_id: str, model_id: str) -> list[dict]:
         """Load editable parameters for a model."""
-        path = self.projects_dir / project_id / "models" / model_id / "parameters.json"
-        if not path.exists():
+        path = self.projects_dir / project_id / "models" / model_id / "feature_manifest.json"
+        if path.exists():
+            data = self._read_json(path)
+            return data.get("parameters", [])
+        
+        legacy_path = self.projects_dir / project_id / "models" / model_id / "parameters.json"
+        if not legacy_path.exists():
             return []
-        return self._read_json(path)
+        return self._read_json(legacy_path)
 
     def get_model_features(self, project_id: str, model_id: str) -> list[dict]:
         """Load feature manifest for a model."""
-        path = self.projects_dir / project_id / "models" / model_id / "features.json"
-        if not path.exists():
+        path = self.projects_dir / project_id / "models" / model_id / "feature_manifest.json"
+        if path.exists():
+            data = self._read_json(path)
+            return data.get("features", [])
+        
+        legacy_path = self.projects_dir / project_id / "models" / model_id / "features.json"
+        if not legacy_path.exists():
             return []
-        return self._read_json(path)
+        return self._read_json(legacy_path)
 
     def get_model_assembly(self, project_id: str, model_id: str) -> dict:
         """Load assembly manifest for a model."""

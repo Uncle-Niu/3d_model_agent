@@ -128,6 +128,7 @@ describe('Chat component', () => {
     useCritiqueStore.getState().setCritique({
       score: 0.75, matchesIntent: true, issues: [], renderUrls: {},
     });
+    useChatStore.getState().setGenerating(true);
     render(<Chat onSend={() => {}} />);
     expect(screen.getByText(/Vision Critique/i)).toBeInTheDocument();
   });

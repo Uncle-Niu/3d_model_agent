@@ -32,7 +32,7 @@ import logging
 import os
 import re
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -584,7 +584,7 @@ class VisionCritic:
             if not parsed:
                 return VisionCritiqueResult(
                     success=False,
-                    message=f"Failed to parse vision model response (no usable signal recovered)",
+                    message="Failed to parse vision model response (no usable signal recovered)",
                     raw_response=raw_text,
                 )
 

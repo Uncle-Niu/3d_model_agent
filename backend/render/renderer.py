@@ -19,7 +19,6 @@ Each view is saved as a PNG file in the model's renders/ subdirectory.
 
 from __future__ import annotations
 
-import io
 import math
 import traceback
 from dataclasses import dataclass, field
@@ -78,7 +77,7 @@ def _render_with_trimesh(
     """
     try:
         import trimesh  # type: ignore
-        import numpy as np
+        
 
         mesh = trimesh.load(str(stl_path), force="mesh")
         if mesh is None or (hasattr(mesh, "is_empty") and mesh.is_empty):
@@ -93,7 +92,7 @@ def _render_with_trimesh(
         # 1. Try VTK first — best quality, works headless on Windows
         try:
             return _render_vtk(stl_path, output_dir, real_extents=real_extents)
-        except Exception as e:
+        except Exception:
             # Fall through to next renderer
             pass
 
@@ -382,7 +381,6 @@ def _annotate_render(
 def _render_pyrender(mesh, output_dir: Path, real_extents: Optional[tuple[float, float, float]] = None) -> dict[str, str]:
     """Render with pyrender headless renderer."""
     import pyrender  # type: ignore
-    import trimesh
     import numpy as np
 
     renders: dict[str, str] = {}
@@ -465,7 +463,7 @@ def _render_pyrender(mesh, output_dir: Path, real_extents: Optional[tuple[float,
     return renders
 
 
-def _compute_face_shading(mesh, light_dir=(0.5, -0.3, 0.85)) -> "np.ndarray":
+def _compute_face_shading(mesh, light_dir=(0.5, -0.3, 0.85)):
     """Per-face brightness from a single directional light (range 0..1).
 
     Used to produce flat-shaded faces that read clearly for a VLM without the
@@ -486,7 +484,7 @@ def _extract_feature_edges(mesh, angle_deg: float = 25.0):
     informative (corners, hole boundaries) instead of visually noisy."""
     import numpy as np
     try:
-        adjacency = mesh.face_adjacency                  # (M, 2) face index pairs
+        _ = mesh.face_adjacency                  # (M, 2) face index pairs
         adj_angles = mesh.face_adjacency_angles           # (M,) radians
         adj_edges = mesh.face_adjacency_edges             # (M, 2) vertex index pairs
         threshold = np.deg2rad(angle_deg)
@@ -636,7 +634,7 @@ class RenderService:
         except RuntimeError as e:
             # trimesh not installed
             return RenderResult(success=False, message=str(e))
-        except Exception as e:
+        except Exception:
             return RenderResult(
                 success=False,
                 message=f"Rendering failed: {traceback.format_exc()}",

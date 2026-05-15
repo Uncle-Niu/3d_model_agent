@@ -45,8 +45,10 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
     # Callbacks for the orchestrator
     async def on_status(stage: str, message: str, details: Optional[str] = None, data: Optional[dict] = None):
         payload = {"type": "status", "stage": stage, "message": message}
-        if details: payload["details"] = details
-        if data: payload["data"] = data
+        if details:
+            payload["details"] = details
+        if data:
+            payload["data"] = data
         await ws.send_text(json.dumps(payload))
 
     async def on_chunk(content: str):

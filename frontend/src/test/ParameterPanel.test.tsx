@@ -70,7 +70,7 @@ describe('ParameterPanel', () => {
     const lengthInput = screen.getByLabelText('length') as HTMLInputElement;
     fireEvent.change(lengthInput, { target: { value: '200' } });
 
-    const updateBtn = screen.getByText('Update Model');
+    const updateBtn = screen.getByText('Update model');
     expect(updateBtn.hasAttribute('disabled')).toBe(false);
 
     fireEvent.click(updateBtn);

@@ -5,7 +5,6 @@ Handles STEP, STL, and GLB imports and conversions.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Optional
 import uuid
@@ -13,7 +12,6 @@ import shutil
 import cadquery as cq
 import trimesh
 
-from ..domain.models import GeometryStats
 from .engine import export_glb
 
 def import_file(
@@ -34,7 +32,6 @@ def import_file(
     
     # Copy original file
     dest_path = import_dir / file_path.name
-    import shutil
     shutil.copy2(file_path, dest_path)
     
     result = {

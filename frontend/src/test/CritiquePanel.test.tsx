@@ -66,7 +66,7 @@ describe('CritiquePanel', () => {
       score: 0.70, matchesIntent: true, issues: [], renderUrls: {},
     });
     render(<CritiquePanel />);
-    expect(screen.getByText('Needs Improvement')).toBeInTheDocument();
+    expect(screen.getByText('Needs improvement')).toBeInTheDocument();
   });
 
   it('shows "Poor" label for score < 0.65', () => {

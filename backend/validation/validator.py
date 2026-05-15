@@ -12,7 +12,6 @@ All checks use CadQuery + OpenCascade (OCC) APIs — no external tools.
 from __future__ import annotations
 
 import math
-import traceback
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -21,8 +20,7 @@ import cadquery as cq
 from ..domain.models import (
     HardConstraints, 
     ManufacturabilityIssue, 
-    ManufacturabilityReport,
-    GeometryStats
+    ManufacturabilityReport
 )
 
 

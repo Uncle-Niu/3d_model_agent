@@ -483,14 +483,6 @@ async def get_model_source(project_id: str, model_id: str, request: Request):
         filename=f"{model_id}_source.py",
     )
 
-
-    return FileResponse(
-        path=str(file_path),
-        media_type="image/png",
-        filename=f"{model_id}_{view_name}.png",
-    )
-
-
 @router.get("/projects/{project_id}/models/{model_id}/renders/{view_name}")
 async def get_model_render(project_id: str, model_id: str, view_name: str, request: Request):
     """Get a rendered PNG image for a model (iso, front, right, top)."""

@@ -11,9 +11,7 @@ Responsibilities:
 from __future__ import annotations
 
 import ast
-import io
 import json
-import tempfile
 import traceback
 from pathlib import Path
 from typing import Any, Optional
@@ -48,7 +46,6 @@ def _restricted_import(name, *args, **kwargs):
     allowed_modules = {"cadquery", "math"}
     if name in allowed_modules:
         # Return the module from globals if available
-        import sys
         if name == "cadquery":
             import cadquery
             return cadquery
@@ -437,7 +434,7 @@ def process_cadquery_code(
 
     # 3. Enhanced geometry validation
     try:
-        from ..validation.validator import validate_geometry_enhanced, compute_geometry_analysis
+        from ..validation.validator import validate_geometry_enhanced
         from ..domain.models import AssemblyManifest, AssemblyPart
 
         assembly_parts = []

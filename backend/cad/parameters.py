@@ -3,7 +3,7 @@ Module for extracting and injecting editable parameters from CadQuery source cod
 """
 
 import ast
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List
 from ..domain.models import CadParameter, CadFeature
 
 
