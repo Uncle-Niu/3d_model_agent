@@ -28,6 +28,7 @@ export const useProjectStore = create<ProjectState>((set) => ({
 interface ChatState {
   messages: ChatMessage[];
   streamingContent: string;
+  streamingReasoning: string;
   isGenerating: boolean;
   currentStage: string;
   currentStatus: string;
@@ -35,6 +36,7 @@ interface ChatState {
   setMessages: (messages: ChatMessage[]) => void;
   addMessage: (msg: ChatMessage) => void;
   appendStreamChunk: (chunk: string) => void;
+  appendReasoningChunk: (chunk: string) => void;
   clearStream: () => void;
   setGenerating: (generating: boolean) => void;
   setStage: (stage: string, status: string, details?: string, data?: any) => void;
@@ -44,6 +46,7 @@ interface ChatState {
 export const useChatStore = create<ChatState>((set) => ({
   messages: [],
   streamingContent: '',
+  streamingReasoning: '',
   isGenerating: false,
   currentStage: '',
   currentStatus: '',
@@ -57,10 +60,13 @@ export const useChatStore = create<ChatState>((set) => ({
   appendStreamChunk: (chunk) =>
     set((s) => ({ streamingContent: s.streamingContent + chunk })),
 
-  clearStream: () => set({ streamingContent: '' }),
+  appendReasoningChunk: (chunk) =>
+    set((s) => ({ streamingReasoning: s.streamingReasoning + chunk })),
+
+  clearStream: () => set({ streamingContent: '', streamingReasoning: '' }),
 
   setGenerating: (generating) =>
-    set({ isGenerating: generating, ...(generating ? { currentSteps: [] } : { currentStage: '', currentStatus: '', currentSteps: [] }) }),
+    set({ isGenerating: generating, ...(generating ? { currentSteps: [], streamingReasoning: '' } : { currentStage: '', currentStatus: '', currentSteps: [], streamingReasoning: '' }) }),
 
   setStage: (stage, status, details, data) =>
     set((s) => ({ 

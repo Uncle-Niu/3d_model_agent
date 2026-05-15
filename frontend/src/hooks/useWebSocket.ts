@@ -80,10 +80,22 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
       case 'status':
         console.log(`[WS] Status: ${msg.stage} — ${msg.message}`);
         chat.setStage(msg.stage, msg.message, msg.details, msg.data);
+        if (msg.data?.model_id) {
+          viewport.setModel(
+            msg.data.model_id as string,
+            null, // No GLB yet
+            projectId || '',
+            { isWip: true }
+          );
+        }
         break;
 
       case 'llm_chunk':
         chat.appendStreamChunk(msg.content);
+        break;
+
+      case 'reasoning_chunk':
+        chat.appendReasoningChunk(msg.content);
         break;
 
       case 'model_ready':

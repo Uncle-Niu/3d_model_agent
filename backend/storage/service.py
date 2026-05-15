@@ -404,6 +404,27 @@ class StorageService:
         thread_dir.mkdir(parents=True, exist_ok=True)
         self._write_json(thread_dir / f"{thread_id}.json", thread)
 
+    def update_last_chat_thread_message(self, project_id: str, thread_id: str, message: ChatMessage) -> None:
+        """Overwrite the last message in a chat thread (useful for streaming progress)."""
+        if thread_id == "legacy":
+            chat_path = self.projects_dir / project_id / "chat_history.json"
+            if chat_path.exists():
+                history = self._read_json(chat_path)
+                if history:
+                    history[-1] = message.model_dump(mode="json")
+                    self._write_json(chat_path, history)
+            return
+
+        thread = self.get_chat_thread(project_id, thread_id)
+        if not thread or not thread.get("messages"):
+            return
+
+        thread["messages"][-1] = message.model_dump(mode="json")
+        thread["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        path = self.projects_dir / project_id / "chat_threads" / f"{thread_id}.json"
+        self._write_json(path, thread)
+
     def rename_chat_thread(self, project_id: str, thread_id: str, title: str) -> dict | None:
         """Rename a chat thread."""
         thread = self.get_chat_thread(project_id, thread_id)

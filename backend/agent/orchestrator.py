@@ -74,9 +74,31 @@ class AgentOrchestrator:
         self.MAX_REPAIR_ITERATIONS = 5
         self.VISION_SCORE_THRESHOLD = 0.65
 
+        # Per-run context
+        self._current_project_id: Optional[str] = None
+        self._current_thread_id: Optional[str] = None
+
     async def _emit_status(self, stage: str, message: str, details: Optional[str] = None, data: Optional[Dict] = None):
         step = PipelineStep(stage=stage, message=message, details=details, data=data)
         self.current_steps.append(step)
+        
+        # Incremental persistence
+        if self._current_project_id and self._current_thread_id:
+            try:
+                # Update the last message (which we ensure is the assistant's placeholder)
+                # with the latest steps.
+                self.storage.update_last_chat_thread_message(
+                    self._current_project_id, 
+                    self._current_thread_id,
+                    ChatMessage(
+                        role="assistant",
+                        content="Generating model...", # Placeholder content
+                        steps=self.current_steps
+                    )
+                )
+            except Exception:
+                pass
+        
         if self.on_status:
             await self.on_status(stage, message, details, data)
 
@@ -203,6 +225,16 @@ class AgentOrchestrator:
             )
             return None
 
+        # 1.5 Prepare Storage and Placeholder
+        self._current_project_id = project_id
+        self._current_thread_id = thread_id
+        
+        # Add placeholder assistant message so we can update it incrementally
+        self.storage.append_chat_thread_message(
+            project_id, thread_id,
+            ChatMessage(role="assistant", content="Starting generation...", steps=[])
+        )
+
         # 2. Prepare Context
         system_prompt = build_system_prompt(config.hard_constraints, config.soft_constraints)
         history = self.storage.get_chat_thread_messages(project_id, thread_id)
@@ -234,36 +266,42 @@ class AgentOrchestrator:
                 "used": ["user prompt", "chat history"],
             },
         )
-        search_query = await self.llm.decide_research(user_message, chat_ctx)
+        search_query, research_reasoning = await self.llm.decide_research(user_message, chat_ctx)
         if search_query:
             await self._emit_status("researching", f"Searching for: {search_query}", 
-                                  details="Fetching external technical specifications and standards.",
+                                  details=research_reasoning,
                                   data={
                                       "rationale": "Need accurate dimensions to ensure standard hardware compatibility.",
                                       "outcome": f"Research initiated: {search_query}",
                                       "used": [search_query],
+                                      "why": research_reasoning
                                   })
             citations = await search_web(search_query)
+            # Create a concise summary of results for the status message
+            results_summary = "No specific specifications found in search snippets."
             if citations:
                 research_context = get_research_prompt_extension(citations)
                 await self._emit_debug("research_result", f"Found {len(citations)} results", {
                     "query": search_query,
                     "citations": [c.model_dump() for c in citations]
                 })
-                await self._emit_status("researching", "Web research complete.",
-                                      details="Retrieved external specifications for the design.",
-                                      data={
-                                          "outcome": f"Found {len(citations)} relevant sources.",
-                                          "research_results": [c.model_dump() for c in citations]
-                                      })
+                results_summary = "\n".join([f"- {c.title}: {c.snippet[:100]}..." for c in citations[:3]])
+                
+            await self._emit_status("researching", "Web research complete.",
+                                  details=f"Retrieved {len(citations)} external specifications for the design.\n\n{results_summary}",
+                                  data={
+                                      "outcome": f"Found {len(citations)} relevant sources." if citations else "No relevant sources found.",
+                                      "research_results": [c.model_dump() for c in citations]
+                                  })
         else:
             await self._emit_status(
                 "planning",
                 "Skipping web research.",
-                details="Request can be handled using existing project context.",
+                details=research_reasoning,
                 data={
                     "rationale": "Internal context is sufficient for this design.",
                     "outcome": "No external research required.",
+                    "why": research_reasoning,
                     "skipped": ["web search"],
                 },
             )
@@ -343,13 +381,19 @@ class AgentOrchestrator:
         })
 
         plan_text = plan_to_prompt_text(plan)
-        plan_summary_for_status = plan.summary or (plan_text.splitlines()[0] if plan_text else "")
+        
+        # Build a clean design plan summary for the UI
+        comp_parts = [f"- {c.name}: {c.description}" for c in plan.components] if plan.components else ["- (No specific components listed)"]
+        component_list = "\n".join(comp_parts)
+        goal_text = plan.summary if plan.summary else "Generate a valid CAD model based on the prompt."
+        plan_details = f"**Goal:** {goal_text}\n\n**Components:**\n{component_list}"
+        
         await self._emit_status(
             "planning",
             "Design plan finalized.",
-            details="The agent has finished the step-by-step geometry breakdown.",
+            details=plan_details,
             data={
-                "outcome": plan_summary_for_status or "Plan ready for code generation.",
+                "outcome": plan.summary or "Plan ready for code generation.",
                 "plan_summary": plan.summary,
                 "raw_reasoning": plan.raw_reasoning,
                 "components": [c.model_dump() for c in plan.components],
@@ -371,17 +415,22 @@ class AgentOrchestrator:
         # 3. Iterative Loop
         for iteration in range(1, self.MAX_REPAIR_ITERATIONS + 1):
             try:
+                # Generate the model ID for this iteration early
+                model_id = self.storage.next_model_id(project_id)
+                current_model_id = model_id
+
                 # ── Step A: Generate or Repair code ──────────────────────────
                 if iteration == 1:
                     await self._emit_status("generating", "Writing CadQuery code...", 
-                                          details="Synthesizing Python source based on design plan and constraints.",
+                                          details=f"Synthesizing Python source for iteration {iteration} (`{model_id}`).",
                                           data={
                                               "rationale": "CadQuery allows parametric control over mechanical geometry.",
                                               "used": context_used + ["CadQuery API", "design plan"],
+                                              "model_id": model_id
                                           })
                     last_code = await self._generate_code_streaming(
                         user_message, system_prompt, chat_ctx,
-                        current_source, current_model_id, selection,
+                        current_source, base_model_id, selection,
                         research_context=research_context,
                         project_id=project_id,
                         plan_text=plan_text,
@@ -390,7 +439,7 @@ class AgentOrchestrator:
                     # Vision-driven repair
                     await self._emit_status("repairing", 
                         f"Vision-driven repair (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS})...",
-                        details=f"The vision AI identified {len(last_critique.issues)} issues in the previous rendering. Attempting to fix geometry or printability faults.",
+                        details=f"The vision AI identified {len(last_critique.issues)} issues. Attempting repair in `{model_id}`.",
                         data={
                             "rationale": "The rendered model passed execution but did not meet the visual/printability quality threshold.",
                             "outcome": f"Initiated repair for {len(last_critique.issues)} vision issues.",
@@ -398,6 +447,7 @@ class AgentOrchestrator:
                                 f"vision score {last_critique.overall_printability:.2f}",
                                 f"{len(last_critique.issues)} critique issue(s)",
                             ],
+                            "model_id": model_id
                         })
                     repair_prompt = self._build_vision_repair_prompt(
                         last_code, last_critique, user_message, iteration, plan_text=plan_text
@@ -473,7 +523,6 @@ class AgentOrchestrator:
                                           "used": ["CadQuery source"],
                                       })
                 
-                model_id = self.storage.next_model_id(project_id)
                 model_dir = self.storage.create_model_dir(project_id, model_id)
 
                 t_exec_start = time.time()
@@ -517,6 +566,12 @@ class AgentOrchestrator:
                         turn_index=turn_index,
                     )
                     self.storage.save_model_metadata(project_id, metadata)
+                    current_model_id = model_id # Track latest WIP
+                    
+                    # Notify UI of WIP model even if it failed, so source is visible
+                    await self._emit_status("executing", f"Execution failed: {exec_result.message}", 
+                                          details="Checking code for errors and preparing repair...",
+                                          data={"model_id": model_id})
                     continue
 
                 # ── Step C: Success! Render and Critique ──────────────────────
@@ -643,7 +698,9 @@ class AgentOrchestrator:
 
                 # Final Success Response
                 response_text = self._build_final_response(model_id, iteration, exec_result, critique, vision_score, repair_notes)
-                self.storage.append_chat_thread_message(
+                
+                # Use update instead of append because we already have a placeholder
+                self.storage.update_last_chat_thread_message(
                     project_id, thread_id,
                     ChatMessage(
                         role="assistant",
@@ -663,7 +720,7 @@ class AgentOrchestrator:
                     return None
 
         # If loop finished without success
-        self._save_failure_chat(project_id, thread_id, model_id)
+        self._save_failure_chat(project_id, thread_id, current_model_id)
         return None
 
     async def _generate_code_streaming(
@@ -903,7 +960,8 @@ class AgentOrchestrator:
         return f"✓ Model generated (`{mid}`, attempt {iter}).{size_text}{m_text}{critique_text}{repair_text}"
 
     def _save_failure_chat(self, pid, tid, mid=None):
-        self.storage.append_chat_thread_message(
+        # Use update instead of append because we already have a placeholder
+        self.storage.update_last_chat_thread_message(
             pid, tid,
             ChatMessage(
                 role="assistant",

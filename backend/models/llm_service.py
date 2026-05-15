@@ -494,35 +494,53 @@ class LLMService:
         plan.raw_text = combined
         return plan
 
-    async def decide_research(self, user_message: str, chat_history: Optional[list[dict]] = None) -> Optional[str]:
+    async def decide_research(self, user_message: str, chat_history: Optional[list[dict]] = None) -> tuple[Optional[str], str]:
         """
         Decide if web research is needed for the user's request.
-        Returns a search query if research is needed, otherwise None.
+        Returns (search_query, reasoning). query is None if no research needed.
         """
         prompt = f"""\
 You are an expert mechanical engineer. Analyze the following user request and decide if you need to search the web for technical specifications, dimensions, or standards (e.g., bolt sizes, motor mounting patterns, material properties, standard connector dimensions).
 
 User Request: {user_message}
 
-If you need to search, output ONLY the search query in a single line. 
-If no search is needed, output ONLY "NONE".
-
-Search Query:"""
+Output your response in this exact XML format:
+<research_decision>
+  <reasoning>Detailed explanation of why research is or is not needed, focusing on what specific technical facts are missing or present.</reasoning>
+  <query>The search query, or "NONE" if no search is needed</query>
+</research_decision>
+"""
         
-        response = await self.generate(prompt, "You are a technical research assistant.")
-        # Only take the first line in case the model ignores "ONLY" and adds reasoning
-        query = response.strip().split("\n")[0].strip().strip('"').strip("'")
-        if query.upper() == "NONE" or not query:
-            return None
-        return query
+        response = await self.generate(prompt, "You are a technical research assistant.", allow_thinking=True)
+        
+        reasoning = "The agent is evaluating the request against its internal knowledge base."
+        query = None
+        
+        try:
+            # Simple regex extraction for reliability
+            reason_match = re.search(r"<reasoning>(.*?)</reasoning>", response, re.DOTALL | re.IGNORECASE)
+            if reason_match:
+                reasoning = reason_match.group(1).strip()
+            
+            query_match = re.search(r"<query>(.*?)</query>", response, re.DOTALL | re.IGNORECASE)
+            if query_match:
+                q_text = query_match.group(1).strip().strip('"').strip("'")
+                if q_text.upper() != "NONE" and q_text:
+                    query = q_text
+        except Exception:
+            # Fallback for non-compliant models
+            if "NONE" not in response.upper() and len(response.splitlines()) > 0:
+                query = response.splitlines()[-1].strip().strip('"').strip("'")
+                reasoning = "Model provided a query directly."
+
+        return query, reasoning
 
 
 def parse_design_plan(raw_text: str) -> DesignPlan:
     """Parse a planner LLM response into a structured `DesignPlan`.
 
-    The planner is asked to emit `<thinking>...</thinking>` followed by a single
-    ```json``` block. This function is forgiving: it extracts whatever JSON it
-    can find, and preserves both the thinking text and the full raw response.
+    The planner is asked to emit `<thinking>...</thinking>` followed by a 
+    `<design_plan>...</design_plan>` XML block.
     """
     plan = DesignPlan(raw_text=raw_text)
 
@@ -531,21 +549,19 @@ def parse_design_plan(raw_text: str) -> DesignPlan:
     if think_match:
         plan.raw_reasoning = think_match.group(1).strip()
     else:
-        # If there's text before the JSON block, treat it as informal reasoning
-        json_start = raw_text.find("```json")
-        if json_start > 0:
-            plan.raw_reasoning = raw_text[:json_start].strip()
-        elif "{" in raw_text:
-            first_brace = raw_text.find("{")
-            if first_brace > 0:
-                plan.raw_reasoning = raw_text[:first_brace].strip()
+        # If no tags, try to find text before the XML block
+        xml_start = raw_text.find("<design_plan>")
+        if xml_start > 0:
+            plan.raw_reasoning = raw_text[:xml_start].strip()
 
-    # 2. Extract <design_plan> block
-    plan_match = re.search(r"<design_plan>.*?</design_plan>", raw_text, re.DOTALL | re.IGNORECASE)
+    # 2. Extract <design_plan> block content
+    plan_match = re.search(r"<design_plan>(.*?)</design_plan>", raw_text, re.DOTALL | re.IGNORECASE)
     if plan_match:
-        xml_text = plan_match.group(0)
+        content = plan_match.group(1)
+        # Attempt XML parsing
         try:
-            root = ET.fromstring(xml_text)
+            # Wrap in root to handle potentially malformed XML if the model missed the outer tag
+            root = ET.fromstring(f"<root>{content}</root>")
             plan.summary = (root.findtext("summary") or "").strip()
             
             dims = root.find("overall_dimensions_mm")
@@ -563,6 +579,7 @@ def parse_design_plan(raw_text: str) -> DesignPlan:
                 c_name = (comp.findtext("name") or "").strip()
                 if not c_name:
                     continue
+                
                 dims_elem = comp.find("dimensions")
                 dimensions = {}
                 if dims_elem is not None:
@@ -583,7 +600,7 @@ def parse_design_plan(raw_text: str) -> DesignPlan:
                         ]
                     except Exception:
                         pass
-                
+
                 plan.components.append(DesignComponent(
                     name=c_name,
                     description=(comp.findtext("description") or "").strip(),
@@ -605,8 +622,27 @@ def parse_design_plan(raw_text: str) -> DesignPlan:
                         plan.parameters[p_name] = float(p.text)
                     except ValueError:
                         pass
-        except ET.ParseError:
-            pass
+        except Exception:
+            # Robust Fallback: Regex extraction if XML parsing fails
+            if not plan.summary:
+                sum_match = re.search(r"<summary>(.*?)</summary>", content, re.DOTALL | re.IGNORECASE)
+                if sum_match:
+                    plan.summary = sum_match.group(1).strip()
+            
+            if not plan.components:
+                comp_matches = re.finditer(r"<component>(.*?)</component>", content, re.DOTALL | re.IGNORECASE)
+                for m in comp_matches:
+                    c_inner = m.group(1)
+                    name_m = re.search(r"<name>(.*?)</name>", c_inner, re.IGNORECASE)
+                    desc_m = re.search(r"<description>(.*?)</description>", c_inner, re.IGNORECASE)
+                    if name_m:
+                        plan.components.append(DesignComponent(
+                            name=name_m.group(1).strip(),
+                            description=desc_m.group(1).strip() if desc_m else ""
+                        ))
+            
+            if not plan.key_features:
+                plan.key_features = re.findall(r"<feature>(.*?)</feature>", content, re.IGNORECASE)
 
     # If nothing was parsed, treat whole response as reasoning so it stays visible
     if not plan.summary and not plan.components and not plan.raw_reasoning:

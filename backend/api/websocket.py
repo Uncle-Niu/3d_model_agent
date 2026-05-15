@@ -194,9 +194,13 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
                         # Persist a short marker message and notify the client so
                         # the chat UI can leave generating state.
                         try:
-                            storage.append_chat_thread_message(
+                            storage.update_last_chat_thread_message(
                                 project_id, _thread_id,
-                                ChatMessage(role="assistant", content="⏹ Stopped by user."),
+                                ChatMessage(
+                                    role="assistant", 
+                                    content="⏹ Stopped by user.",
+                                    steps=orchestrator.current_steps
+                                ),
                             )
                         except Exception:
                             pass
@@ -205,7 +209,10 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
                                 "type": "chat_response",
                                 "content": "⏹ Stopped by user.",
                                 "model_id": None,
-                                "steps": [],
+                                "steps": [
+                                    step.model_dump(mode="json")
+                                    for step in orchestrator.current_steps
+                                ],
                             }))
                         except Exception:
                             pass

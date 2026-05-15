@@ -68,6 +68,7 @@ export interface ChatMessage {
   timestamp: string;
   model_id?: string;
   steps?: PipelineStep[];
+  reasoning?: string;
 }
 
 export interface ChatThreadSummary {
@@ -110,6 +111,7 @@ export interface WSLLMChunk {
 export interface WSChatResponse {
   type: 'chat_response';
   content: string;
+  reasoning?: string;
   model_id?: string;
   steps?: PipelineStep[];
 }
@@ -144,6 +146,12 @@ export interface WSCritiqueResult {
   render_urls: Record<string, string>;  // view_name → REST URL
 }
 
+export interface WSReasoningChunk {
+  type: 'reasoning_chunk';
+  channel: string;
+  content: string;
+}
+
 export type WSMessage =
   | WSStatus
   | WSModelReady
@@ -151,7 +159,8 @@ export type WSMessage =
   | WSChatResponse
   | WSError
   | WSDebugLog
-  | WSCritiqueResult;
+  | WSCritiqueResult
+  | WSReasoningChunk;
 
 // Debug log entry for the store
 export interface DebugEntry {
