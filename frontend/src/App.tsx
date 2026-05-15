@@ -228,6 +228,14 @@ function App() {
 
   async function handleDeleteProject() {
     if (!project) return;
+    const confirmed = await confirmDialog({
+      title: 'Delete project?',
+      message: `Delete project "${project.name}"? This removes its chats and models.`,
+      confirmLabel: 'Delete project',
+      tone: 'danger',
+    });
+    if (!confirmed) return;
+
     await api.delete(`/api/projects/${project.project_id}`);
     const remaining = projects.filter((item) => item.project_id !== project.project_id);
 
