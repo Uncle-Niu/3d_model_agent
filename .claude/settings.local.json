@@ -1,0 +1,10 @@
+{
+    "permissions": {
+        "allow": [
+            "Bash"
+        ]
+    },
+    "env": {
+        "PATH": "C:\\ProgramData\\anaconda3\\Scripts;C:\\ProgramData\\anaconda3;${PATH}"
+    }
+}
