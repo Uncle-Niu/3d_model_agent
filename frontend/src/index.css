@@ -36,7 +36,7 @@
   --header-height: 48px;
   --chat-width: 470px;
   --chat-min-width: 320px;
-  --chat-max-width: 900px;
+  --chat-max-width: 1200px;
 
   /* Transitions */
   --transition-fast: 150ms ease;

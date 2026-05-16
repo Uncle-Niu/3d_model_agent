@@ -24,6 +24,10 @@ interface AppRoute {
   modelId: string | null;
 }
 
+const CHAT_PANEL_MIN_WIDTH = 320;
+const CHAT_PANEL_DEFAULT_WIDTH = 470;
+const CHAT_PANEL_MAX_WIDTH = 1200;
+
 function readRoute(): AppRoute {
   const path = window.location.pathname;
   const modelId = new URLSearchParams(window.location.search).get('model');
@@ -132,7 +136,9 @@ function App() {
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [chatWidth, setChatWidth] = useState<number>(() => {
     const stored = Number(localStorage.getItem('chatPanelWidth'));
-    return Number.isFinite(stored) && stored >= 320 && stored <= 900 ? stored : 470;
+    return Number.isFinite(stored) && stored >= CHAT_PANEL_MIN_WIDTH && stored <= CHAT_PANEL_MAX_WIDTH
+      ? stored
+      : CHAT_PANEL_DEFAULT_WIDTH;
   });
   const [isResizingChat, setIsResizingChat] = useState(false);
   const projectMenuRef = useRef<HTMLDivElement>(null);
@@ -772,7 +778,10 @@ function App() {
               const startX = e.clientX;
               const startWidth = chatWidth;
               function move(ev: PointerEvent) {
-                const next = Math.min(900, Math.max(320, startWidth + (startX - ev.clientX)));
+                const next = Math.min(
+                  CHAT_PANEL_MAX_WIDTH,
+                  Math.max(CHAT_PANEL_MIN_WIDTH, startWidth + (startX - ev.clientX))
+                );
                 setChatWidth(next);
               }
               function end() {
