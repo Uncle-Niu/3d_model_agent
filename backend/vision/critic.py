@@ -173,7 +173,12 @@ feature is represented, and the overall shape matches. Reject simplistic placeho
 geometry such as a plain base plus slab when the recipe calls for lips, ribs, slots,
 holes, guides, or cable notches.
 
-Return only the JSON object specified in your instructions — no fences, no preamble.
+## CRITICAL OUTPUT RULE
+Your response MUST start with `{{` and MUST be a single valid JSON object that matches
+the schema in the system prompt. Do NOT write any analysis, narration, or markdown
+before the JSON. Do NOT produce a bulleted checklist outside the JSON.
+Put your feature-by-feature reasoning INSIDE the `feature_checklist` entries' `evidence`
+fields. If you start writing prose, stop and emit the JSON instead.
 """
 
 
@@ -222,11 +227,20 @@ def _build_image_content_items(render_paths: dict[str, str]) -> list[dict]:
 def _fallback_parse_critique(raw_text: str) -> dict:
     """Recover a partial critique from a truncated or malformed response.
 
-    Vision models sometimes run out of tokens mid-JSON. Rather than dropping
-    the whole critique (which silently turns off the repair loop), scrape the
-    raw text for the must-have signals — `matches_intent`, `score`, and the
-    feature_checklist's `present:false` entries — and synthesize a minimal
-    critique that still triggers repair when the verifier saw a problem.
+    Vision models fail to follow the JSON contract two distinct ways:
+
+    1. **Truncation**: ran out of tokens mid-JSON. Standard signals like
+       `"matches_intent": false` and `"score": 0.4` are present, just inside
+       an unterminated object.
+    2. **Prose-only**: thinking-style models (qwen3.6 with thinking enabled)
+       dump their entire chain-of-thought as markdown narrative and never
+       reach the closing JSON. Observed in the iPhone-holder log: a 14KB
+       response with "**Score:** 0.4", "**Matches Intent:** No", and
+       "**Mounting Holes:** Missing" bullets — but no JSON anywhere.
+
+    Both paths are recoverable. Failing to parse meant the repair loop got no
+    signal even though the verifier had clearly seen the problems. The
+    fallback now handles both shapes so the score is at least useful.
     """
     text = raw_text or ""
     if not text:
@@ -234,6 +248,7 @@ def _fallback_parse_critique(raw_text: str) -> dict:
 
     out: dict = {}
 
+    # --- JSON-shaped fragments (truncation path) ----------------------------
     m = re.search(r'"matches_intent"\s*:\s*(true|false)', text, re.IGNORECASE)
     if m:
         out["matches_intent"] = m.group(1).lower() == "true"
@@ -265,22 +280,96 @@ def _fallback_parse_critique(raw_text: str) -> dict:
             "description": f"Key feature absent: {match.group(1)}",
             "location_hint": "",
         })
-    if issues:
-        out["issues"] = issues
+
+    # --- Prose-narrative fragments (thinking-mode path) ---------------------
+    # Match patterns like `**Score:** 0.4`, `Score: 0.4`, `**Final score** 0.35`.
+    if "score" not in out:
+        m = re.search(
+            r"(?im)^\s*\*{0,2}\s*(?:final\s+)?score\s*\*{0,2}\s*[:\-]\s*"
+            r"\*{0,2}\s*([0-9]+(?:\.[0-9]+)?)",
+            text,
+        )
+        if m:
+            try:
+                val = float(m.group(1))
+                # Some models write "Score: 40" meaning 40%. Normalize.
+                if val > 1.5 and val <= 100:
+                    val = val / 100.0
+                out["score"] = max(0.0, min(1.0, val))
+            except ValueError:
+                pass
+
+    if "matches_intent" not in out:
+        # "**Matches Intent:** No." / "matches_intent is false" / "matches intent: yes"
+        m = re.search(
+            r"(?im)matches[\s_]intent\b[^a-z0-9]{0,12}(no|false|yes|true)\b",
+            text,
+        )
+        if m:
+            out["matches_intent"] = m.group(1).lower() in ("yes", "true")
+
+    # Verdict-style bullets:
+    #   `**Front lip:** Missing.`
+    #   `7.  **Four 4.5 mm corner mounting holes:** Missing.`
+    #   `*   **Corner mounting holes:** **Missing.** I do not see ...`
+    #   `- Fillets: missing (sharp edges)`
+    # Capture the feature name (text between optional bullet/number/`**`
+    # markers and the colon) and the verdict word. Asterisks/whitespace are
+    # allowed in any combination around the name and verdict so the matcher
+    # works for double-bolded variants like `**Name:** **Missing.**`.
+    verdict_re = re.compile(
+        r"(?im)^[ \t]*"
+        r"(?:[*\-+•]\s+|[0-9]+\.\s*)?"  # optional bullet or number
+        r"[\*\s]*"                                 # optional bold/whitespace
+        r"([A-Za-z0-9][A-Za-z0-9 ./_'\"-]{2,80}?)"  # feature name
+        r"[\*\s]*[:\-][\*\s]*"                       # bold/colon/bold
+        r"(missing|absent|not\s+visible|not\s+present|partial|incorrect|wrong)"
+        r"\b",
+    )
+    for vmatch in verdict_re.finditer(text):
+        name = vmatch.group(1).strip().strip("*").strip()
+        verdict = vmatch.group(2).lower().strip()
+        # Skip obvious non-feature labels.
+        skip_prefixes = (
+            "score", "matches intent", "matches_intent", "confidence",
+            "repair prompt", "verdict", "observation", "issues",
+            "conclusion", "summary", "step", "view",
+        )
+        if any(name.lower().startswith(p) for p in skip_prefixes):
+            continue
+        severity = "warning" if verdict.startswith("partial") else "error"
+        issues.append({
+            "issue_type": "missing_feature" if severity == "error" else "wrong_proportion",
+            "severity": severity,
+            "description": f"Key feature {verdict}: {name}",
+            "location_hint": "",
+        })
+
+    # De-duplicate issue descriptions while preserving order.
+    seen: set[str] = set()
+    dedup_issues = []
+    for issue in issues:
+        key = issue["description"].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup_issues.append(issue)
+    if dedup_issues:
+        out["issues"] = dedup_issues
 
     # If nothing useful was recovered, return empty so caller can mark as failure
-    if "matches_intent" not in out and "score" not in out and not issues:
+    if "matches_intent" not in out and "score" not in out and not dedup_issues:
         return {}
 
     # Defaults to ensure downstream code has something to work with
     out.setdefault("score", 0.4)
-    out.setdefault("matches_intent", out["score"] >= 0.6)
+    out.setdefault("matches_intent", out["score"] >= 0.6 and not dedup_issues)
     out.setdefault("issues", [])
     out.setdefault(
         "repair_prompt",
-        "The vision verifier's response was truncated before completing the JSON. "
-        "Treat this as a failed verification: re-check every key feature in the plan, "
-        "and fix any that are missing, miss-positioned, or wrong shape.",
+        "The vision verifier did not return parseable JSON, but its prose "
+        "indicated the issues listed above. Re-check every key feature in "
+        "the plan and fix anything marked missing, wrong-shape, or partial.",
     )
     return out
 
@@ -377,6 +466,16 @@ class VisionCritic:
         from ..config import resolve_vision_model
         self.model = model or resolve_vision_model()
         self.timeout = timeout
+
+    def _is_thinking_model(self) -> bool:
+        """Qwen3.x (and some Gemma variants) put their answer in a separate
+        `reasoning` stream and treat `content` as a scratchpad. For a JSON
+        verifier that's catastrophic — the model writes 14KB of thinking
+        prose, never reaches the JSON, and the parser sees nothing. Suppress
+        thinking for those models by appending `/no_think`.
+        """
+        name = (self.model or "").lower()
+        return ("qwen3" in name) or ("qwen-3" in name)
 
     async def is_available(self) -> tuple[bool, str]:
         """
@@ -553,12 +652,35 @@ class VisionCritic:
             plan=plan,
             recipe_context=recipe_context,
         )
+        # Qwen3-family models burn the entire token budget thinking aloud and
+        # never reach the JSON tail (observed: 14KB of prose, no JSON, parser
+        # gets nothing). Suppress the thinking channel so output goes directly
+        # to JSON. The directive is harmless for non-thinking models.
+        if self._is_thinking_model() and "/no_think" not in user_text:
+            user_text = user_text.rstrip() + "\n\n/no_think"
         user_content = [{"type": "text", "text": user_text}] + image_items
 
         messages = [
             {"role": "system", "content": VISION_SYSTEM_PROMPT},
             {"role": "user", "content": user_content},
         ]
+
+        # Force JSON-only output. `response_format` is the OpenAI-compat field;
+        # `format: "json"` is the Ollama-native equivalent that backends like
+        # Ollama enforce at sample-time. Passing both is safe — each backend
+        # honors the one it understands and ignores the other.
+        request_payload: dict = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": 0.1,
+            # Larger budget — the feature checklist alone can be 1k tokens
+            # for multi-component designs, and we'd rather waste a few
+            # tokens than silently drop a critique because of truncation.
+            "max_tokens": 4096,
+            "stream": False,
+            "response_format": {"type": "json_object"},
+            "format": "json",
+        }
 
         # Call the vision model
         try:
@@ -569,16 +691,7 @@ class VisionCritic:
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "model": self.model,
-                        "messages": messages,
-                        "temperature": 0.1,
-                        # Larger budget — the feature checklist alone can be 1k tokens
-                        # for multi-component designs, and we'd rather waste a few
-                        # tokens than silently drop a critique because of truncation.
-                        "max_tokens": 4096,
-                        "stream": False,
-                    },
+                    json=request_payload,
                 )
 
                 if response.status_code != 200:

@@ -6,9 +6,75 @@ import unittest
 from backend.cad.engine import (
     execute_cadquery_code,
     sanitize_traceback,
+    strip_reasoning_leakage,
     try_patch_missing_result,
     validate_cadquery_code,
 )
+
+
+class TestStripReasoningLeakage(unittest.TestCase):
+    """Fast mechanical syntax-repair pre-pass.
+
+    qwen3.x sometimes emits its chain-of-thought INSIDE the ```python block,
+    which produces 'unterminated string literal' or similar parse errors. Going
+    through the slow LLM repair path for this costs ~90s. The mechanical pass
+    strips the prose lines and recovers in milliseconds.
+    """
+
+    GOOD = (
+        "import cadquery as cq\n"
+        "base = cq.Workplane('XY').box(10, 10, 10)\n"
+        "result = base.edges().fillet(1)\n"
+    )
+
+    LEAKED = (
+        "import cadquery as cq\n"
+        "base = cq.Workplane('XY').box(10, 10, 10)\n"
+        "Wait, the box is centered at origin. Let me check.\n"
+        "Actually, I think the dimensions are off.\n"
+        "The error is on line 58:\n"
+        "`holes = cq.Workplane('XY').hole(3.5)`\n"
+        "result = base.edges().fillet(1)\n"
+    )
+
+    def test_passes_through_already_valid_code(self):
+        # Valid code → None (no work needed). Caller stays on the fast path.
+        self.assertIsNone(strip_reasoning_leakage(self.GOOD))
+
+    def test_strips_prose_to_recover_parseable_code(self):
+        cleaned = strip_reasoning_leakage(self.LEAKED)
+        self.assertIsNotNone(cleaned)
+        self.assertIn("import cadquery", cleaned)
+        self.assertIn("result =", cleaned)
+        self.assertNotIn("Wait", cleaned)
+        self.assertNotIn("Actually", cleaned)
+        self.assertNotIn("The error", cleaned)
+        # Recovered code must actually parse now.
+        import ast
+        ast.parse(cleaned)
+
+    def test_truncates_to_longest_parseable_prefix(self):
+        # Last line is broken (unterminated string); preceding lines are valid.
+        partial = (
+            "import cadquery as cq\n"
+            "base = cq.Workplane('XY').box(10, 10, 10)\n"
+            "result = base.edges().fillet(1)\n"
+            "back_wall = back_wall.translate((0, -5\n"  # truncated mid-call
+        )
+        cleaned = strip_reasoning_leakage(partial)
+        self.assertIsNotNone(cleaned)
+        import ast
+        ast.parse(cleaned)
+        self.assertIn("result =", cleaned)
+        self.assertNotIn("back_wall.translate((0, -5", cleaned)
+
+    def test_returns_none_when_unrecoverable(self):
+        # Pure garbage with no parseable prefix.
+        self.assertIsNone(strip_reasoning_leakage("&&& invalid forever"))
+
+    def test_empty_input(self):
+        self.assertIsNone(strip_reasoning_leakage(""))
+        self.assertIsNone(strip_reasoning_leakage("   \n   \n"))
 
 
 class TestTryPatchMissingResult(unittest.TestCase):

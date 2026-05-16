@@ -205,6 +205,118 @@ def try_patch_missing_result(code: str) -> Optional[str]:
     return f"{code}{suffix}result = {last_target}\n"
 
 
+_REASONING_PROSE_PREFIXES = (
+    "wait", "wait,", "actually", "actually,", "let's", "let me",
+    "looking", "i think", "i need", "i'll", "i should", "i'd",
+    "the error", "the issue", "this happens", "this is", "this means",
+    "to fix", "the fix", "note:", "note that", "hmm", "hmm,",
+    "so,", "but ", "but,", "however", "however,",
+    "therefore", "therefore,", "given the", "given that",
+    "first,", "second,", "next,", "finally,", "now,",
+    "okay,", "ok,", "alright,",
+)
+
+
+def _looks_like_reasoning_prose(line: str) -> bool:
+    """Return True if `line` is almost certainly free-form English narration
+    that leaked into a code block (not a Python statement, comment, or empty
+    line). Used by `strip_reasoning_leakage` to recover from qwen3-style
+    repairs where the model dumps its chain-of-thought between code lines.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False
+    # Real Python comments start with `#`. Leave those alone.
+    if stripped.startswith("#"):
+        return False
+    # Lines that include common reasoning openers.
+    low = stripped.lower()
+    for prefix in _REASONING_PROSE_PREFIXES:
+        if low.startswith(prefix):
+            return True
+    # Inline-code backticks (`foo.bar()`) only appear in markdown narration.
+    if "`" in stripped:
+        return True
+    # A sentence: starts with a capital letter, ends with `.`/`?`/`!`, and
+    # contains no Python operators that would indicate a real statement.
+    if (
+        stripped[0].isupper()
+        and stripped[-1] in ".?!"
+        and "=" not in stripped
+        and "(" not in stripped
+        and ":" not in stripped
+        and not stripped.startswith(("import ", "from ", "def ", "class ", "for ", "if ", "elif ", "else", "while ", "return ", "with ", "try", "except", "raise ", "yield "))
+    ):
+        return True
+    return False
+
+
+def strip_reasoning_leakage(code: str) -> Optional[str]:
+    """Mechanical syntax repair: strip free-form reasoning prose that the LLM
+    accidentally pasted INTO a python code block.
+
+    Observed failure mode (from the second iPhone-holder log): qwen3.6 emitted
+    a code block whose last 20 lines were narrative musings like:
+
+        back_wall = back_wall.translate((0, -5
+        The error is on line 58:
+        `holes = cq.Workplane("XY").pushPoints(hole_pts).hole(...)`
+        Wait, holder is modified later. It's safer to create...
+
+    The original `back_wall = ...` line was truncated, the rest is markdown.
+    The Python validator rejects this with "unterminated string literal at
+    line 40", and the orchestrator burns a full LLM repair cycle (~90s) to
+    re-generate the program.
+
+    Strategy:
+    1. If the code parses, return None (no work needed).
+    2. Otherwise, drop any line that `_looks_like_reasoning_prose` says is
+       narration, and try parsing again.
+    3. If still failing AND the failure is in the trailing region, truncate
+       to the longest prefix that parses. Returning None signals to the
+       caller to fall back to the slow LLM-driven repair.
+
+    The function never modifies real Python — it only removes lines that
+    cannot plausibly be code.
+    """
+    if not code or not code.strip():
+        return None
+    try:
+        ast.parse(code)
+        return None  # already valid
+    except SyntaxError:
+        pass
+
+    lines = code.splitlines()
+    cleaned = [ln for ln in lines if not _looks_like_reasoning_prose(ln)]
+    if cleaned == lines:
+        # Nothing prose-like to remove — skip to prefix-truncation.
+        candidate = "\n".join(cleaned)
+    else:
+        candidate = "\n".join(cleaned)
+        try:
+            ast.parse(candidate)
+            return candidate + ("\n" if not candidate.endswith("\n") else "")
+        except SyntaxError:
+            pass
+
+    # Last-resort: find the longest line-aligned prefix that parses cleanly.
+    # Useful when the model truncated a statement mid-line (the broken line
+    # poisons everything after it, but the program up to it may be sound).
+    prefix_lines: list[str] = []
+    best: Optional[str] = None
+    for ln in candidate.splitlines():
+        prefix_lines.append(ln)
+        try:
+            ast.parse("\n".join(prefix_lines))
+            best = "\n".join(prefix_lines)
+        except SyntaxError:
+            continue
+    if best and best != code:
+        return best + ("\n" if not best.endswith("\n") else "")
+    return None
+
+
 def sanitize_traceback(text: str) -> str:
     """Strip noise from a captured traceback before showing it to the LLM.
 

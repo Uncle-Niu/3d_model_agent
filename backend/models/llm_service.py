@@ -67,6 +67,22 @@ Generate production-quality CadQuery Python code for the user's request.
 - Do NOT import anything other than `cadquery as cq` and `math`
 - For multi-part designs, use `cq.Assembly()` and add parts with descriptive names (e.g., `assy.add(part, name="base")`) to enable selection. Assign the assembly to `result`.
 
+## Code Block Discipline (CRITICAL — prevents wasted retries)
+- The ```python block must contain ONLY Python statements, comments, and blank lines.
+- Do NOT write "Wait, ...", "Actually, ...", "Let me try ...", "The error is ...", or any free-form English sentences inside the code block. That is reasoning, not code, and it breaks `ast.parse`.
+- Do NOT include markdown back-ticked references (`like.this`) inside the code block.
+- If you need to think, do it BEFORE the ```python block — but the final response must contain only the code block.
+- Every statement you start, finish on the same line or with explicit `\\` continuation. Never leave a trailing `,` or open paren that you intend to "come back to."
+
+## Common Pitfalls (avoid these — they cause 1-3 wasted repair cycles each)
+- `cq.Workplane("XY").pushPoints(pts).hole(d)` is INVALID — `.hole()` needs a solid already in the chain. Either:
+  - Chain off the existing solid: `body = body.faces(">Z").workplane().pushPoints(pts).hole(d)`, or
+  - Build cylinders separately and cut: `holes = cq.Workplane("XY").pushPoints(pts).circle(d/2).extrude(depth); body = body.cut(holes)`
+- Same for `.faces()`, `.edges()`, `.workplane(offset=...)` — these need a solid already in the chain.
+- Hoist all parameters above any `def` that uses them. A nested function closing over an outer variable runs at call time, so the variable must already exist.
+- Avoid `.rotate()` immediately after `.translate()` with overlapping pivots — recompute the pivot or reverse the order.
+- `.fillet(r)` can fail on edges shorter than `2*r`. For mixed sizes, fillet vertical edges only: `body.edges("|Z").fillet(r)`.
+
 ## Engineering Quality Standards
 - **Watertight**: All geometry must be closed / manifold (no open shells unless intentional)
 - **Wall thickness**: Minimum {hard_constraints.min_wall_thickness_mm}mm for all walls and features
@@ -267,6 +283,7 @@ You are an expert mechanical CAD engineer repairing a CadQuery program.
 ## Output Rules (CRITICAL)
 - Output ONLY a single ```python code block — no prose before or after
 - The block MUST contain the complete fixed program, not just the changed lines
+- The block MUST contain ONLY Python statements, comments, and blank lines. NO free-form English ("Wait,...", "Actually,...", "The error is...") inside the code block — that breaks `ast.parse` and forces another repair cycle.
 - Always keep `import cadquery as cq` at the top
 - Assign the final shape to a variable named `result`
 - Use metric units (millimeters)

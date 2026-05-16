@@ -1098,34 +1098,53 @@ class AgentOrchestrator:
                     failure_label = (last_failure_type or "execution_error").replace("_", " ")
                     err_first = last_error.splitlines()[0][:120] if last_error else "previous attempt failed"
 
-                    # Mechanical pre-repair: when the validator complained that
-                    # `result` is unassigned but the rest of the source parses
-                    # fine, patch it in code instead of asking the LLM. The
-                    # LLM-driven repair has a habit of "fixing" the missing
-                    # assignment by also dropping most of the planned geometry.
+                    # Mechanical pre-repair: try cheap deterministic fixes
+                    # before burning a 90-second LLM repair cycle.
+                    #   1. Missing `result =` → AST-patch alias to the last var.
+                    #   2. Syntax error from reasoning prose leaking into the
+                    #      code block (qwen3.x failure mode) → strip the prose.
+                    # If neither applies, fall through to the LLM.
                     mechanical_patch: Optional[str] = None
+                    mechanical_note: str = ""
                     if last_failure_type == "syntax_error" and last_error and "must assign" in last_error.lower():
                         from ..cad.engine import try_patch_missing_result
                         mechanical_patch = try_patch_missing_result(last_code)
+                        if mechanical_patch is not None:
+                            mechanical_note = (
+                                "Appended `result = <last_shape_var>` to the source."
+                            )
+                    elif last_failure_type == "syntax_error" and last_error:
+                        from ..cad.engine import strip_reasoning_leakage
+                        stripped = strip_reasoning_leakage(last_code)
+                        if stripped is not None:
+                            mechanical_patch = stripped
+                            mechanical_note = (
+                                "Stripped LLM reasoning prose that leaked into "
+                                "the code block (no LLM call)."
+                            )
 
                     if mechanical_patch is not None:
                         await self._emit_status("repairing",
-                            f"Patching missing `result` assignment (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS}) · `{model_id}`",
+                            f"Mechanical syntax fix (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS}) · `{model_id}`",
                             details=None,
                             data={
                                 "iteration": iteration,
                                 "repair_kind": "mechanical",
-                                "rationale": "The previous source parsed cleanly but did not assign the final shape to `result`. Patching deterministically so the LLM does not also drop geometry.",
-                                "outcome": "Appended `result = <last_shape_var>` to the source.",
-                                "inputs": ["AST patch"],
+                                "rationale": "Deterministic fix avoids a ~90s LLM repair call when the bug is a known textual artifact (missing `result` alias or LLM reasoning prose leaking into the code block).",
+                                "outcome": mechanical_note,
+                                "inputs": ["AST analysis"],
                                 "model_id": model_id,
                             })
-                        await self._emit_debug("mechanical_repair", "Applied AST-based result alias", {
+                        await self._emit_debug("mechanical_repair", mechanical_note, {
                             "original_tail": last_code[-200:],
                             "patched_tail": mechanical_patch[-200:],
+                            "original_len": len(last_code),
+                            "patched_len": len(mechanical_patch),
                         })
                         last_code = mechanical_patch
-                        repair_notes.append("Mechanically aliased the final shape to `result` (no LLM call)")
+                        repair_notes.append(
+                            f"Mechanical syntax fix (no LLM call): {mechanical_note}"
+                        )
                     else:
                         repair_system_prompt = build_repair_system_prompt(config.hard_constraints, config.soft_constraints)
                         repair_user_prompt = build_repair_prompt(
