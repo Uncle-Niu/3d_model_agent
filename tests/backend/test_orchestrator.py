@@ -35,7 +35,7 @@ class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
     @patch("backend.agent.orchestrator.AgentOrchestrator._run_vision_critique", new_callable=AsyncMock)
     async def test_run_pipeline_success(self, mock_critique, mock_render, mock_exec, mock_vision):
         orchestrator = AgentOrchestrator(storage=self.mock_storage, llm=self.mock_llm)
-        mock_vision.return_value = True
+        mock_vision.return_value = (True, "ok")
         mock_exec.return_value = {
             "success": True, "message": "Success", "files": ["glb"],
             "geometry_stats": {"face_count": 6, "bounding_box": "10x10x10"}, "_shape": MagicMock()
@@ -55,7 +55,7 @@ class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
     @patch("backend.agent.orchestrator.AgentOrchestrator._run_vision_critique", new_callable=AsyncMock)
     async def test_run_pipeline_with_research(self, mock_critique, mock_render, mock_search, mock_exec, mock_vision):
         orchestrator = AgentOrchestrator(storage=self.mock_storage, llm=self.mock_llm)
-        mock_vision.return_value = True
+        mock_vision.return_value = (True, "ok")
         self.mock_llm.decide_research.return_value = "standard M6 bolt dimensions"
         
         mock_exec.return_value = {"success": True, "message": "Ok", "files": ["glb"], "geometry_stats": {}}
@@ -73,7 +73,7 @@ class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
     @patch("backend.agent.orchestrator.process_cadquery_code")
     async def test_run_pipeline_repair_loop(self, mock_exec, mock_vision):
         orchestrator = AgentOrchestrator(storage=self.mock_storage, llm=self.mock_llm)
-        mock_vision.return_value = False
+        mock_vision.return_value = (True, "ok")  # vision is required; repair loop test focuses on syntax/exec repair
         
         # First call fails, second succeeds
         mock_exec.side_effect = [
@@ -91,7 +91,7 @@ class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
     @patch("backend.agent.orchestrator.AgentOrchestrator._run_vision_critique", new_callable=AsyncMock)
     async def test_run_pipeline_vision_repair(self, mock_critique, mock_render, mock_exec, mock_vision):
         orchestrator = AgentOrchestrator(storage=self.mock_storage, llm=self.mock_llm)
-        mock_vision.return_value = True
+        mock_vision.return_value = (True, "ok")
         mock_exec.return_value = {"success": True, "message": "Ok", "files": ["glb"], "_shape": MagicMock(), "geometry_stats": {}}
         
         # Use a counter to return different values

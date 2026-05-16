@@ -216,25 +216,30 @@ class AgentOrchestrator:
             await self._emit_error(f"Ollama check failed: {e}")
             return False
 
-    async def check_vision_connectivity(self) -> bool:
-        """Check if the vision model is available and working."""
+    async def check_vision_connectivity(self) -> tuple[bool, str]:
+        """Check if the vision model is available and working.
+
+        Returns (ok, reason). When ok is False, `reason` describes exactly which
+        step failed (registry lookup vs. smoke-test) so the caller can surface
+        an actionable error instead of a generic "not available" message.
+        """
         from ..vision.critic import VisionCritic
         critic = VisionCritic()
         await self._emit_debug("vision", "Checking vision model availability...")
         available, error = await critic.is_available()
         if not available:
             await self._emit_debug("vision_warning", f"Vision model not available: {error}")
-            return False
-            
+            return False, f"registry check failed — {error}"
+
         # Perform smoke test to ensure image processing works
         await self._emit_debug("vision", "Performing vision smoke test...")
         ok, msg = await critic.smoke_test()
         if not ok:
             await self._emit_debug("vision_warning", f"Vision smoke test failed: {msg}")
-            return False
+            return False, f"smoke test failed — {msg}"
 
         await self._emit_debug("vision", "Vision model is fully operational")
-        return True
+        return True, msg or "ok"
 
     async def run_pipeline(
         self,
@@ -266,7 +271,7 @@ class AgentOrchestrator:
 
         # 1. Connectivity Check
         ollama_ok = await self.check_ollama_connectivity()
-        vision_ok = await self.check_vision_connectivity()
+        vision_ok, vision_reason = await self.check_vision_connectivity()
 
         if not ollama_ok:
             self.storage.append_chat_thread_message(
@@ -286,21 +291,70 @@ class AgentOrchestrator:
         allow_vision_skip = os.environ.get("ALLOW_VISION_SKIP", "").lower() in ("1", "true", "yes")
         if not vision_ok and not allow_vision_skip:
             vision_model = os.environ.get("VISION_MODEL", os.environ.get("LLM_MODEL", "qwen3.6:35b"))
+            reason_lower = vision_reason.lower()
+            # Targeted fix lines per failure mode — only show what's actually
+            # relevant to the specific reason, so the user doesn't have to guess
+            # which bullet applies to them.
+            if "registry check failed" in reason_lower:
+                if "cannot reach ollama" in reason_lower:
+                    fix_lines = [
+                        "- Ollama is not reachable. Start it (`ollama serve`) and confirm "
+                        "`curl http://localhost:11434/api/tags` returns a model list.",
+                        f"- Check that `VISION_BASE_URL` / `LLM_BASE_URL` point at the running Ollama (current vision model: `{vision_model}`).",
+                    ]
+                else:
+                    # "model X not found in Ollama. Available: [...]"
+                    fix_lines = [
+                        f"- The configured vision model `{vision_model}` is not installed in Ollama, "
+                        f"and no fallback (`gemma4:31b` / `gemma3:27b` / `qwen3.6:35b`) was found either.",
+                        "- Install a vision-capable model: `ollama pull gemma3:27b` (recommended) "
+                        "or `ollama pull gemma4:31b`.",
+                        f"- Then set `VISION_MODEL=gemma3:27b` (or the model you pulled) in `.env`.",
+                    ]
+            elif "smoke test failed" in reason_lower:
+                if "cannot see images" in reason_lower or "model says it cannot see" in reason_lower:
+                    fix_lines = [
+                        f"- The model `{vision_model}` responded but said it can't see images — "
+                        f"it is a text-only model, not a vision model.",
+                        "- Install and configure a vision-capable model: `ollama pull gemma3:27b`, "
+                        "then set `VISION_MODEL=gemma3:27b` in `.env`.",
+                    ]
+                elif "http 500" in reason_lower or "http 4" in reason_lower or "http 5" in reason_lower:
+                    fix_lines = [
+                        f"- The vision model `{vision_model}` returned an HTTP error during the smoke test. "
+                        f"This usually means VRAM pressure or a transient Ollama crash.",
+                        "- Try `ollama ps` to see what's loaded; restart Ollama if needed.",
+                        "- Re-run; the smoke test retries twice. If it keeps failing, "
+                        "set `VISION_DISABLE_SMOKE_TEST=1` only if you're sure the model is vision-capable.",
+                    ]
+                else:
+                    fix_lines = [
+                        f"- The smoke test got an unexpected reply from `{vision_model}`. "
+                        f"Either the model is not vision-capable or it misread the test image.",
+                        "- Confirm with: `ollama show {model} --modelfile` should list image support.".replace("{model}", vision_model),
+                        "- If you trust the model, set `VISION_DISABLE_SMOKE_TEST=1` to skip the probe.",
+                    ]
+            else:
+                fix_lines = [
+                    "- Make sure Ollama has a vision-capable model installed "
+                    "(`ollama pull gemma3:27b` or `ollama pull gemma4:31b`).",
+                    f"- Set `VISION_MODEL` in `.env` to that model name (currently `{vision_model}`).",
+                    "- If the model is vision-capable but the smoke test is flaky, "
+                    "set `VISION_DISABLE_SMOKE_TEST=1`.",
+                ]
+            fix_lines.append(
+                "- To bypass this gate entirely (not recommended), set `ALLOW_VISION_SKIP=1`."
+            )
+
             self.storage.append_chat_thread_message(
                 project_id, thread_id,
                 ChatMessage(role="assistant", content=(
                     f"❌ Vision verifier is not available, so generation is blocked.\n\n"
+                    f"**Reason:** {vision_reason}\n\n"
                     f"Without a vision check the agent can only confirm that the model has the "
                     f"right bounding box — not that it actually resembles what you asked for. "
                     f"Recent runs without it produced shapes that looked nothing like the prompt.\n\n"
-                    f"**To fix:**\n"
-                    f"- Make sure Ollama has a vision-capable model installed "
-                    f"(e.g. `ollama pull gemma3:27b` or `ollama pull gemma4:31b`).\n"
-                    f"- Set `VISION_MODEL` in your `.env` to that model name "
-                    f"(currently set to `{vision_model}`).\n"
-                    f"- If the model is vision-capable but the smoke test is flaky, "
-                    f"set `VISION_DISABLE_SMOKE_TEST=1`.\n"
-                    f"- To bypass this gate entirely (not recommended), set `ALLOW_VISION_SKIP=1`."
+                    f"**To fix:**\n" + "\n".join(fix_lines)
                 )),
             )
             return None

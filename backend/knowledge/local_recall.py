@@ -41,11 +41,11 @@ from ..domain.models import (
 # is already warm in VRAM. Subsequent models cross-check from disjoint
 # training corpora.
 DEFAULT_MODEL_CHAIN: tuple[str, ...] = (
-    "qwen3.6:35b",      # Alibaba — default (main agent model)
-    "gemma4:31b",       # Google — different training data
-    "phi4:14b",         # Microsoft — small (9 GB), fast, synthetic/textbook bias
-    "nemotron3:33b",    # NVIDIA — freshest cutoff (multimodal)
-    "glm-4.7-flash",    # Z.ai — strong in the 30B class
+    "qwen3.6:35b",            # Alibaba — default (main agent model)
+    "gemma4:31b",             # Google — different training data
+    "nemotron3:33b",          # NVIDIA — freshest cutoff (multimodal)
+    "glm-4.7-flash:q4_K_M",   # Z.ai — strong in the 30B class
+    "phi4:14b",               # Microsoft — small (9 GB), fast, synthetic/textbook bias; last because it's the weakest
 )
 # `deepseek-r1:32b` is also installed but is a reasoning model — it burns
 # 30-80s thinking before answering for what is fundamentally a recall task.
