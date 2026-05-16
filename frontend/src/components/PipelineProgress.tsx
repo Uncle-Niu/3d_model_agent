@@ -207,8 +207,10 @@ function stepHelpTooltip(step: PipelineStep): string | null {
 const ARGUMENT_KEY_LABELS: Array<[string, string]> = [
   ['subject', 'Subject'],
   ['requested_fields', 'Requested fields'],
+  ['model', 'Model'],
   ['model_chain', 'Model chain'],
   ['model_id', 'Model ID'],
+  ['image_views', 'Image views'],
   ['iteration', 'Iteration'],
   ['query', 'Search query'],
   ['failure_type', 'Failure type'],

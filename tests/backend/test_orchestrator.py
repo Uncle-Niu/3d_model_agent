@@ -54,6 +54,7 @@ class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
     @patch("backend.agent.orchestrator.search_web", new_callable=AsyncMock)
     @patch("backend.agent.orchestrator.AgentOrchestrator._run_render", new_callable=AsyncMock)
     @patch("backend.agent.orchestrator.AgentOrchestrator._run_vision_critique", new_callable=AsyncMock)
+    @unittest.skip("Web search is currently disabled; local-LLM recall is used instead.")
     async def test_run_pipeline_with_research(self, mock_critique, mock_render, mock_search, mock_exec, mock_vision):
         orchestrator = AgentOrchestrator(storage=self.mock_storage, llm=self.mock_llm)
         mock_vision.return_value = (True, "ok")

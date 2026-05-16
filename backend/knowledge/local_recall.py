@@ -62,6 +62,8 @@ StepCallback = Callable[[str, dict[str, Any]], Awaitable[Any]]
 class LocalKnowledgeService:
     """Multi-model knowledge extractor over local Ollama models."""
 
+    SUBJECT_DETECTION_SYSTEM_PROMPT = "You output strict JSON. No prose."
+
     def __init__(
         self,
         base_url: str = "http://localhost:11434/v1",
@@ -88,6 +90,30 @@ class LocalKnowledgeService:
     # ------------------------------------------------------------------
     # Subject / field discovery
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def build_subject_detection_prompt(user_message: str) -> str:
+        """The exact user prompt sent to the subject-detection LLM."""
+        return f"""\
+You are preparing context for a CAD design agent. Identify any real-world
+products, parts, or standards in the user's request whose precise dimensions
+or specifications would meaningfully improve the design.
+
+User request: {user_message}
+
+Examples:
+- "make an iphone 16 pro max holder" -> subject "iPhone 16 Pro Max", fields like body_length_mm, body_width_mm, body_thickness_mm, weight_g, camera_bump_dimensions_mm, button_positions
+- "design a bracket for a NEMA 17 stepper" -> subject "NEMA 17 stepper motor", fields like body_size_mm, shaft_diameter_mm, mounting_hole_pattern_mm
+- "make a 50x30x10mm box with rounded corners" -> no subjects (purely parametric, no external reference)
+
+Output ONLY a JSON array. Empty array if there are no real-world references.
+Each entry must have:
+  - "subject": short canonical name of the object
+  - "fields": list of field names you would want known (use snake_case)
+  - "reasoning": one sentence explaining why these fields matter for the design
+
+Output the JSON array with no surrounding prose.
+"""
 
     async def detect_subjects(
         self,
@@ -123,12 +149,13 @@ Each entry must have:
 
 Output the JSON array with no surrounding prose.
 """
+        prompt = self.build_subject_detection_prompt(user_message)
         try:
             resp = await asyncio.wait_for(
                 self.client.chat.completions.create(
                     model=main_model,
                     messages=[
-                        {"role": "system", "content": "You output strict JSON. No prose."},
+                        {"role": "system", "content": self.SUBJECT_DETECTION_SYSTEM_PROMPT},
                         {"role": "user", "content": prompt + "\n\n/no_think"},
                     ],
                     temperature=0.0,

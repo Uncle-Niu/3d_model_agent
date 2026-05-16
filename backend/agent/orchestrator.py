@@ -34,6 +34,7 @@ from ..domain.models import (
 from ..models.llm_service import (
     LLMBackendUnavailable,
     LLMService,
+    build_repair_prompt,
     build_system_prompt,
     extract_code_from_response,
     plan_to_prompt_text,
@@ -42,7 +43,7 @@ from ..knowledge import LocalKnowledgeService
 from ..knowledge.local_recall import format_recall_for_prompt
 from ..storage import StorageService
 from ..tools.web_research import search_web, get_research_prompt_extension
-from ..vision.critic import VisionCritic
+from ..vision.critic import VISION_SYSTEM_PROMPT, VisionCritic, _build_vision_user_prompt
 
 
 class AgentOrchestrator:
@@ -233,6 +234,21 @@ class AgentOrchestrator:
 
         # Perform smoke test to ensure image processing works
         await self._emit_debug("vision", "Performing vision smoke test...")
+        await self._emit_status(
+            "critiquing",
+            "Checking the vision model with a smoke-test image.",
+            details=None,
+            data={
+                "sub_stage": "vision_smoke_test",
+                "rationale": "Confirms the configured multimodal model can actually read images before it critiques generated renders.",
+                "inputs": ["64x64 red square image"],
+                "model": critic.model,
+                "system_prompt": "You are a vision assistant. Look at the image and answer the question literally in one word.",
+                "prompt": "What color is this square? One word.",
+                "image_views": ["smoke_test_red_square"],
+                "in_progress": True,
+            },
+        )
         ok, msg = await critic.smoke_test()
         if not ok:
             await self._emit_debug("vision_warning", f"Vision smoke test failed: {msg}")
@@ -357,7 +373,7 @@ class AgentOrchestrator:
                     f"right bounding box — not that it actually resembles what you asked for. "
                     f"Recent runs without it produced shapes that looked nothing like the prompt.\n\n"
                     f"**To fix:**\n" + "\n".join(fix_lines)
-                )),
+                ), steps=self.current_steps),
             )
             return None
 
@@ -401,6 +417,7 @@ class AgentOrchestrator:
         # gap — turning "did we search?" into "what gaps remain?".
         recall_consensuses: list = []
         recall_context = ""
+        subject_detection_prompt = self.local_knowledge.build_subject_detection_prompt(user_message)
         await self._emit_status(
             "recalling",
             "Detecting real-world references that may need exact specs.",
@@ -415,6 +432,9 @@ class AgentOrchestrator:
                 "rationale": "Separates project-context setup from the LLM call that decides whether external specs are needed.",
                 "rationale_source": "agent",
                 "inputs": ["user prompt", f"main model `{self.llm.model}`"],
+                "model": self.llm.model,
+                "system_prompt": self.local_knowledge.SUBJECT_DETECTION_SYSTEM_PROMPT,
+                "prompt": subject_detection_prompt + "\n\n/no_think",
                 "in_progress": True,
             },
         )
@@ -468,10 +488,43 @@ class AgentOrchestrator:
                     },
                 )
                 async def _recall_step(event: str, payload: Dict):
-                    # Forward each model's start/finish as a debug log so the
-                    # WS layer can show live progress without flooding the
-                    # main timeline with per-model rows.
                     await self._emit_debug(f"recall_{event}", f"{payload.get('model','?')}: {event}", payload)
+                    model_name = payload.get("model", "?")
+                    if event == "model_start":
+                        await self._emit_status(
+                            "recalling",
+                            f"Asking local recall model `{model_name}`.",
+                            details=None,
+                            data={
+                                "sub_stage": "recall_model",
+                                "subject": payload.get("subject"),
+                                "model": model_name,
+                                "system_prompt": payload.get("system_prompt"),
+                                "prompt": payload.get("prompt"),
+                                "in_progress": True,
+                            },
+                        )
+                    elif event == "model_done":
+                        latency = payload.get("latency_s")
+                        try:
+                            latency_text = f"{float(latency):.1f}s"
+                        except (TypeError, ValueError):
+                            latency_text = "?s"
+                        await self._emit_status(
+                            "recalling",
+                            f"Local recall model `{model_name}` returned.",
+                            details=None,
+                            data={
+                                "sub_stage": "recall_model_done",
+                                "subject": payload.get("subject"),
+                                "model": model_name,
+                                "outcome": (
+                                    payload.get("error")
+                                    or f"{payload.get('field_count', 0)} field(s) in {latency_text}"
+                                ),
+                                "outcome_source": "agent",
+                            },
+                        )
                 consensus = await self.local_knowledge.extract_knowledge(
                     subject=subj.subject,
                     fields=subj.fields,
@@ -703,7 +756,7 @@ class AgentOrchestrator:
         # Build the exact system + user prompt that will be sent to the planner
         # LLM, so the UI can show the user what the model actually saw.
         merged_external_context = _merge_external_context(recall_context, research_context)
-        plan_system_prompt, plan_user_prompt = self.llm.build_planning_prompt(
+        plan_system_prompt, plan_user_prompt = LLMService.build_planning_prompt(
             user_message=user_message,
             current_source=current_source,
             current_model_id=current_model_id,
@@ -797,6 +850,22 @@ class AgentOrchestrator:
 
         quality_report = validate_plan_against_recipes(plan, recipe_cards)
         if not quality_report.is_sufficient:
+            rejected_plan_text = plan_to_prompt_text(plan) or plan.raw_text
+            plan_repair_feedback = (
+                f"{quality_report.feedback}\n\n"
+                "Rejected plan summary for reference:\n"
+                f"{rejected_plan_text[:3000]}"
+            )
+            plan_repair_system_prompt, plan_repair_user_prompt = LLMService.build_planning_prompt(
+                user_message=user_message,
+                current_source=current_source,
+                current_model_id=current_model_id,
+                research_context=merged_external_context,
+                recipe_context=planning_reference_context,
+                plan_feedback=plan_repair_feedback,
+                hard_constraints=config.hard_constraints,
+                soft_constraints=config.soft_constraints,
+            )
             await self._emit_status(
                 "planning",
                 "Plan is missing required product details — repairing.",
@@ -814,6 +883,8 @@ class AgentOrchestrator:
                     "missing_features": list(quality_report.missing_features),
                     "missing_negative_space": list(quality_report.missing_negative_space),
                     "feedback": quality_report.feedback,
+                    "system_prompt": plan_repair_system_prompt,
+                    "prompt": plan_repair_user_prompt,
                     "reasoning_channel": "planning",
                     "in_progress": True,
                 },
@@ -924,6 +995,17 @@ class AgentOrchestrator:
 
                 # ── Step A: Generate or Repair code ──────────────────────────
                 if iteration == 1:
+                    code_generation_context = _merge_external_context(recall_context, research_context)
+                    code_generation_prompt = self._build_code_generation_user_prompt(
+                        user_message=user_message,
+                        current_source=current_source,
+                        current_model_id=base_model_id,
+                        selection=selection,
+                        research_context=code_generation_context,
+                        recipe_context=generation_reference_context,
+                        project_id=project_id,
+                        plan_text=plan_text,
+                    )
                     await self._emit_status("generating", f"Writing CadQuery code (`{model_id}`)…",
                                           details=None,
                                           data={
@@ -931,13 +1013,16 @@ class AgentOrchestrator:
                                               "rationale": "CadQuery lets us control mechanical geometry parametrically.",
                                               "inputs": context_used + ["CadQuery API", "design plan"],
                                               "model_id": model_id,
+                                              "model": self.llm.model,
+                                              "system_prompt": system_prompt,
+                                              "prompt": code_generation_prompt,
                                               "reasoning_channel": "generating",
                                               "in_progress": True,
                                           })
                     last_code = await self._generate_code_streaming(
                         user_message, system_prompt, chat_ctx,
                         current_source, base_model_id, selection,
-                        research_context=_merge_external_context(recall_context, research_context),
+                        research_context=code_generation_context,
                         recipe_context=generation_reference_context,
                         project_id=project_id,
                         plan_text=plan_text,
@@ -980,14 +1065,6 @@ class AgentOrchestrator:
                             "system_prompt": repair_system_prompt,
                             "prompt": repair_user_prompt,
                         })
-                    repair_prompt = self._build_vision_repair_prompt(
-                        last_code,
-                        last_critique,
-                        user_message,
-                        iteration,
-                        plan_text=plan_text,
-                        recipe_context=generation_reference_context,
-                    )
                     await self._emit_debug("repair_request", f"Vision repair attempt {iteration}", {
                         "score": last_critique.overall_printability,
                         "issues_count": len(last_critique.issues),
@@ -1366,6 +1443,64 @@ class AgentOrchestrator:
         self._save_failure_chat(project_id, thread_id, current_model_id)
         return None
 
+    def _build_code_generation_user_prompt(
+        self,
+        user_message: str,
+        current_source: str,
+        current_model_id: Optional[str],
+        selection: Optional[SelectionContext] = None,
+        research_context: str = "",
+        recipe_context: str = "",
+        project_id: str = "",
+        plan_text: str = "",
+    ) -> str:
+        """Build the exact user prompt sent to the code-generation LLM."""
+        plan_block = f"{plan_text}\n\n" if plan_text else ""
+
+        selection_context = ""
+        if selection:
+            feature_meta = {}
+            if current_model_id:
+                manifest = self.storage.get_model_features(project_id, current_model_id)
+                for f in manifest:
+                    if f.get("name") == selection.feature_name:
+                        feature_meta = f
+                        break
+
+            selection_context = (
+                f"## Active Selection\n"
+                f"The user has selected the following feature in the 3D viewport:\n"
+                f"- Feature Name: `{selection.feature_name}`\n"
+            )
+            if feature_meta.get("type"):
+                selection_context += f"- Feature Type: {feature_meta['type']}\n"
+            if feature_meta.get("center"):
+                selection_context += f"- Feature Center: {feature_meta['center']} (X, Y, Z in mm)\n"
+            elif selection.point:
+                selection_context += f"- Click Coordinates: {selection.point} (X, Y, Z in mm)\n"
+
+            selection_context += "\nYour changes should prioritize or relate to this selected feature if relevant to the request.\n\n"
+
+        if current_source:
+            return (
+                f"{selection_context}{research_context}{recipe_context}\n\n{plan_block}"
+                "The project has one model with versioned checkpoints. "
+                f"Use checkpoint `{current_model_id}` as the current base model and edit it for this request.\n\n"
+                "## Current CadQuery Source\n"
+                "```python\n"
+                f"{current_source}\n"
+                "```\n\n"
+                "## Requested Change\n"
+                f"{user_message}\n\n"
+                "Follow the Design Plan above. If the plan and the request conflict, prefer the plan but make the conflict explicit in a brief inline comment."
+            )
+
+        return (
+            f"{selection_context}{research_context}{recipe_context}\n\n{plan_block}"
+            f"## Requested Change\n{user_message}\n\n"
+            "Follow the Design Plan above. Declare the named parameters at the top of the source so they are editable later."
+        )
+
     async def _generate_code_streaming(
         self,
         user_message: str,
@@ -1427,6 +1562,17 @@ class AgentOrchestrator:
                 f"## Requested Change\n{user_message}\n\n"
                 "Follow the Design Plan above. Declare the named parameters at the top of the source so they are editable later."
             )
+
+        effective_user_message = self._build_code_generation_user_prompt(
+            user_message=user_message,
+            current_source=current_source,
+            current_model_id=current_model_id,
+            selection=selection,
+            research_context=research_context,
+            recipe_context=recipe_context,
+            project_id=project_id,
+            plan_text=plan_text,
+        )
 
         await self._emit_debug("llm_request", "Sending request to LLM", {
             "model": self.llm.model,
@@ -1504,19 +1650,29 @@ class AgentOrchestrator:
         plan: Optional[DesignPlan] = None,
         recipe_context: str = "",
     ) -> Optional[CritiqueReport]:
+        vision_user_prompt = _build_vision_user_prompt(
+            user_intent,
+            geometry_stats,
+            plan=plan,
+            recipe_context=recipe_context,
+        )
+        critic = VisionCritic()
+        available, _ = await critic.is_available()
+        if not available:
+            return None
+        vision_model = critic.model
         await self._emit_status("critiquing", "Vision verifier reviewing the renders…",
                               details=None,
                               data={
                                   "rationale": "A multimodal LLM scores each plan key-feature as present / missing.",
                                   "inputs": [f"{len(render_paths)} render(s)", "design plan checklist"],
+                                  "model": vision_model,
+                                  "system_prompt": VISION_SYSTEM_PROMPT,
+                                  "prompt": vision_user_prompt,
+                                  "image_views": list(render_paths.keys()),
                                   "in_progress": True,
                               })
         try:
-            critic = VisionCritic()
-            available, _ = await critic.is_available()
-            if not available:
-                return None
-
             critique_result = await critic.critique(
                 render_paths,
                 user_intent,
