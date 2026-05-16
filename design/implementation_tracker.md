@@ -358,12 +358,12 @@ Focus: make the agent reliably build complex shapes and expose its reasoning.
 
 ## 14. Backend — Vision Critique System
 
-> **Default vision model: `qwen3.6:27b`** (same model as code generation).
+> **Default vision model: `qwen3.6:35b`** (same model as code generation).
 > If vision quality is poor, swap to `qwen3-vl`, `gemma3:27b`, or cloud (Gemini/GPT-4o).
 > Configured via `VISION_MODEL` / `VISION_BASE_URL` env vars.
 
 ### Vision Model Setup
-- ✅ `VISION_MODEL` env var support (default: `qwen3.6:27b`)
+- ✅ `VISION_MODEL` env var support (default: `qwen3.6:35b`)
 - ✅ `VISION_BASE_URL` env var support (default: same as Ollama)
 - ✅ Vision capability smoke test at startup with **real content image** (16×16 red square)
 - ✅ Smoke test retry on transient HTTP 500 (Ollama VRAM swap)
@@ -396,7 +396,7 @@ The full loop is now wired in `api/websocket.py`:
 Generate CadQuery → Execute → Export GLB
   → model_ready sent to frontend (user sees model early)
   → Render server-side PNGs (iso, front, right, top) via trimesh/matplotlib
-  → Send renders + user intent + geometry stats to vision model (qwen3.6:27b)
+  → Send renders + user intent + geometry stats to vision model (qwen3.6:35b)
   → Parse structured JSON critique (score, issues, repair_prompt)
   → critique_result sent to frontend
   → If score < 0.65 or has errors → inject critique into vision repair prompt → re-generate
@@ -590,7 +590,7 @@ Generate CadQuery → Execute → Export GLB
 
 ### 21.5 Vision-Based Validation
 - ✅ Server-side PNG render generation (iso, front, right, top views)
-- ✅ Local Ollama vision model integration (`qwen3.6:27b` default)
+- ✅ Local Ollama vision model integration (`qwen3.6:35b` default)
 - ❌ Vision capability smoke test at startup
 - ✅ Vision prompt contract (JSON critique format)
 - ❌ Cloud vision fallback (Gemini, GPT-4o — user opt-in)

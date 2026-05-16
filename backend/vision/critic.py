@@ -356,7 +356,7 @@ class VisionCritic:
     Sends rendered images to a vision model and parses the structured critique.
 
     Uses Ollama's OpenAI-compatible API with image inputs.
-    Model must be a vision-capable model (e.g., qwen3.6:27b, llava, gemma3).
+    Model must be a vision-capable model (e.g., qwen3.6:35b, llava, gemma3).
     """
 
     def __init__(
@@ -376,7 +376,7 @@ class VisionCritic:
         )
         self.model = model or os.environ.get(
             "VISION_MODEL",
-            os.environ.get("LLM_MODEL", "qwen3.6:27b"),
+            os.environ.get("LLM_MODEL", "qwen3.6:35b"),
         )
         self.timeout = timeout
 
@@ -399,7 +399,7 @@ class VisionCritic:
                     return True, f"Vision model '{self.model}' is available"
 
                 # Fall back to another known-vision-capable model already on the host
-                preferred_fallbacks = ["gemma4:31b", "gemma3:27b", "qwen3.6:27b"]
+                preferred_fallbacks = ["gemma4:31b", "gemma3:27b", "qwen3.6:35b"]
                 for candidate in preferred_fallbacks:
                     if candidate in models and candidate != self.model:
                         old = self.model

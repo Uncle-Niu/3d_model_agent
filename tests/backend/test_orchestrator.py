@@ -18,7 +18,7 @@ class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
 
         self.mock_llm = AsyncMock()
         self.mock_llm.base_url = "http://localhost:11434/v1"
-        self.mock_llm.model = "qwen3.6:27b"
+        self.mock_llm.model = "qwen3.6:35b"
         self.mock_llm.decide_research.return_value = None
         self.mock_llm.plan_design.return_value = DesignPlan(summary="Test plan", key_features=["a feature"])
 

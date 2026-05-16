@@ -975,7 +975,7 @@ Run via:
 
 ### Recommended Models
 
-- qwen3.6:27b
+- qwen3.6:35b
 
 ### Responsibilities
 
@@ -1553,7 +1553,7 @@ IMG=$(base64 < render.png | tr -d '\n')
 curl -X POST http://localhost:11434/api/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen3.6:27b",
+    "model": "qwen3.6:35b",
     "messages": [{
       "role": "user",
       "content": "Review this CAD render for printability and whether it matches the request. Return JSON.",
@@ -1567,13 +1567,13 @@ Ollama also supports passing image paths through the official Python/JavaScript 
 
 ### Model Choice
 
-**Default vision model: `qwen3.6:27b`** — the same model used for CAD code generation. This keeps the setup simple (one model serves both roles) and avoids requiring additional model downloads.
+**Default vision model: `qwen3.6:35b`** — the same model used for CAD code generation. This keeps the setup simple (one model serves both roles) and avoids requiring additional model downloads.
 
-If `qwen3.6:27b` vision performance is insufficient (poor critique accuracy, hallucinated issues, or inability to parse renders), swap to one of these alternatives without changing the rest of the pipeline:
+If `qwen3.6:35b` vision performance is insufficient (poor critique accuracy, hallucinated issues, or inability to parse renders), swap to one of these alternatives without changing the rest of the pipeline:
 
 | Priority | Model | Reason to try |
 |---|---|---|
-| 1 (default) | `qwen3.6:27b` | Already pulled for code gen, good baseline |
+| 1 (default) | `qwen3.6:35b` | Already pulled for code gen, good baseline |
 | 2 | `qwen3-vl` variants | Dedicated vision-language model, stronger image reasoning |
 | 3 | `gemma3:27b` or smaller `gemma3` | Alternative architecture, lighter VRAM in smaller variants |
 | 4 | Cloud vision (Gemini, GPT-4o) | Best accuracy, requires API key and user opt-in |
@@ -1581,7 +1581,7 @@ If `qwen3.6:27b` vision performance is insufficient (poor critique accuracy, hal
 The vision model is configured independently from the code-generation model so it can be changed without affecting the rest of the system:
 
 ```env
-VISION_MODEL=qwen3.6:27b          # default — same as LLM_MODEL
+VISION_MODEL=qwen3.6:35b          # default — same as LLM_MODEL
 VISION_BASE_URL=http://localhost:11434/v1   # default — same Ollama instance
 ```
 

@@ -29,7 +29,7 @@ from backend.knowledge.local_recall import (
 
 
 PROMPT = "Generate a model for iphone 16 pro max holder"
-MAIN_MODEL = "qwen3.6:27b"
+MAIN_MODEL = "qwen3.6:35b"
 
 
 async def main():
