@@ -46,7 +46,7 @@ router = APIRouter()
 async def health_check():
     """Check system health: Ollama connectivity, available models."""
     llm_base = os.environ.get("LLM_BASE_URL", "http://localhost:11434/v1")
-    llm_model = os.environ.get("LLM_MODEL", "qwen3.6:35b")
+    llm_model = os.environ.get("LLM_MODEL", "qwen3.6:27b")
     ollama_base = llm_base.replace("/v1", "")
 
     result = {

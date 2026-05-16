@@ -290,7 +290,7 @@ class AgentOrchestrator:
         # explicitly bypass for development.
         allow_vision_skip = os.environ.get("ALLOW_VISION_SKIP", "").lower() in ("1", "true", "yes")
         if not vision_ok and not allow_vision_skip:
-            vision_model = os.environ.get("VISION_MODEL", os.environ.get("LLM_MODEL", "qwen3.6:35b"))
+            vision_model = os.environ.get("VISION_MODEL", os.environ.get("LLM_MODEL", "qwen3.6:27b"))
             reason_lower = vision_reason.lower()
             # Targeted fix lines per failure mode — only show what's actually
             # relevant to the specific reason, so the user doesn't have to guess
@@ -306,7 +306,7 @@ class AgentOrchestrator:
                     # "model X not found in Ollama. Available: [...]"
                     fix_lines = [
                         f"- The configured vision model `{vision_model}` is not installed in Ollama, "
-                        f"and no fallback (`gemma4:31b` / `gemma3:27b` / `qwen3.6:35b`) was found either.",
+                        f"and no fallback (`gemma4:31b` / `gemma3:27b` / `qwen3.6:27b`) was found either.",
                         "- Install a vision-capable model: `ollama pull gemma3:27b` (recommended) "
                         "or `ollama pull gemma4:31b`.",
                         f"- Then set `VISION_MODEL=gemma3:27b` (or the model you pulled) in `.env`.",

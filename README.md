@@ -11,7 +11,7 @@ http://localhost:5173/
 
 Ollama:
 http://localhost:11434/
-ollama pull qwen3.6:35b
+ollama pull qwen3.6:27b
 Get-Process | Where-Object {$_.ProcessName -like "*ollama*"}
 netstat -ano | findstr :11434
 
@@ -46,7 +46,7 @@ normal CadQuery sandbox.
 
 ## Env vars
 
-- `LLM_MODEL` / `VISION_MODEL` — defaults to `qwen3.6:35b`. Both code-gen and
+- `LLM_MODEL` / `VISION_MODEL` — defaults to `qwen3.6:27b`. Both code-gen and
   vision use the same model unless overridden.
 - `VISION_DISABLE_SMOKE_TEST=1` — trust capability metadata, skip the red-square
   smoke test (useful when VRAM is tight and the smoke call transiently fails).

@@ -356,7 +356,7 @@ class VisionCritic:
     Sends rendered images to a vision model and parses the structured critique.
 
     Uses Ollama's OpenAI-compatible API with image inputs.
-    Model must be a vision-capable model (e.g., qwen3.6:35b, llava, gemma3).
+    Model must be a vision-capable model (e.g., qwen3.6:27b, llava, gemma3).
     """
 
     def __init__(
@@ -376,7 +376,7 @@ class VisionCritic:
         )
         self.model = model or os.environ.get(
             "VISION_MODEL",
-            os.environ.get("LLM_MODEL", "qwen3.6:35b"),
+            os.environ.get("LLM_MODEL", "qwen3.6:27b"),
         )
         self.timeout = timeout
 
@@ -399,7 +399,7 @@ class VisionCritic:
                     return True, f"Vision model '{self.model}' is available"
 
                 # Fall back to another known-vision-capable model already on the host
-                preferred_fallbacks = ["gemma4:31b", "gemma3:27b", "qwen3.6:35b"]
+                preferred_fallbacks = ["gemma4:31b", "gemma3:27b", "qwen3.6:27b"]
                 for candidate in preferred_fallbacks:
                     if candidate in models and candidate != self.model:
                         old = self.model
@@ -440,15 +440,28 @@ class VisionCritic:
     async def _smoke_test_once(self) -> tuple[bool, str]:
         """Single smoke-test attempt.
 
-        Sends a 16x16 red square and asks for the color. A model that genuinely
+        Sends a 64x64 red square and asks for the color. A model that genuinely
         sees the image will say something close to "red". A non-vision model will
         either refuse or guess randomly.
+
+        Image is 64x64 — Qwen3-VL's SmartResize preprocessor requires both
+        dimensions strictly larger than 32px (factor) or the model runner crashes
+        with HTTP 500 "model runner has unexpectedly stopped". A 16x16 probe
+        triggers that crash on otherwise-working models (ollama#13113).
+
+        max_tokens is generous (256) because thinking-mode models like Qwen3
+        and Gemma3+ may spend most of the budget in the `reasoning` channel
+        before emitting the final answer in `content`. We also read the
+        `reasoning` field as a fallback so a truncated answer in `content`
+        doesn't get marked ambiguous when reasoning shows the model clearly
+        saw the image.
         """
-        # 16x16 solid red PNG (PIL-generated, base64-encoded once)
-        red_png_b64 = (
-            "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAI0lEQVR4nGO8"
-            "IyfHQApgIkk1w6gG4gATkergYFQDMYDkUAIAjEsBOCOwN18AAAAASUVORK5CYII="
-        )
+        # 64x64 solid red PNG (PIL-generated, base64-encoded once). Kept as a
+        # single line on purpose — wrapping it and miscounting one of the
+        # repeating "nMRJ" runs silently produces an "invalid PNG: too much
+        # pixel data" rejection from Ollama. If you need to edit, regenerate
+        # from PIL rather than hand-tweaking the literal.
+        red_png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAgUlEQVR4nNXOMREAIBDAsFINzPgXhRhE/MA1CrLuPpRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMRJnMT5OzD1ACYTAY6OT4M6AAAAAElFTkSuQmCC"
         messages = [
             {
                 "role": "system",
@@ -477,7 +490,7 @@ class VisionCritic:
                         "model": self.model,
                         "messages": messages,
                         "temperature": 0.0,
-                        "max_tokens": 20,
+                        "max_tokens": 256,
                         "stream": False,
                     },
                 )
@@ -485,14 +498,21 @@ class VisionCritic:
                     return False, f"Smoke test failed: HTTP {response.status_code} - {response.text[:200]}"
 
                 data = response.json()
-                text = (data["choices"][0]["message"]["content"] or "").lower()
+                msg = data["choices"][0]["message"]
+                content = (msg.get("content") or "")
+                # Thinking-mode models put their actual answer in `reasoning`
+                # when `content` is truncated or empty. Either channel is fair
+                # game for the smoke test — we only care whether the model
+                # looked at the image and could name the color.
+                reasoning = msg.get("reasoning") or msg.get("reasoning_content") or ""
+                combined = (content + "\n" + reasoning).lower()
                 # Accept anything that names red. Treat refusals / "I can't see images" / unrelated answers as failure.
-                if any(token in text for token in ("red", "crimson", "scarlet", "ruby")):
-                    return True, f"Smoke test passed (model identified red square): '{text.strip()[:80]}'"
-                if any(token in text for token in ("can't see", "cannot see", "no image", "don't see", "not able")):
-                    return False, f"Smoke test failed: model says it cannot see images — '{text.strip()[:120]}'"
+                if any(token in combined for token in ("red", "crimson", "scarlet", "ruby")):
+                    return True, f"Smoke test passed (model identified red square): '{(content or reasoning).strip()[:80]}'"
+                if any(token in combined for token in ("can't see", "cannot see", "no image", "don't see", "not able")):
+                    return False, f"Smoke test failed: model says it cannot see images — '{(content or reasoning).strip()[:120]}'"
                 # Ambiguous response — still allow but flag
-                return True, f"Smoke test ambiguous (allowing): '{text.strip()[:120]}'"
+                return True, f"Smoke test ambiguous (allowing): '{(content or reasoning).strip()[:120]}'"
         except Exception as e:
             return False, f"Smoke test failed: {e}"
 

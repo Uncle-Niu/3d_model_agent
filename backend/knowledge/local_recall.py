@@ -41,7 +41,7 @@ from ..domain.models import (
 # is already warm in VRAM. Subsequent models cross-check from disjoint
 # training corpora.
 DEFAULT_MODEL_CHAIN: tuple[str, ...] = (
-    "qwen3.6:35b",            # Alibaba — default (main agent model)
+    "qwen3.6:27b",            # Alibaba — default (main agent model)
     "gemma4:31b",             # Google — different training data
     "nemotron3:33b",          # NVIDIA — freshest cutoff (multimodal)
     "glm-4.7-flash:q4_K_M",   # Z.ai — strong in the 30B class
