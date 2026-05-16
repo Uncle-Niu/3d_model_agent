@@ -156,6 +156,38 @@ def validate_cadquery_code(code: str) -> tuple[bool, str]:
     return True, "OK"
 
 
+def try_patch_missing_result(code: str) -> Optional[str]:
+    """Mechanical repair for the most common single-line failure: the model
+    wrote a valid CadQuery chain but never assigned it to `result`.
+
+    Strategy: parse the AST; find the last top-level assignment to a Name; if
+    that target isn't already `result`, append `result = <that_name>` to the
+    source. Returns the patched source on success, or None if the AST didn't
+    parse, the file is empty, or there is no obvious shape variable to alias.
+
+    We do this in code, deterministically, so the LLM doesn't get a chance to
+    "fix" the missing assignment by also throwing away half the geometry — the
+    actual failure mode that produced a flat plate for an iPhone holder request.
+    """
+    if not code or not code.strip():
+        return None
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+    last_target: Optional[str] = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    last_target = target.id
+    if not last_target or last_target == "result":
+        return None
+    # Append the alias. A trailing newline keeps source.py tidy.
+    suffix = "\n" if code.endswith("\n") else "\n\n"
+    return f"{code}{suffix}result = {last_target}\n"
+
+
 # ---------------------------------------------------------------------------
 # Sandboxed execution
 # ---------------------------------------------------------------------------

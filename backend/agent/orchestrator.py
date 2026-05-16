@@ -7,6 +7,7 @@ reusable, structured generation workflow.
 
 import asyncio
 import inspect
+import os
 import time
 import traceback
 from typing import Any, Callable, Dict, List, Optional
@@ -273,6 +274,33 @@ class AgentOrchestrator:
                 ChatMessage(role="assistant", content=(
                     f"❌ Cannot reach Ollama. Please make sure Ollama is running "
                     f"and the model `{self.llm.model}` is available."
+                )),
+            )
+            return None
+
+        # Vision is required by default. Without it the pipeline can only check
+        # geometry deterministically (bbox / solid count) — a result that hits
+        # the right bbox but is the wrong shape will still pass, which is the
+        # exact failure mode we want to avoid. Set ALLOW_VISION_SKIP=1 to
+        # explicitly bypass for development.
+        allow_vision_skip = os.environ.get("ALLOW_VISION_SKIP", "").lower() in ("1", "true", "yes")
+        if not vision_ok and not allow_vision_skip:
+            vision_model = os.environ.get("VISION_MODEL", os.environ.get("LLM_MODEL", "qwen3.6:35b"))
+            self.storage.append_chat_thread_message(
+                project_id, thread_id,
+                ChatMessage(role="assistant", content=(
+                    f"❌ Vision verifier is not available, so generation is blocked.\n\n"
+                    f"Without a vision check the agent can only confirm that the model has the "
+                    f"right bounding box — not that it actually resembles what you asked for. "
+                    f"Recent runs without it produced shapes that looked nothing like the prompt.\n\n"
+                    f"**To fix:**\n"
+                    f"- Make sure Ollama has a vision-capable model installed "
+                    f"(e.g. `ollama pull gemma3:27b` or `ollama pull gemma4:31b`).\n"
+                    f"- Set `VISION_MODEL` in your `.env` to that model name "
+                    f"(currently set to `{vision_model}`).\n"
+                    f"- If the model is vision-capable but the smoke test is flaky, "
+                    f"set `VISION_DISABLE_SMOKE_TEST=1`.\n"
+                    f"- To bypass this gate entirely (not recommended), set `ALLOW_VISION_SKIP=1`."
                 )),
             )
             return None
@@ -900,34 +928,63 @@ class AgentOrchestrator:
                     # Execution-error repair
                     failure_label = (last_failure_type or "execution_error").replace("_", " ")
                     err_first = last_error.splitlines()[0][:120] if last_error else "previous attempt failed"
-                    await self._emit_status("repairing",
-                        f"Repairing {failure_label} (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS}) · `{model_id}`",
-                        details=None,
-                        data={
-                            "iteration": iteration,
-                            "repair_kind": "execution",
-                            "rationale": "The previous generated source did not produce valid geometry, so the next LLM call is constrained by the failure.",
-                            "outcome": f"Trying to fix: {err_first}",
-                            "inputs": [last_failure_type or "execution_error", err_first],
-                            "error_excerpt": (last_error[:600] if last_error else None),
-                            "model_id": model_id,
+
+                    # Mechanical pre-repair: when the validator complained that
+                    # `result` is unassigned but the rest of the source parses
+                    # fine, patch it in code instead of asking the LLM. The
+                    # LLM-driven repair has a habit of "fixing" the missing
+                    # assignment by also dropping most of the planned geometry.
+                    mechanical_patch: Optional[str] = None
+                    if last_failure_type == "syntax_error" and last_error and "must assign" in last_error.lower():
+                        from ..cad.engine import try_patch_missing_result
+                        mechanical_patch = try_patch_missing_result(last_code)
+
+                    if mechanical_patch is not None:
+                        await self._emit_status("repairing",
+                            f"Patching missing `result` assignment (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS}) · `{model_id}`",
+                            details=None,
+                            data={
+                                "iteration": iteration,
+                                "repair_kind": "mechanical",
+                                "rationale": "The previous source parsed cleanly but did not assign the final shape to `result`. Patching deterministically so the LLM does not also drop geometry.",
+                                "outcome": "Appended `result = <last_shape_var>` to the source.",
+                                "inputs": ["AST patch"],
+                                "model_id": model_id,
+                            })
+                        await self._emit_debug("mechanical_repair", "Applied AST-based result alias", {
+                            "original_tail": last_code[-200:],
+                            "patched_tail": mechanical_patch[-200:],
                         })
-                    await self._emit_debug("repair_request", f"Error repair attempt {iteration}", {
-                        "original_code": last_code, "error_message": last_error[:500],
-                    })
-                    repair_response = await self.llm.repair_cadquery(
-                        original_code=last_code,
-                        error_message=last_error,
-                        iteration=iteration,
-                        hard_constraints=config.hard_constraints,
-                        soft_constraints=config.soft_constraints,
-                        failure_type=last_failure_type,
-                        geometry_stats=last_geometry_stats,
-                    )
-                    failure_label = (last_failure_type or "execution_error").replace("_", " ")
-                    error_summary = last_error.splitlines()[0][:60] if last_error else "previous attempt failed"
-                    repair_notes.append(f"Fixed {failure_label}: {error_summary}...")
-                    last_code = extract_code_from_response(repair_response)
+                        last_code = mechanical_patch
+                        repair_notes.append("Mechanically aliased the final shape to `result` (no LLM call)")
+                    else:
+                        await self._emit_status("repairing",
+                            f"Repairing {failure_label} (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS}) · `{model_id}`",
+                            details=None,
+                            data={
+                                "iteration": iteration,
+                                "repair_kind": "execution",
+                                "rationale": "The previous generated source did not produce valid geometry, so the next LLM call is constrained by the failure.",
+                                "outcome": f"Trying to fix: {err_first}",
+                                "inputs": [last_failure_type or "execution_error", err_first],
+                                "error_excerpt": (last_error[:600] if last_error else None),
+                                "model_id": model_id,
+                            })
+                        await self._emit_debug("repair_request", f"Error repair attempt {iteration}", {
+                            "original_code": last_code, "error_message": last_error[:500],
+                        })
+                        repair_response = await self.llm.repair_cadquery(
+                            original_code=last_code,
+                            error_message=last_error,
+                            iteration=iteration,
+                            hard_constraints=config.hard_constraints,
+                            soft_constraints=config.soft_constraints,
+                            failure_type=last_failure_type,
+                            geometry_stats=last_geometry_stats,
+                        )
+                        error_summary = last_error.splitlines()[0][:60] if last_error else "previous attempt failed"
+                        repair_notes.append(f"Fixed {failure_label}: {error_summary}...")
+                        last_code = extract_code_from_response(repair_response)
 
                 if not last_code.strip():
                     last_error = "LLM returned empty code"
@@ -1086,6 +1143,53 @@ class AgentOrchestrator:
                             "skipped": ["vision-based verification"],
                         },
                     )
+
+                # Deterministic plan-conformance check — runs whether or not
+                # vision was available. Compares the measured bbox + solid count
+                # against the plan so a "valid plate" can't masquerade as a
+                # successful iPhone-holder when the vision critic is offline.
+                from .plan_conformance import check_plan_conformance
+                conformance = check_plan_conformance(plan, geometry_stats)
+                if conformance is not None:
+                    await self._emit_status(
+                        "validating",
+                        ("Plan-conformance check passed."
+                         if conformance.passed
+                         else f"Plan-conformance check failed: {conformance.reasons[0][:120]}"),
+                        details=None,
+                        data={
+                            "iteration": iteration,
+                            "rationale": "Deterministic bbox + solid-count comparison against the design plan.",
+                            "outcome": ("Geometry matches plan dimensions."
+                                        if conformance.passed
+                                        else "Geometry does not match plan; triggering repair."),
+                            "expected_bbox_mm": list(conformance.expected_bbox) if conformance.expected_bbox else None,
+                            "measured_bbox_mm": list(conformance.measured_bbox) if conformance.measured_bbox else None,
+                            "expected_solids": conformance.expected_solids,
+                            "measured_solids": conformance.measured_solids,
+                            "score": conformance.score,
+                            "reasons": conformance.reasons,
+                        },
+                    )
+                    if not conformance.passed:
+                        # Merge into the vision critique so the repair branch
+                        # treats it as a single set of issues. If vision didn't
+                        # produce a critique (skipped or no signal), synthesize
+                        # one from the conformance report.
+                        conformance_report = conformance.as_critique()
+                        if critique is None:
+                            critique = conformance_report
+                        else:
+                            critique.issues.extend(conformance_report.issues)
+                            critique.matches_intent = False
+                            critique.overall_printability = min(
+                                critique.overall_printability, conformance_report.overall_printability
+                            )
+                            if conformance_report.repair_prompt:
+                                joiner = "\n\n" if critique.repair_prompt else ""
+                                critique.repair_prompt = (
+                                    f"{critique.repair_prompt}{joiner}{conformance_report.repair_prompt}"
+                                )
 
                 # Save metadata
                 geo_stats_model = None
