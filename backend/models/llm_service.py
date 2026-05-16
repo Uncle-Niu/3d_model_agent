@@ -574,14 +574,23 @@ class LLMService:
                 "for OOM or worker termination."
             )
 
-        # Combine for parsing — both reasoning and content may contain useful
-        # signal (the <thinking> section vs the json block).
+        # Parse content first, fall back to reasoning. Thinking-mode models
+        # (qwen3 etc.) often rehearse the schema in their reasoning stream
+        # ("I need to emit <design_plan>..."), which the parser would
+        # otherwise pick up as the first <design_plan> match and treat as
+        # the answer — producing an empty/skeleton plan even though the real
+        # one was waiting in the content channel.
+        plan = parse_design_plan(full_content) if full_content else DesignPlan()
+        if not _plan_has_structured_content(plan) and full_reasoning:
+            plan = parse_design_plan(full_reasoning)
+
+        if not plan.raw_reasoning and full_reasoning:
+            plan.raw_reasoning = full_reasoning.strip()
+        # raw_text keeps everything so the debug surface still shows the full
+        # response (both channels) regardless of which one we parsed from.
         combined = full_reasoning
         if full_content:
             combined = (combined + "\n" + full_content) if combined else full_content
-        plan = parse_design_plan(combined)
-        if not plan.raw_reasoning and full_reasoning:
-            plan.raw_reasoning = full_reasoning.strip()
         plan.raw_text = combined
         return plan
 
@@ -659,6 +668,22 @@ Output your response in this exact XML format:
                 reasoning = "Model provided a query directly."
 
         return query, reasoning
+
+
+def _plan_has_structured_content(plan: DesignPlan) -> bool:
+    """True if the parsed plan carries anything beyond an empty skeleton.
+
+    Used by ``plan_design`` to decide whether to retry parsing against a
+    different source (e.g. fall back from content to reasoning).
+    """
+    return bool(
+        plan.summary
+        or plan.components
+        or plan.key_features
+        or plan.parameters
+        or plan.assumptions
+        or plan.risks
+    )
 
 
 def parse_design_plan(raw_text: str) -> DesignPlan:

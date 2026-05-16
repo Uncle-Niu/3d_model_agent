@@ -752,6 +752,15 @@ class AgentOrchestrator:
             await self._emit_debug("planning_error", f"Planner failed: {e}", {"traceback": traceback.format_exc()})
             plan = DesignPlan(raw_text="", summary="(planner failed — proceeding without a structured plan)")
 
+        # Surface the raw planner output so an empty-looking first draft can
+        # be diagnosed without re-running the LLM.
+        await self._emit_debug(
+            "planner_raw",
+            f"Planner returned {len(plan.components)} component(s), "
+            f"{len(plan.key_features)} feature(s); summary={'yes' if plan.summary else 'no'}",
+            {"raw_text": plan.raw_text[:8000] if plan.raw_text else ""},
+        )
+
         # Emit the first-draft plan as its own step so the user can see what
         # the planner produced BEFORE the quality-gate decides whether to
         # repair. Carries the same structured fields as the eventual
@@ -935,6 +944,16 @@ class AgentOrchestrator:
                     )
                 elif last_critique and last_critique.issues:
                     # Vision-driven repair
+                    repair_prompt = self._build_vision_repair_prompt(
+                        last_code,
+                        last_critique,
+                        user_message,
+                        iteration,
+                        plan_text=plan_text,
+                        recipe_context=generation_reference_context,
+                    )
+                    repair_system_prompt = build_system_prompt(config.hard_constraints, config.soft_constraints)
+                    repair_user_prompt = build_repair_prompt(last_code, repair_prompt, iteration)
                     await self._emit_status("repairing",
                         f"Repairing for vision feedback (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS}) · `{model_id}`",
                         details=None,
@@ -957,6 +976,9 @@ class AgentOrchestrator:
                                 for i in last_critique.issues
                             ],
                             "model_id": model_id,
+                            "model": self.llm.model,
+                            "system_prompt": repair_system_prompt,
+                            "prompt": repair_user_prompt,
                         })
                     repair_prompt = self._build_vision_repair_prompt(
                         last_code,
@@ -1014,6 +1036,14 @@ class AgentOrchestrator:
                         last_code = mechanical_patch
                         repair_notes.append("Mechanically aliased the final shape to `result` (no LLM call)")
                     else:
+                        repair_system_prompt = build_system_prompt(config.hard_constraints, config.soft_constraints)
+                        repair_user_prompt = build_repair_prompt(
+                            last_code,
+                            last_error,
+                            iteration,
+                            failure_type=last_failure_type,
+                            geometry_stats=last_geometry_stats,
+                        )
                         await self._emit_status("repairing",
                             f"Repairing {failure_label} (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS}) · `{model_id}`",
                             details=None,
@@ -1025,6 +1055,9 @@ class AgentOrchestrator:
                                 "inputs": [last_failure_type or "execution_error", err_first],
                                 "error_excerpt": (last_error[:600] if last_error else None),
                                 "model_id": model_id,
+                                "model": self.llm.model,
+                                "system_prompt": repair_system_prompt,
+                                "prompt": repair_user_prompt,
                             })
                         await self._emit_debug("repair_request", f"Error repair attempt {iteration}", {
                             "original_code": last_code, "error_message": last_error[:500],
