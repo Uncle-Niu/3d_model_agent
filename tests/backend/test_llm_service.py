@@ -10,7 +10,9 @@ import unittest
 from backend.domain.models import HardConstraints, SoftConstraints
 from backend.models.llm_service import (
     build_repair_prompt,
+    build_repair_system_prompt,
     build_system_prompt,
+    detect_repair_deletion,
     extract_code_from_response,
     parse_design_plan,
 )
@@ -172,6 +174,127 @@ class TestExtractCodeFromResponse(unittest.TestCase):
         response = "```python\nresult = cq.Workplane().box(1,1,1)\n```\n```python\nresult = cq.Workplane().box(2,2,2)\n```"
         code = extract_code_from_response(response)
         self.assertIn("box(1,1,1)", code)
+
+
+class TestDetectRepairDeletion(unittest.TestCase):
+    """Anti-deletion guard for repair LLM output.
+
+    Scenario from the iPhone-holder failure log: the repair model was given a
+    ~70-line program with the `Cannot find a solid` error and "fixed" it by
+    returning a single line. Without a guard, the next iteration inherits a
+    2-line stub and the cascade is fatal.
+    """
+
+    FULL_PROGRAM = """\
+import cadquery as cq
+
+base_length = 120.0
+base_width = 100.0
+base_thickness = 14.0
+backrest_height = 130.0
+gusset_leg = 30.0
+
+base_block = (
+    cq.Workplane("XY")
+    .box(base_length, base_width, base_thickness)
+)
+
+backrest_plate = (
+    cq.Workplane("XY")
+    .box(90, backrest_height, 8)
+    .translate((0, 50, 70))
+)
+
+holder_body = base_block.union(backrest_plate)
+
+left_gusset = (
+    cq.Workplane("YZ")
+    .polyline([(0, 0), (gusset_leg, 0), (gusset_leg, gusset_leg)])
+    .close()
+    .extrude(8)
+    .translate((-45, 65, 14))
+)
+
+holder_body = holder_body.union(left_gusset)
+
+result = holder_body.edges().fillet(2.0)
+"""
+
+    def test_accepts_real_repair(self):
+        # A real repair changes a few lines but keeps the program intact.
+        repaired = self.FULL_PROGRAM.replace(
+            ".extrude(8)\n    .translate((-45, 65, 14))",
+            ".extrude(8)\n    .translate((-45, 65, 14.0))",
+        )
+        self.assertIsNone(detect_repair_deletion(self.FULL_PROGRAM, repaired))
+
+    def test_rejects_truncated_stub(self):
+        # The exact failure mode from the chat log.
+        stub = "holder_body = holder_body.cut(mounting_holes)"
+        reason = detect_repair_deletion(self.FULL_PROGRAM, stub)
+        self.assertIsNotNone(reason)
+
+    def test_rejects_dropped_cadquery_import(self):
+        no_import = "\n".join(
+            ln for ln in self.FULL_PROGRAM.splitlines() if "import cadquery" not in ln
+        )
+        reason = detect_repair_deletion(self.FULL_PROGRAM, no_import)
+        self.assertIsNotNone(reason)
+        self.assertIn("cadquery", reason)
+
+    def test_rejects_empty_repair(self):
+        self.assertIsNotNone(detect_repair_deletion(self.FULL_PROGRAM, ""))
+
+    def test_small_original_not_flagged_for_minor_changes(self):
+        # If the input is tiny, a tiny repair is fine. Don't over-trigger.
+        small = "import cadquery as cq\nresult = cq.Workplane('XY').box(10, 10, 10)"
+        repaired = "import cadquery as cq\nresult = cq.Workplane('XY').box(10, 10, 12)"
+        self.assertIsNone(detect_repair_deletion(small, repaired))
+
+
+class TestBuildRepairSystemPrompt(unittest.TestCase):
+
+    def test_is_smaller_than_generation_system_prompt(self):
+        gen = build_system_prompt()
+        repair = build_repair_system_prompt()
+        # The repair prompt drops the full example bank; should be smaller.
+        self.assertLess(len(repair), len(gen))
+
+    def test_contains_preserve_geometry_rule(self):
+        repair = build_repair_system_prompt()
+        self.assertIn("MINIMUM", repair)
+        self.assertIn("Preserve", repair)
+
+
+class TestPreservationInRepairPrompt(unittest.TestCase):
+
+    SAMPLE_CODE = (
+        "import cadquery as cq\n"
+        "base = cq.Workplane('XY').box(10, 10, 10)\n"
+        "result = base.edges().fillet(1)"
+    )
+
+    def test_contains_preserve_design_block(self):
+        prompt = build_repair_prompt(self.SAMPLE_CODE, "boom", 1)
+        self.assertIn("Preserve the design", prompt)
+        self.assertIn("DO NOT delete", prompt)
+
+    def test_line_numbers_in_failed_code(self):
+        prompt = build_repair_prompt(self.SAMPLE_CODE, "boom", 1)
+        # First line should be tagged " 1:" or similar — this lets the model
+        # cross-reference traceback line numbers.
+        self.assertTrue(
+            any(line.lstrip().startswith("1:") for line in prompt.splitlines()),
+            f"expected a line-numbered source in prompt; got: {prompt[:500]}",
+        )
+
+    def test_extra_preservation_warning_only_when_requested(self):
+        plain = build_repair_prompt(self.SAMPLE_CODE, "boom", 1)
+        warn = build_repair_prompt(
+            self.SAMPLE_CODE, "boom", 1, extra_preservation_warning=True
+        )
+        self.assertNotIn("previous repair attempt deleted", plain)
+        self.assertIn("previous repair attempt deleted", warn)
 
 
 class TestParseDesignPlan(unittest.TestCase):

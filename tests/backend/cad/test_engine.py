@@ -3,7 +3,93 @@ Unit tests for CadQuery execution engine security and functionality.
 """
 
 import unittest
-from backend.cad.engine import execute_cadquery_code, validate_cadquery_code
+from backend.cad.engine import (
+    execute_cadquery_code,
+    sanitize_traceback,
+    try_patch_missing_result,
+    validate_cadquery_code,
+)
+
+
+class TestTryPatchMissingResult(unittest.TestCase):
+    """Mechanical patch for source that forgot to assign `result`.
+
+    The guard is important: a previous LLM repair pass may have stripped most
+    of the program. Patching `result = <last_var>` onto a stub would only
+    promote the truncation to the next iteration as a NameError.
+    """
+
+    FULL = (
+        "import cadquery as cq\n\n"
+        "base_thickness = 5\n"
+        "base = cq.Workplane('XY').box(50, 30, base_thickness)\n"
+        "filleted = base.edges('|Z').fillet(2)\n"
+    )
+
+    def test_appends_result_alias_to_real_program(self):
+        patched = try_patch_missing_result(self.FULL)
+        self.assertIsNotNone(patched)
+        self.assertIn("result = filleted", patched)
+        # Original lines preserved.
+        self.assertIn("import cadquery", patched)
+
+    def test_refuses_to_patch_stub_missing_cadquery_import(self):
+        stub = "holder_body = holder_body.cut(mounting_holes)"
+        self.assertIsNone(try_patch_missing_result(stub))
+
+    def test_refuses_to_patch_too_few_statements(self):
+        # Has the import but nothing else of substance — likely an LLM truncation.
+        tiny = "import cadquery as cq\nbase = cq.Workplane('XY').box(1, 1, 1)\n"
+        self.assertIsNone(try_patch_missing_result(tiny))
+
+    def test_returns_none_when_already_assigns_result(self):
+        good = self.FULL + "result = filleted\n"
+        self.assertIsNone(try_patch_missing_result(good))
+
+    def test_returns_none_for_empty(self):
+        self.assertIsNone(try_patch_missing_result(""))
+
+
+class TestSanitizeTraceback(unittest.TestCase):
+    """Strip multiprocessing-spawn bootstrap frames from execution tracebacks.
+
+    On Windows, if exec'd CadQuery code triggers a child process spawn, the
+    child re-runs `from multiprocessing.spawn import spawn_main; spawn_main(...)`
+    through `<string>`. That frame bubbles up as a fake "line 1 of your source"
+    and confuses repair LLMs into thinking the user imported multiprocessing.
+    """
+
+    NOISY_TB = (
+        "Traceback (most recent call last):\n"
+        "  File \"D:\\app\\engine.py\", line 258, in execute_cadquery_code\n"
+        "    exec(code, safe_globals, local_vars)\n"
+        "  File \"<string>\", line 1, in <module>\n"
+        "    from multiprocessing.spawn import spawn_main; spawn_main(parent_pid=1, pipe_handle=2)\n"
+        "NameError: name 'holder_body' is not defined\n"
+    )
+
+    def test_strips_spawn_frame(self):
+        clean = sanitize_traceback(self.NOISY_TB)
+        self.assertNotIn("multiprocessing.spawn", clean)
+        self.assertNotIn("spawn_main", clean)
+
+    def test_preserves_real_error(self):
+        clean = sanitize_traceback(self.NOISY_TB)
+        self.assertIn("NameError", clean)
+        self.assertIn("holder_body", clean)
+
+    def test_passthrough_for_clean_traceback(self):
+        clean_tb = (
+            "Traceback (most recent call last):\n"
+            "  File \"<string>\", line 12, in <module>\n"
+            "  File \"<string>\", line 8, in make_gusset\n"
+            "NameError: name 'gusset_leg' is not defined\n"
+        )
+        out = sanitize_traceback(clean_tb)
+        self.assertEqual(out.strip(), clean_tb.strip())
+
+    def test_handles_empty(self):
+        self.assertEqual(sanitize_traceback(""), "")
 
 
 class TestCadQueryCodeValidation(unittest.TestCase):

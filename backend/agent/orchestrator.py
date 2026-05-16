@@ -35,7 +35,9 @@ from ..models.llm_service import (
     LLMBackendUnavailable,
     LLMService,
     build_repair_prompt,
+    build_repair_system_prompt,
     build_system_prompt,
+    detect_repair_deletion,
     extract_code_from_response,
     plan_to_prompt_text,
 )
@@ -1078,7 +1080,19 @@ class AgentOrchestrator:
                         soft_constraints=config.soft_constraints,
                     )
                     repair_notes.append(f"Vision critique identified {len(last_critique.issues)} issues (score: {last_critique.overall_printability:.2f})")
-                    last_code = extract_code_from_response(repair_response)
+                    candidate_code = extract_code_from_response(repair_response)
+                    last_code = await self._accept_or_recover_repair(
+                        original_code=last_code,
+                        candidate_code=candidate_code,
+                        iteration=iteration,
+                        repair_kind="vision",
+                        error_message=repair_prompt,
+                        failure_type=None,
+                        geometry_stats=last_geometry_stats,
+                        hard_constraints=config.hard_constraints,
+                        soft_constraints=config.soft_constraints,
+                        repair_notes=repair_notes,
+                    )
                 else:
                     # Execution-error repair
                     failure_label = (last_failure_type or "execution_error").replace("_", " ")
@@ -1113,7 +1127,7 @@ class AgentOrchestrator:
                         last_code = mechanical_patch
                         repair_notes.append("Mechanically aliased the final shape to `result` (no LLM call)")
                     else:
-                        repair_system_prompt = build_system_prompt(config.hard_constraints, config.soft_constraints)
+                        repair_system_prompt = build_repair_system_prompt(config.hard_constraints, config.soft_constraints)
                         repair_user_prompt = build_repair_prompt(
                             last_code,
                             last_error,
@@ -1130,7 +1144,7 @@ class AgentOrchestrator:
                                 "rationale": "The previous generated source did not produce valid geometry, so the next LLM call is constrained by the failure.",
                                 "outcome": f"Trying to fix: {err_first}",
                                 "inputs": [last_failure_type or "execution_error", err_first],
-                                "error_excerpt": (last_error[:600] if last_error else None),
+                                "error_excerpt": (last_error[:1500] if last_error else None),
                                 "model_id": model_id,
                                 "model": self.llm.model,
                                 "system_prompt": repair_system_prompt,
@@ -1150,7 +1164,19 @@ class AgentOrchestrator:
                         )
                         error_summary = last_error.splitlines()[0][:60] if last_error else "previous attempt failed"
                         repair_notes.append(f"Fixed {failure_label}: {error_summary}...")
-                        last_code = extract_code_from_response(repair_response)
+                        candidate_code = extract_code_from_response(repair_response)
+                        last_code = await self._accept_or_recover_repair(
+                            original_code=last_code,
+                            candidate_code=candidate_code,
+                            iteration=iteration,
+                            repair_kind="execution",
+                            error_message=last_error,
+                            failure_type=last_failure_type,
+                            geometry_stats=last_geometry_stats,
+                            hard_constraints=config.hard_constraints,
+                            soft_constraints=config.soft_constraints,
+                            repair_notes=repair_notes,
+                        )
 
                 if not last_code.strip():
                     last_error = "LLM returned empty code"
@@ -1742,6 +1768,111 @@ class AgentOrchestrator:
         except Exception as e:
             await self._emit_debug("vision_error", str(e))
             return None
+
+    async def _accept_or_recover_repair(
+        self,
+        *,
+        original_code: str,
+        candidate_code: str,
+        iteration: int,
+        repair_kind: str,
+        error_message: str,
+        failure_type: Optional[str],
+        geometry_stats: Optional[Dict],
+        hard_constraints,
+        soft_constraints,
+        repair_notes: List[str],
+    ) -> str:
+        """Anti-deletion guard for LLM repair output.
+
+        Repair LLMs frequently "fix" errors by deleting most of the program —
+        turning a 70-line iPhone holder into a 2-line stub. This wrapper
+        detects that, retries once with an explicit "you deleted too much"
+        warning, and falls back to the prior code if the model can't recover.
+
+        Returning `original_code` rather than the truncated repair keeps the
+        next iteration's repair pass anchored to the real design, so a single
+        bad LLM response doesn't poison the rest of the loop.
+        """
+        reason = detect_repair_deletion(original_code, candidate_code)
+        if reason is None:
+            return candidate_code
+
+        await self._emit_debug(
+            "repair_deletion_detected",
+            f"Iteration {iteration} {repair_kind} repair rejected: {reason}",
+            {
+                "iteration": iteration,
+                "repair_kind": repair_kind,
+                "reason": reason,
+                "original_lines": original_code.count("\n") + 1,
+                "candidate_lines": candidate_code.count("\n") + 1 if candidate_code else 0,
+                "candidate_preview": (candidate_code or "")[:400],
+            },
+        )
+        await self._emit_status(
+            "repairing",
+            "Repair output deleted too much code — retrying with a stronger preserve-geometry instruction.",
+            details=(
+                "The repair LLM responded with a much shorter program than the "
+                "input, which usually means it removed components instead of "
+                "patching the bug. Re-asking with an explicit \"do not delete\" "
+                "warning before falling back to the prior code."
+            ),
+            data={
+                "iteration": iteration,
+                "repair_kind": f"{repair_kind}_retry",
+                "rationale": reason,
+                "outcome": "Retrying repair with preservation warning.",
+            },
+        )
+
+        try:
+            retry_response = await self.llm.repair_cadquery(
+                original_code=original_code,
+                error_message=error_message,
+                iteration=iteration,
+                hard_constraints=hard_constraints,
+                soft_constraints=soft_constraints,
+                failure_type=failure_type,
+                geometry_stats=geometry_stats,
+                extra_preservation_warning=True,
+            )
+        except Exception as exc:
+            await self._emit_debug(
+                "repair_retry_error",
+                f"Retry after deletion-detect failed: {exc}",
+            )
+            repair_notes.append(
+                "Repair LLM kept deleting code — kept the prior source and continued."
+            )
+            return original_code
+
+        retry_code = extract_code_from_response(retry_response)
+        retry_reason = detect_repair_deletion(original_code, retry_code)
+        if retry_reason is None:
+            repair_notes.append(
+                f"Repair LLM initially deleted code ({reason}); retry preserved the program."
+            )
+            return retry_code
+
+        await self._emit_debug(
+            "repair_deletion_persists",
+            f"Retry still deleted code: {retry_reason}",
+            {
+                "iteration": iteration,
+                "first_reason": reason,
+                "retry_reason": retry_reason,
+                "retry_preview": (retry_code or "")[:400],
+            },
+        )
+        repair_notes.append(
+            f"Repair LLM kept deleting code ({reason}); kept the prior source so the next "
+            f"iteration still has the full design to work from."
+        )
+        # Returning the original lets the next iteration see the real program
+        # plus a new repair attempt — instead of inheriting a 2-line stub.
+        return original_code
 
     def _build_vision_repair_prompt(
         self,

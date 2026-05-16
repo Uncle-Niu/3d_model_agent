@@ -168,6 +168,11 @@ def try_patch_missing_result(code: str) -> Optional[str]:
     We do this in code, deterministically, so the LLM doesn't get a chance to
     "fix" the missing assignment by also throwing away half the geometry — the
     actual failure mode that produced a flat plate for an iPhone holder request.
+
+    Refuses to patch source that doesn't look like a real CadQuery module
+    (no `import cadquery`, fewer than 3 top-level statements). Aliasing a
+    stub to `result` only hides the real problem — a prior LLM repair pass
+    that deleted most of the geometry — and produces a NameError downstream.
     """
     if not code or not code.strip():
         return None
@@ -175,6 +180,18 @@ def try_patch_missing_result(code: str) -> Optional[str]:
         tree = ast.parse(code)
     except SyntaxError:
         return None
+
+    # Don't dress up a stub. If the source has no cadquery import and only a
+    # handful of statements, the previous repair almost certainly dropped the
+    # real geometry — surface it as a normal failure instead.
+    has_cq_import = any(
+        (isinstance(n, ast.Import) and any(a.name == "cadquery" for a in n.names))
+        or (isinstance(n, ast.ImportFrom) and n.module == "cadquery")
+        for n in tree.body
+    )
+    if not has_cq_import or len(tree.body) < 3:
+        return None
+
     last_target: Optional[str] = None
     for node in tree.body:
         if isinstance(node, ast.Assign):
@@ -186,6 +203,47 @@ def try_patch_missing_result(code: str) -> Optional[str]:
     # Append the alias. A trailing newline keeps source.py tidy.
     suffix = "\n" if code.endswith("\n") else "\n\n"
     return f"{code}{suffix}result = {last_target}\n"
+
+
+def sanitize_traceback(text: str) -> str:
+    """Strip noise from a captured traceback before showing it to the LLM.
+
+    Two specific artifacts cause confusion:
+
+    1. Windows multiprocessing-spawn bootstrap. If any code inside `exec()`
+       triggers `multiprocessing.Process`, the child Python interpreter starts
+       by re-running `from multiprocessing.spawn import spawn_main; spawn_main(...)`
+       through its own `<string>` source. That stub bubbles back up as a frame
+       in the parent's traceback, looking like the original source's line 1.
+       Repair LLMs see "line 1: multiprocessing.spawn" and assume the user code
+       imported multiprocessing. Drop those frames.
+
+    2. The bare leading `Execution error:` prefix from execute_cadquery_code.
+       Useful as a tag but adds nothing for the model.
+    """
+    if not text:
+        return text
+    lines = text.splitlines()
+    cleaned: list[str] = []
+    eat_caret = False
+    for line in lines:
+        if eat_caret:
+            # Python 3.11+ tracebacks emit a caret-only line under the source
+            # frame to highlight the failing token. If we just dropped the
+            # spawn source line, the next caret line is leftover noise.
+            eat_caret = False
+            if line.strip() and set(line.strip()) <= set("^~ "):
+                continue
+        # Drop the spawn bootstrap frame and its source line.
+        if "multiprocessing.spawn" in line and "spawn_main" in line:
+            eat_caret = True
+            # Also drop the preceding "File ..., line 1, in <module>" if we
+            # added one already.
+            if cleaned and cleaned[-1].lstrip().startswith("File \"<string>\""):
+                cleaned.pop()
+            continue
+        cleaned.append(line)
+    return "\n".join(cleaned)
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +315,7 @@ def execute_cadquery_code(
     try:
         exec(code, safe_globals, local_vars)
     except Exception:
-        tb = traceback.format_exc()
+        tb = sanitize_traceback(traceback.format_exc())
         return False, None, f"Execution error:\n{tb}"
 
     result = local_vars.get("result")

@@ -179,7 +179,10 @@ def _get_storage(request: Request) -> StorageService:
 
 def _generate_project_id() -> str:
     import uuid
-    return str(uuid.uuid4())[:8]
+    from datetime import datetime, timezone
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    short_hash = uuid.uuid4().hex[:8]
+    return f"{timestamp}-{short_hash}"
 
 
 def _project_response(storage: StorageService, config: ProjectConfig) -> ProjectResponse:

@@ -296,8 +296,9 @@ class StorageService:
         """Create a chat thread for a project."""
         import uuid
 
-        thread_id = str(uuid.uuid4())[:8]
-        now = datetime.now(timezone.utc).isoformat()
+        now_dt = datetime.now(timezone.utc)
+        thread_id = f"{now_dt.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+        now = now_dt.isoformat()
         thread = {
             "thread_id": thread_id,
             "title": title,

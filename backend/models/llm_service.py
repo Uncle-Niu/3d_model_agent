@@ -105,17 +105,38 @@ Generate production-quality CadQuery Python code for the user's request.
 # Failure-type-specific repair prompts
 # ---------------------------------------------------------------------------
 
+def _format_code_with_line_numbers(code: str) -> str:
+    """Prefix each source line with `NNN: ` so the LLM can locate the failing
+    line directly from a traceback (`File "<string>", line 77`) instead of
+    counting from the top. Keeps the model's repairs targeted and discourages
+    full-rewrites that drop geometry.
+    """
+    if not code:
+        return code
+    lines = code.splitlines()
+    width = max(2, len(str(len(lines))))
+    return "\n".join(f"{i + 1:>{width}}: {ln}" for i, ln in enumerate(lines))
+
+
 def build_repair_prompt(
     original_code: str,
     error_message: str,
     iteration: int,
     failure_type: Optional[str] = None,
     geometry_stats: Optional[dict] = None,
+    *,
+    extra_preservation_warning: bool = False,
 ) -> str:
     """
     Build a targeted repair prompt based on the failure type.
 
     Failure types: syntax_error, execution_error, geometry_invalid, constraint_violation
+
+    The prompt is deliberately anti-deletion: repair LLMs have a habit of
+    "fixing" an error by stripping out the offending lines (and everything
+    that touched them), turning a 70-line holder into a 2-line stub. The
+    instructions and the line-numbered failing code together push the model
+    to patch the specific offending line, not rewrite from scratch.
     """
     stats_text = ""
     if geometry_stats:
@@ -131,7 +152,8 @@ def build_repair_prompt(
 - Fix the Python syntax error shown above
 - Make sure all parentheses, brackets, and quotes are balanced
 - Check for missing colons, incorrect indentation, or typos in method names
-- Verify all CadQuery method names are spelled correctly (e.g., `.fillet()` not `.filleted()`)"""
+- Verify all CadQuery method names are spelled correctly (e.g., `.fillet()` not `.filleted()`)
+- If the validator says `result` is missing, ADD `result = <final_shape_var>` at the end. Do not delete code to make the check pass."""
 
     elif failure_type == "geometry_invalid":
         guidance = """\
@@ -175,34 +197,93 @@ The geometry exceeds one or more hard constraints:
         # Generic execution error
         guidance = """\
 ## Fix Required: Execution Error
-Analyze the error traceback carefully:
+Use the error traceback line number to locate the offending line in the numbered source above, then change ONLY what is necessary.
 
-- If it's an attribute error: check the method name spelling in CadQuery docs
-- If it's a selector error (`.faces()`, `.edges()`): simplify the selector string
-- If it's a geometry kernel error from OCC: the operation is geometrically invalid
-  - Try breaking the operation into smaller steps
-  - Avoid operations on degenerate geometry
-- If `result` is None/empty: make sure the final shape is assigned to `result`"""
+Common root causes:
+- **`Cannot find a solid on the stack or in the parent chain`**: a method like `.hole()`, `.faces()`, `.workplane()` was called on a `cq.Workplane("XY")` chain that has no base solid yet. Fix by chaining the operation onto an existing solid (`base.faces(">Z").workplane().hole(d)`), or by `.cut()`-ing a separate cylinder built as its own solid.
+- **`NameError: name 'X' is not defined`**: the variable was used before assignment, used outside the function/scope where it was defined, or accidentally referenced before a function `def` closes over it. Hoist parameters above any `def` that uses them, or pass them in as arguments.
+- **AttributeError on a Workplane method**: check the method name spelling against CadQuery docs.
+- **Selector returned empty**: `.faces(">Z")` / `.edges("|Z")` did not match anything — usually because the chain doesn't have geometry yet, or you applied the selector after a `.cut()` that consumed the face you wanted. Move the selector earlier or simplify it.
+- **OCC kernel error from a boolean**: split the boolean into smaller steps and union at the end."""
+
+    preservation_block = """\
+## Preserve the design (CRITICAL)
+- The error above is a localized bug. Apply the smallest possible fix.
+- DO NOT delete components, parameters, helper functions, or geometry to make the error go away. Every named variable defined in the failed code MUST still be defined in your output (unless it is the direct cause of the failure, in which case it must be replaced with an equivalent definition).
+- DO NOT shorten the program. Your output should have at least as many functional statements as the input.
+- DO NOT drop the `import cadquery as cq` line.
+- If you are tempted to skip a part because it is "complicated", keep it — fix the bug instead.
+"""
+    if extra_preservation_warning:
+        preservation_block += (
+            "- ⚠️ The previous repair attempt deleted most of the program. "
+            "That was wrong. Restore the original components (parameters, helper "
+            "shapes, booleans, fillets) and apply only a minimal fix to the line "
+            "that caused the error.\n"
+        )
 
     return f"""\
-The CadQuery code failed on attempt {iteration}. Fix the issue and regenerate.
+The CadQuery code failed on attempt {iteration}. Apply a minimal fix to the failing line(s) — do NOT rewrite the program.
 
-## Failed Code
+## Failed Code (with line numbers — match these to the traceback)
 ```python
-{original_code}
+{_format_code_with_line_numbers(original_code)}
 ```
 
 ## Error
 ```
-{error_message[:1500]}
+{error_message[:2000]}
 ```
 {stats_text}
 {guidance}
 
+{preservation_block}
 ## Output
-- Output ONLY the corrected CadQuery Python code in a ```python block
-- Keep the same design intent
+- Output ONLY the corrected CadQuery Python code in a single ```python block — no prose
+- Output the FULL program (all parameters, helper shapes, booleans, fillets, and the `result = ...` assignment), not just the diff
+- Keep variable names and structure of the failed code wherever possible
 - Assign the final shape to `result`
+"""
+
+
+def build_repair_system_prompt(
+    hard_constraints: Optional[HardConstraints] = None,
+    soft_constraints: Optional[SoftConstraints] = None,
+) -> str:
+    """Lean system prompt for the repair pass.
+
+    The full generation system prompt ships ~12KB of API reference + every
+    canonical example. During a repair the model already has a working program
+    in the user message; what it needs is the rules and the API skeleton, not
+    another copy of the example bank. Trimming the system prompt frees the
+    token budget for the actual fix and reduces the temptation to substitute
+    a canonical example for the user's design.
+    """
+    hc = hard_constraints or HardConstraints()
+    sc = soft_constraints or SoftConstraints()
+    return f"""\
+You are an expert mechanical CAD engineer repairing a CadQuery program.
+
+## Output Rules (CRITICAL)
+- Output ONLY a single ```python code block — no prose before or after
+- The block MUST contain the complete fixed program, not just the changed lines
+- Always keep `import cadquery as cq` at the top
+- Assign the final shape to a variable named `result`
+- Use metric units (millimeters)
+- Do NOT import anything other than `cadquery as cq` and `math`
+
+## Repair Rules (CRITICAL)
+- Apply the MINIMUM change needed to fix the reported error.
+- Preserve every parameter, helper, sub-shape, and boolean operation from the failed code unless it is the direct cause of the error.
+- DO NOT shorten the program to make the error vanish. Shorter output than input is a regression.
+- If the same variable name was used before, keep using it — don't rename.
+
+## Hard Constraints (must still be satisfied)
+- Maximum part size: {hc.max_x_mm} × {hc.max_y_mm} × {hc.max_z_mm} mm
+- Minimum wall thickness: {hc.min_wall_thickness_mm} mm
+- Material: {sc.material}; max overhang {sc.overhang_angle_max}°
+
+{get_api_reference()}
 """
 
 
@@ -359,13 +440,21 @@ class LLMService:
         soft_constraints: Optional[SoftConstraints] = None,
         failure_type: Optional[str] = None,
         geometry_stats: Optional[dict] = None,
+        *,
+        extra_preservation_warning: bool = False,
     ) -> str:
-        """Generate repaired CadQuery code after a failure."""
-        system_prompt = build_system_prompt(hard_constraints, soft_constraints)
+        """Generate repaired CadQuery code after a failure.
+
+        Uses a lean repair-specific system prompt (no full example bank) so
+        the token budget goes to the actual fix rather than restating the
+        ~10KB of canonical CadQuery snippets the generation pass already used.
+        """
+        system_prompt = build_repair_system_prompt(hard_constraints, soft_constraints)
         repair_prompt = build_repair_prompt(
             original_code, error_message, iteration,
             failure_type=failure_type,
             geometry_stats=geometry_stats,
+            extra_preservation_warning=extra_preservation_warning,
         )
         # Disable thinking so the whole token budget produces fixed code, and
         # give the model enough headroom for a complete rewrite if needed.
@@ -888,3 +977,77 @@ def extract_code_from_response(response: str) -> str:
 
     # Assume the entire response is code
     return response.strip()
+
+
+def _meaningful_lines(code: str) -> list[str]:
+    """Return non-blank, non-comment lines of `code` for size comparison."""
+    if not code:
+        return []
+    out: list[str] = []
+    for raw in code.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        out.append(stripped)
+    return out
+
+
+def detect_repair_deletion(
+    original_code: str,
+    repaired_code: str,
+    *,
+    shrink_threshold: float = 0.4,
+    min_floor_lines: int = 5,
+) -> Optional[str]:
+    """Detect when a repair LLM "fixed" an error by deleting most of the code.
+
+    Returns a human-readable reason string if `repaired_code` looks like a
+    degenerate truncation of `original_code`, or None if the repair appears
+    legitimate.
+
+    Heuristics, applied in order:
+
+    1. **Missing `import cadquery`** — every CadQuery program needs it. If the
+       original had it and the repair doesn't, the repair has been gutted.
+    2. **Below floor** — fewer than `min_floor_lines` meaningful lines is not
+       a credible repair of a real CAD program.
+    3. **Excessive shrinkage** — if the original had more than ~10 meaningful
+       lines and the repair retained less than `shrink_threshold` of them,
+       the model likely dropped components rather than patched the bug.
+
+    Tuned to be conservative: a real fix usually changes a few lines but keeps
+    the program intact. The iPhone-holder log shows a 70-line program reduced
+    to 1 line by the repair pass; that case is well above any reasonable
+    threshold.
+    """
+    repaired = repaired_code.strip() if repaired_code else ""
+    if not repaired:
+        return "repair output was empty"
+
+    orig_lines = _meaningful_lines(original_code)
+    new_lines = _meaningful_lines(repaired)
+
+    # 1. cadquery import preserved?
+    orig_has_cq = any("import cadquery" in ln for ln in orig_lines)
+    new_has_cq = any("import cadquery" in ln for ln in new_lines)
+    if orig_has_cq and not new_has_cq:
+        return "repair dropped the `import cadquery` line"
+
+    # 2. Floor on absolute size.
+    if len(new_lines) < min_floor_lines and len(orig_lines) >= min_floor_lines * 2:
+        return (
+            f"repair shrank from {len(orig_lines)} meaningful line(s) to "
+            f"{len(new_lines)} — below sanity floor"
+        )
+
+    # 3. Excessive shrinkage.
+    if len(orig_lines) >= 10:
+        ratio = len(new_lines) / max(1, len(orig_lines))
+        if ratio < shrink_threshold:
+            return (
+                f"repair shrank from {len(orig_lines)} to {len(new_lines)} "
+                f"meaningful line(s) ({ratio:.0%} retained, threshold "
+                f"{shrink_threshold:.0%}) — likely a deletion-style fix"
+            )
+
+    return None
