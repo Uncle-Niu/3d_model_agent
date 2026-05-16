@@ -169,4 +169,21 @@ describe('CritiquePanel', () => {
     expect(screen.getByText('ISO')).toBeInTheDocument();
     expect(screen.getByText('TOP')).toBeInTheDocument();
   });
+
+  it('toggles a larger render preview when a thumbnail is clicked', () => {
+    useCritiqueStore.getState().setCritique({
+      score: 0.9,
+      matchesIntent: true,
+      issues: [],
+      renderUrls: { iso: '/api/renders/iso' },
+    });
+    render(<CritiquePanel />);
+
+    const thumb = screen.getByRole('button', { name: /ISO/i });
+    fireEvent.click(thumb);
+    expect(screen.getByAltText('ISO vision render expanded')).toBeInTheDocument();
+
+    fireEvent.click(thumb);
+    expect(screen.queryByAltText('ISO vision render expanded')).toBeNull();
+  });
 });

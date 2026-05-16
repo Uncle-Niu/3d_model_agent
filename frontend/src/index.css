@@ -1440,8 +1440,8 @@ body {
   max-height: 220px;
   overflow: auto;
   font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.5;
   background: var(--surface-2, rgba(255, 255, 255, 0.04));
   padding: 1px 5px;
   border-radius: var(--radius-sm);
@@ -1456,7 +1456,7 @@ body {
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
-  padding: 6px 8px;
+  padding: 1px 5px;
   background: var(--surface-2, rgba(255, 255, 255, 0.04));
   border-radius: var(--radius-sm);
   max-height: 220px;
@@ -2912,6 +2912,11 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 3px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
 }
 
 .critique-render-img {
@@ -2924,9 +2929,21 @@ body {
   transition: transform var(--transition-fast);
 }
 
-.critique-render-img:hover {
+.critique-render-thumb:hover .critique-render-img,
+.critique-render-thumb:focus-visible .critique-render-img {
   transform: scale(1.08);
   border-color: var(--accent-dim);
+}
+
+.critique-render-thumb:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--radius-sm);
+}
+
+.critique-render-thumb.is-expanded .critique-render-img {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(93, 139, 255, 0.18);
 }
 
 .critique-render-label {
@@ -2935,6 +2952,40 @@ body {
   color: var(--text-muted);
   letter-spacing: 0.6px;
   text-transform: uppercase;
+}
+
+.critique-render-thumb.is-expanded .critique-render-label {
+  color: var(--accent);
+}
+
+.critique-render-expanded {
+  position: relative;
+  padding: 10px 14px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.critique-render-expanded-img {
+  display: block;
+  width: 100%;
+  max-height: min(52vh, 560px);
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+}
+
+.critique-render-expanded-label {
+  position: absolute;
+  top: 16px;
+  left: 20px;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  background: rgba(8, 12, 18, 0.72);
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
 }
 
 /* Issues list */

@@ -54,4 +54,23 @@ describe('PipelineProgress', () => {
     fireEvent.click(screen.getAllByText("Show planner's raw reasoning")[0]);
     expect(screen.getAllByText('The planner response only contained free-form reasoning.').length).toBeGreaterThan(0);
   });
+
+  it('keeps the active repair status inside the timeline row', () => {
+    const steps: PipelineStep[] = [{
+      stage: 'repairing',
+      message: 'Repairing syntax error (attempt 3/5) · `model-003`',
+      timestamp: '2026-05-15T12:00:00.000Z',
+      data: {
+        iteration: 3,
+        failure_type: 'syntax error',
+        model_id: 'model-003',
+      },
+    }];
+
+    const { container } = render(<PipelineProgress steps={steps} isLive={true} />);
+
+    expect(container.querySelector('.pipeline-headline')?.textContent).toMatch(/In progress/);
+    expect(container.querySelector('.pipeline-headline')?.textContent).not.toContain('Repairing syntax error');
+    expect(screen.getByText('Repairing syntax error (attempt 3/5) · `model-003`')).toBeInTheDocument();
+  });
 });

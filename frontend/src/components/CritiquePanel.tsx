@@ -3,6 +3,7 @@
  * assistant message that produced it.
  */
 
+import { useState } from 'react';
 import { api } from '../api';
 import { useChatStore, useCritiqueStore } from '../stores';
 
@@ -19,6 +20,7 @@ const SEVERITY_LABEL: Record<string, string> = {
 };
 
 export default function CritiquePanel() {
+  const [expandedView, setExpandedView] = useState<string | null>(null);
   const { critique, clearCritique } = useCritiqueStore();
   const isGenerating = useChatStore((s) => s.isGenerating);
 
@@ -38,6 +40,11 @@ export default function CritiquePanel() {
     isGenerating ? 'Poor — repairing…' : 'Poor';
 
   const viewOrder = ['iso', 'front', 'right', 'top'] as const;
+  const expandedUrl = expandedView ? renderUrls[expandedView] : null;
+
+  function toggleExpandedView(view: string) {
+    setExpandedView((current) => current === view ? null : view);
+  }
 
   return (
     <div className="critique-panel">
@@ -60,21 +67,42 @@ export default function CritiquePanel() {
       )}
 
       {Object.keys(renderUrls).length > 0 && (
-        <div className="critique-renders">
-          {viewOrder.map((view) =>
-            renderUrls[view] ? (
-              <div key={view} className="critique-render-thumb">
-                <img
-                  src={api.url(renderUrls[view])}
-                  alt={`${view} view`}
-                  className="critique-render-img"
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                />
-                <span className="critique-render-label">{view.toUpperCase()}</span>
-              </div>
-            ) : null
+        <>
+          <div className="critique-renders">
+            {viewOrder.map((view) =>
+              renderUrls[view] ? (
+                <button
+                  key={view}
+                  type="button"
+                  className={`critique-render-thumb${expandedView === view ? ' is-expanded' : ''}`}
+                  onClick={() => toggleExpandedView(view)}
+                  aria-expanded={expandedView === view}
+                  title={`${expandedView === view ? 'Hide' : 'Show'} larger ${view} render`}
+                >
+                  <img
+                    src={api.url(renderUrls[view])}
+                    alt={`${view.toUpperCase()} vision render thumbnail`}
+                    className="critique-render-img"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                  />
+                  <span className="critique-render-label">{view.toUpperCase()}</span>
+                </button>
+              ) : null
+            )}
+          </div>
+
+          {expandedUrl && (
+            <div className="critique-render-expanded">
+              <img
+                src={api.url(expandedUrl)}
+                alt={`${expandedView?.toUpperCase()} vision render expanded`}
+                className="critique-render-expanded-img"
+                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+              />
+              <span className="critique-render-expanded-label">{expandedView?.toUpperCase()}</span>
+            </div>
           )}
-        </div>
+        </>
       )}
 
       {issues.length > 0 ? (

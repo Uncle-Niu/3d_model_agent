@@ -101,6 +101,27 @@ describe('Chat component', () => {
     expect(screen.getByText('Here is your part!')).toBeInTheDocument();
   });
 
+  it('renders final assistant summary below the completed timeline', () => {
+    useChatStore.getState().addMessage({
+      role: 'assistant',
+      content: 'Model generated (`model-001`, attempt 1).',
+      timestamp: '',
+      steps: [{
+        stage: 'validating',
+        message: 'Plan-conformance check passed.',
+        timestamp: '2026-05-15T12:00:00.000Z',
+      }],
+    });
+
+    const { container } = render(<Chat onSend={() => {}} />);
+    const timeline = container.querySelector('.pipeline-progress');
+    const summary = screen.getByText('Model generated (`model-001`, attempt 1).');
+
+    expect(timeline).toBeTruthy();
+    expect(timeline!.compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByText('Plan-conformance check passed.')).toBeInTheDocument();
+  });
+
   it('shows streaming content with cursor', () => {
     useChatStore.getState().appendStreamChunk('Generating code...');
     render(<Chat onSend={() => {}} />);

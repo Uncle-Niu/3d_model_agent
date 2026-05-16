@@ -19,6 +19,7 @@ import type { PipelineStep } from '../types';
 interface PipelineProgressProps {
   steps: PipelineStep[];
   isLive?: boolean;
+  defaultShowTimeline?: boolean;
 }
 
 const STAGE_META: Record<string, { icon: string; label: string; tone: 'neutral' | 'good' | 'bad' | 'warn' }> = {
@@ -1023,8 +1024,12 @@ function groupByIteration(steps: PipelineStep[]): IterationGroup[] {
 // Main component
 // ---------------------------------------------------------------------------
 
-export default function PipelineProgress({ steps, isLive = false }: PipelineProgressProps) {
-  const [showTimeline, setShowTimeline] = useState(isLive);
+export default function PipelineProgress({
+  steps,
+  isLive = false,
+  defaultShowTimeline,
+}: PipelineProgressProps) {
+  const [showTimeline, setShowTimeline] = useState(defaultShowTimeline ?? isLive);
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
   const lastSeenRef = useRef<number>(0);
 
@@ -1072,12 +1077,12 @@ export default function PipelineProgress({ steps, isLive = false }: PipelineProg
 
   const headline = useMemo(() => {
     if (steps.length === 0) return null;
-    const latest = steps[steps.length - 1];
-    const meta = stageMeta(latest.stage);
-    if (isLive) return `${meta.icon} ${meta.label} — ${latest.message}`;
     const repairs = steps.filter((s) => s.stage === 'repairing').length;
+    const stepText = `${steps.length} step${steps.length === 1 ? '' : 's'}`;
+    const repairText = repairs > 0 ? ` · ${repairs} repair${repairs === 1 ? '' : 's'}` : '';
+    if (isLive) return `In progress · ${stepText}${repairText}`;
     if (repairs > 0) return `Completed in ${steps.length} steps · ${repairs} repair${repairs === 1 ? '' : 's'}`;
-    return `Completed in ${steps.length} steps`;
+    return `Completed in ${stepText}`;
   }, [steps, isLive]);
 
   // Turn-level timing.

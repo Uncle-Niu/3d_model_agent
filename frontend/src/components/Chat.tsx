@@ -105,6 +105,8 @@ export default function Chat({ onSend, onCancel, disabled = false }: ChatProps) 
         {messages.map((msg, i) => {
           const isLastAssistant =
             msg.role === 'assistant' && i === messages.length - 1 && !isGenerating;
+          const hasSteps = !!(msg.steps && msg.steps.length > 0);
+          const hasContent = msg.content.trim().length > 0;
           return (
             <div key={i} className={`chat-message chat-message-${msg.role}`}>
               <div className="chat-message-avatar" aria-hidden="true">
@@ -115,10 +117,11 @@ export default function Chat({ onSend, onCancel, disabled = false }: ChatProps) 
                   <span>{msg.role === 'user' ? 'You' : 'Mission Crafter'}</span>
                   <time dateTime={msg.timestamp}>{formatLocalDateTime(msg.timestamp)}</time>
                 </div>
-                <div className="chat-message-text">{msg.content}</div>
-                {msg.steps && msg.steps.length > 0 && (
-                  <PipelineProgress steps={msg.steps} />
+                {!hasSteps && hasContent && <div className="chat-message-text">{msg.content}</div>}
+                {hasSteps && (
+                  <PipelineProgress steps={msg.steps!} defaultShowTimeline={true} />
                 )}
+                {hasSteps && hasContent && <div className="chat-message-text">{msg.content}</div>}
                 {isLastAssistant && <CritiquePanel />}
               </div>
             </div>
