@@ -231,7 +231,8 @@ class LLMService:
             "LLM_BASE_URL", "http://localhost:11434/v1"
         )
         self.api_key = api_key or os.environ.get("LLM_API_KEY", "ollama")
-        self.model = model or os.environ.get("LLM_MODEL", "qwen3.6:27b")
+        from ..config import resolve_llm_model
+        self.model = model or resolve_llm_model()
 
         self.client = AsyncOpenAI(
             base_url=self.base_url,

@@ -374,10 +374,8 @@ class VisionCritic:
             "VISION_API_KEY",
             os.environ.get("LLM_API_KEY", "ollama"),
         )
-        self.model = model or os.environ.get(
-            "VISION_MODEL",
-            os.environ.get("LLM_MODEL", "qwen3.6:27b"),
-        )
+        from ..config import resolve_vision_model
+        self.model = model or resolve_vision_model()
         self.timeout = timeout
 
     async def is_available(self) -> tuple[bool, str]:
@@ -399,8 +397,8 @@ class VisionCritic:
                     return True, f"Vision model '{self.model}' is available"
 
                 # Fall back to another known-vision-capable model already on the host
-                preferred_fallbacks = ["gemma4:31b", "gemma3:27b", "qwen3.6:27b"]
-                for candidate in preferred_fallbacks:
+                from ..config import VISION_FALLBACK_MODELS
+                for candidate in VISION_FALLBACK_MODELS:
                     if candidate in models and candidate != self.model:
                         old = self.model
                         self.model = candidate

@@ -21,6 +21,7 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+from backend.config import DEFAULT_LLM_MODEL
 from backend.knowledge.local_recall import (
     DEFAULT_MODEL_CHAIN,
     LocalKnowledgeService,
@@ -29,7 +30,7 @@ from backend.knowledge.local_recall import (
 
 
 PROMPT = "Generate a model for iphone 16 pro max holder"
-MAIN_MODEL = "qwen3.6:27b"
+MAIN_MODEL = DEFAULT_LLM_MODEL
 
 
 async def main():

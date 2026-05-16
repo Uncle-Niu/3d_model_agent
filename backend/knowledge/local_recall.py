@@ -39,9 +39,12 @@ from ..domain.models import (
 
 # Priority order. The first model is the same one the main agent uses, so it
 # is already warm in VRAM. Subsequent models cross-check from disjoint
-# training corpora.
+# training corpora. Chain head pulls from `backend.config.DEFAULT_LLM_MODEL`
+# so flipping the agent's default also flips the recall chain head.
+from ..config import DEFAULT_LLM_MODEL as _MAIN_AGENT_MODEL
+
 DEFAULT_MODEL_CHAIN: tuple[str, ...] = (
-    "qwen3.6:27b",            # Alibaba — default (main agent model)
+    _MAIN_AGENT_MODEL,        # Alibaba — main agent model, already warm in VRAM
     "gemma4:31b",             # Google — different training data
     "nemotron3:33b",          # NVIDIA — freshest cutoff (multimodal)
     "glm-4.7-flash:q4_K_M",   # Z.ai — strong in the 30B class
