@@ -1,7 +1,10 @@
 {
     "permissions": {
         "allow": [
-            "Bash"
+            "Bash",
+            "Bash(*)",
+            "PowerShell",
+            "PowerShell(*)"
         ]
     },
     "env": {
