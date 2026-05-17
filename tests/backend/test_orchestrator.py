@@ -29,6 +29,7 @@ class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
                 yield chunk
         self.mock_llm.generate_stream.side_effect = mock_generate_stream
         self.mock_llm.repair_cadquery.return_value = "```python\nresult = cq.Workplane().box(5,5,5)\n```"
+        self.mock_llm.repair_cadquery_vision.return_value = "```python\nresult = cq.Workplane().box(5,5,5)\n```"
 
     @patch("backend.agent.orchestrator.AgentOrchestrator.check_vision_connectivity", new_callable=AsyncMock)
     @patch("backend.agent.orchestrator.process_cadquery_code")
@@ -107,7 +108,9 @@ class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
         mock_critique.side_effect = side_effect_critique
         
         await orchestrator.run_pipeline("p1", "t1", "make a thick box")
-        self.assertTrue(self.mock_llm.repair_cadquery.called)
+        # Vision repairs go through repair_cadquery_vision; execution repairs
+        # still go through repair_cadquery. The test triggers a vision repair.
+        self.assertTrue(self.mock_llm.repair_cadquery_vision.called)
         # Check that it ran at least twice
         self.assertGreaterEqual(mock_exec.call_count, 2)
         self.assertEqual(call_counts["critique"], mock_exec.call_count)

@@ -23,6 +23,7 @@ interface PipelineProgressProps {
 }
 
 const STAGE_META: Record<string, { icon: string; label: string; tone: 'neutral' | 'good' | 'bad' | 'warn' }> = {
+  preflight:    { icon: 'o', label: 'Preflight',    tone: 'neutral' },
   planning:     { icon: '◴', label: 'Planning',     tone: 'neutral' },
   recalling:    { icon: '◈', label: 'Recalling',    tone: 'neutral' },
   researching:  { icon: '⌕', label: 'Researching',  tone: 'neutral' },
@@ -56,6 +57,7 @@ const SUB_STAGE_LABELS: Record<string, string> = {
   subject_detection_done: 'Detection',
   recall_start: 'Querying',
   recall_done: 'Consensus',
+  vision_smoke_test: 'Vision smoke test',
 };
 
 function stageMeta(stage: string) {
@@ -421,14 +423,21 @@ interface VisionIssue {
   location_hint?: string;
 }
 
+const VISION_VIEW_ORDER = ['iso', 'front', 'right', 'top'] as const;
+
 function VisionCritiqueCard({ data }: PlanArtifactProps) {
+  const [expandedView, setExpandedView] = useState<string | null>(null);
   if (!data) return null;
   const score = typeof data.vision_score === 'number' ? data.vision_score : null;
   const matches = typeof data.matches_intent === 'boolean' ? data.matches_intent : null;
   const issues = Array.isArray(data.vision_issues) ? (data.vision_issues as VisionIssue[]) : [];
-  if (score == null && !issues.length) return null;
+  const renderUrls = (data.render_urls && typeof data.render_urls === 'object')
+    ? (data.render_urls as Record<string, string>) : {};
+  const hasThumbnails = Object.keys(renderUrls).length > 0;
+  if (score == null && !issues.length && !hasThumbnails) return null;
 
   const scoreClass = score == null ? '' : score >= 0.8 ? 'good' : score >= 0.65 ? 'warn' : 'bad';
+  const expandedUrl = expandedView ? renderUrls[expandedView] : null;
 
   return (
     <div className="critique-card">
@@ -445,6 +454,46 @@ function VisionCritiqueCard({ data }: PlanArtifactProps) {
           </span>
         )}
       </div>
+
+      {hasThumbnails && (
+        <>
+          <div className="critique-renders">
+            {VISION_VIEW_ORDER.map((view) =>
+              renderUrls[view] ? (
+                <button
+                  key={view}
+                  type="button"
+                  className={`critique-render-thumb${expandedView === view ? ' is-expanded' : ''}`}
+                  onClick={() => setExpandedView((cur) => (cur === view ? null : view))}
+                  aria-expanded={expandedView === view}
+                  title={`${expandedView === view ? 'Hide' : 'Show'} larger ${view} render`}
+                >
+                  <img
+                    src={renderUrls[view]}
+                    alt={`${view.toUpperCase()} vision render thumbnail`}
+                    className="critique-render-img"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                  />
+                  <span className="critique-render-label">{view.toUpperCase()}</span>
+                </button>
+              ) : null
+            )}
+          </div>
+
+          {expandedUrl && (
+            <div className="critique-render-expanded">
+              <img
+                src={expandedUrl}
+                alt={`${expandedView?.toUpperCase()} vision render expanded`}
+                className="critique-render-expanded-img"
+                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+              />
+              <span className="critique-render-expanded-label">{expandedView?.toUpperCase()}</span>
+            </div>
+          )}
+        </>
+      )}
+
       {issues.length > 0 && (
         <ul className="critique-card-issues">
           {issues.map((it, i) => (
@@ -1006,6 +1055,31 @@ interface IterationGroup {
   steps: PipelineStep[];
 }
 
+function normalizeProgressSteps(steps: PipelineStep[]): PipelineStep[] {
+  let activeIteration: number | null = null;
+  return steps.map((step) => {
+    const data = step.data ? { ...step.data } : undefined;
+    let stage = step.stage;
+
+    if (stage === 'critiquing' && data?.sub_stage === 'vision_smoke_test') {
+      stage = 'preflight';
+    }
+
+    if (typeof data?.iteration === 'number') {
+      activeIteration = data.iteration;
+    } else if (
+      activeIteration != null &&
+      data &&
+      (stage === 'rendering' || stage === 'critiquing')
+    ) {
+      data.iteration = activeIteration;
+    }
+
+    if (stage === step.stage && data === step.data) return step;
+    return { ...step, stage, data };
+  });
+}
+
 function groupByIteration(steps: PipelineStep[]): IterationGroup[] {
   const groups: IterationGroup[] = [];
   steps.forEach((step, i) => {
@@ -1029,6 +1103,7 @@ export default function PipelineProgress({
   isLive = false,
   defaultShowTimeline,
 }: PipelineProgressProps) {
+  const displaySteps = useMemo(() => normalizeProgressSteps(steps), [steps]);
   const [showTimeline, setShowTimeline] = useState(defaultShowTimeline ?? isLive);
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
   const lastSeenRef = useRef<number>(0);
@@ -1041,49 +1116,49 @@ export default function PipelineProgress({
   // Auto-expand the latest step during a live run.
   useEffect(() => {
     if (!isLive) return;
-    if (steps.length > lastSeenRef.current) {
+    if (displaySteps.length > lastSeenRef.current) {
       setExpanded((prev) => {
         const next = new Set(prev);
-        next.add(steps.length - 1);
+        next.add(displaySteps.length - 1);
         return next;
       });
-      lastSeenRef.current = steps.length;
+      lastSeenRef.current = displaySteps.length;
     }
-  }, [steps.length, isLive]);
+  }, [displaySteps.length, isLive]);
 
   // Pull out highlight artifacts (plan + most recent critique) so we can
   // surface them above the timeline.
   const planStep = useMemo(() => {
     // Prefer the final plan, else surface the most recent draft/plan artifact
     // so planner output is visible while repair/validation continues.
-    for (let i = steps.length - 1; i >= 0; i--) {
-      const s = steps[i];
+    for (let i = displaySteps.length - 1; i >= 0; i--) {
+      const s = displaySteps[i];
       if (s.stage !== 'planning') continue;
       if (s.data?.sub_stage === 'plan_ready') return s;
       if (isPlanArtifactStep(s)) return s;
     }
     return null;
-  }, [steps]);
+  }, [displaySteps]);
 
   const critiqueStep = useMemo(() => {
-    for (let i = steps.length - 1; i >= 0; i--) {
-      const s = steps[i];
+    for (let i = displaySteps.length - 1; i >= 0; i--) {
+      const s = displaySteps[i];
       if (s.stage === 'critiquing' && (s.data?.vision_score != null || Array.isArray(s.data?.vision_issues))) {
         return s;
       }
     }
     return null;
-  }, [steps]);
+  }, [displaySteps]);
 
   const headline = useMemo(() => {
-    if (steps.length === 0) return null;
-    const repairs = steps.filter((s) => s.stage === 'repairing').length;
-    const stepText = `${steps.length} step${steps.length === 1 ? '' : 's'}`;
+    if (displaySteps.length === 0) return null;
+    const repairs = displaySteps.filter((s) => s.stage === 'repairing').length;
+    const stepText = `${displaySteps.length} step${displaySteps.length === 1 ? '' : 's'}`;
     const repairText = repairs > 0 ? ` · ${repairs} repair${repairs === 1 ? '' : 's'}` : '';
     if (isLive) return `In progress · ${stepText}${repairText}`;
-    if (repairs > 0) return `Completed in ${steps.length} steps · ${repairs} repair${repairs === 1 ? '' : 's'}`;
+    if (repairs > 0) return `Completed in ${displaySteps.length} steps · ${repairs} repair${repairs === 1 ? '' : 's'}`;
     return `Completed in ${stepText}`;
-  }, [steps, isLive]);
+  }, [displaySteps, isLive]);
 
   // Turn-level timing.
   //   - turnStartMs: ms epoch of the first step in this turn.
@@ -1091,29 +1166,29 @@ export default function PipelineProgress({
   //   - turnElapsedMs: how long the turn has run (or took, once finished).
   const nowMs = useTicker(isLive, 200);
   const turnStartMs = useMemo(() => {
-    if (steps.length === 0) return null;
-    const t = new Date(steps[0].timestamp).getTime();
+    if (displaySteps.length === 0) return null;
+    const t = new Date(displaySteps[0].timestamp).getTime();
     return isNaN(t) ? null : t;
-  }, [steps]);
+  }, [displaySteps]);
   const turnEndMs = useMemo(() => {
-    if (steps.length === 0) return null;
-    const t = new Date(steps[steps.length - 1].timestamp).getTime();
+    if (displaySteps.length === 0) return null;
+    const t = new Date(displaySteps[displaySteps.length - 1].timestamp).getTime();
     return isNaN(t) ? null : t;
-  }, [steps]);
+  }, [displaySteps]);
   const turnElapsedMs = useMemo(() => {
     if (turnStartMs == null) return null;
     const end = isLive ? nowMs : (turnEndMs ?? nowMs);
     return Math.max(0, end - turnStartMs);
   }, [turnStartMs, turnEndMs, nowMs, isLive]);
-  const turnStartedAtLabel = turnStartMs != null ? formatClockTime(steps[0].timestamp) : null;
+  const turnStartedAtLabel = turnStartMs != null ? formatClockTime(displaySteps[0].timestamp) : null;
 
   const expandableIndices = useMemo(() => {
     const ids: number[] = [];
-    steps.forEach((step, i) => {
+    displaySteps.forEach((step, i) => {
       if (hasMeaningfulDetails(step)) ids.push(i);
     });
     return ids;
-  }, [steps]);
+  }, [displaySteps]);
 
   const allExpanded = expandableIndices.length > 0 && expandableIndices.every((i) => expanded.has(i));
 
@@ -1133,12 +1208,12 @@ export default function PipelineProgress({
     });
   }
 
-  if (steps.length === 0) return null;
+  if (displaySteps.length === 0) return null;
 
-  const groups = groupByIteration(steps);
-  const lastStepIndex = steps.length - 1;
-  const lastStepReasoningChannel = typeof steps[lastStepIndex].data?.reasoning_channel === 'string'
-    ? (steps[lastStepIndex].data!.reasoning_channel as string)
+  const groups = groupByIteration(displaySteps);
+  const lastStepIndex = displaySteps.length - 1;
+  const lastStepReasoningChannel = typeof displaySteps[lastStepIndex].data?.reasoning_channel === 'string'
+    ? (displaySteps[lastStepIndex].data!.reasoning_channel as string)
     : null;
 
   return (
@@ -1198,7 +1273,7 @@ export default function PipelineProgress({
                 )}
                 {group.steps.map((step, si) => {
                   const globalIndex = group.startIndex + si;
-                  const nextStep = globalIndex < steps.length - 1 ? steps[globalIndex + 1] : undefined;
+                  const nextStep = globalIndex < displaySteps.length - 1 ? displaySteps[globalIndex + 1] : undefined;
                   const isLastOverall = globalIndex === lastStepIndex;
                   const isActive = isLive && isLastOverall;
                   const channel = typeof step.data?.reasoning_channel === 'string'

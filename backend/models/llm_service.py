@@ -285,6 +285,96 @@ THEN, output the corrected program in a single ```python block:
 """
 
 
+def build_vision_repair_prompt(
+    code: str,
+    *,
+    intent: str,
+    iteration: int,
+    issues: list[dict],
+    repair_instructions: str,
+    matches_intent: bool,
+    overall_score: float,
+    confidence: float,
+    plan_summary: str = "",
+    key_features: Optional[list[str]] = None,
+) -> str:
+    """Build the user prompt for a vision-driven repair.
+
+    Vision repair is fundamentally different from execution repair: the code
+    *ran*, but the rendered geometry is wrong. So this prompt deliberately
+    avoids ``build_repair_prompt``'s execution-error guidance and its strong
+    "preserve every line" wording — both of which push the model into appending
+    inert boolean ops instead of editing the offending component.
+
+    The prompt is full-strength: the caller must pass it to a method that does
+    not truncate. The previous setup ran the vision body through
+    ``build_repair_prompt``'s ``error_message[:2000]`` slice, which silently
+    chopped off the issues list and the repair instructions — leaving the LLM
+    to "fix" the model with no idea what was actually wrong.
+    """
+    issues_text = "\n".join(
+        f"- [{(it.get('severity') or 'info').upper()}] "
+        f"{it.get('issue_type', 'issue')} "
+        f"({it.get('location_hint') or 'unknown location'}): "
+        f"{it.get('description', '')}"
+        for it in issues
+    ) or "- (no specific issues listed — overall score below threshold)"
+
+    intent_block = ""
+    if not matches_intent:
+        intent_block = (
+            "\n## CRITICAL\n"
+            "The vision verifier reports the model does NOT match the user's intent. "
+            "The current code produces the wrong shape, not just an imperfect one — "
+            "rework the geometry rather than tweaking dimensions.\n"
+        )
+
+    plan_block = ""
+    if plan_summary.strip():
+        plan_block = f"\n## Design plan (ground truth)\n{plan_summary.strip()}\n"
+
+    features_block = ""
+    if key_features:
+        bullets = "\n".join(f"- {f}" for f in key_features)
+        features_block = f"\n## Key features that must appear in the result\n{bullets}\n"
+
+    return f"""\
+The CAD code below executed successfully, but the rendered model failed visual verification on attempt {iteration}. This is NOT a Python error — the code runs, but the geometry is wrong. Modify the geometry to make every listed issue go away.
+
+## User intent
+{intent}
+{plan_block}{features_block}
+## Current code (the program ran without error)
+```python
+{code}
+```
+
+## Vision verifier findings
+- Overall score: {overall_score:.2f} (threshold ~0.65)
+- Matches intent: {matches_intent}
+- Verifier confidence: {confidence:.2f}
+
+### Issues to address
+{issues_text}
+{intent_block}
+## Required fixes (from the verifier)
+{repair_instructions or '(no explicit instructions — address every issue listed above)'}
+
+## How to repair geometry (CRITICAL — read before writing code)
+1. **Modify in place, do not just append.** If a feature is wrong (e.g. "the lip is solid, it needs a notch"), find the component's definition near the top of the code and REPLACE it with a version that includes the feature. Subtracting a cavity from the final `result` is almost never the right answer — appending a `.cut()` after the final union is the failure mode of the previous attempt.
+2. **Cuts must intersect material.** Any new `cq.Workplane(...).box(...).translate(...)` used as a cutter must geometrically overlap the part you intend to cut. Compute the target component's X/Y/Z extents from the parameters above and verify the cutter's extents overlap on ALL three axes. A `.cut(cavity)` against empty space silently returns the unchanged solid.
+3. **Prefer feature-on-target over global ops.** To add a notch to `lip`, build `lip = lip.cut(notch)` immediately after `lip` is defined — not at the end. To fillet external edges, chain `.edges(...).fillet(r)` onto each component (or onto the union, AFTER all components are joined).
+4. **You ARE allowed to restructure.** Keeping variable names is good; preserving wrong geometry is not. If the current `lip = box(...)` cannot have a notch, replace it with a more elaborate definition that does.
+5. **Address EVERY issue.** Partial repairs come back for another round; a full pass costs the user less time even if it touches more code.
+
+## Output rules
+- Output a single ```python``` block with the complete, corrected program. No prose, no diff.
+- Keep `import cadquery as cq` and assign the final shape to `result`.
+- Keep the named parameter block at the top so the design stays editable.
+- The python block must contain ONLY Python statements and comments — no English sentences inside it.
+"""
+
+
 def build_repair_system_prompt(
     hard_constraints: Optional[HardConstraints] = None,
     soft_constraints: Optional[SoftConstraints] = None,
@@ -513,6 +603,22 @@ class LLMService:
         # full fixed program. ~6KB for diagnosis + code is comfortable headroom
         # for designs up to ~120 lines of CadQuery.
         return await self.generate(repair_prompt, system_prompt, max_tokens=7168)
+
+    async def repair_cadquery_vision(
+        self,
+        user_prompt: str,
+        hard_constraints: Optional[HardConstraints] = None,
+        soft_constraints: Optional[SoftConstraints] = None,
+    ) -> str:
+        """Run a vision-driven repair.
+
+        Distinct from ``repair_cadquery`` because vision repair is a geometry
+        modification task, not a bug fix. The caller passes the full vision
+        repair body (via ``build_vision_repair_prompt``) and we send it
+        verbatim — no truncation, no execution-error guidance wrapper.
+        """
+        system_prompt = build_repair_system_prompt(hard_constraints, soft_constraints)
+        return await self.generate(user_prompt, system_prompt, max_tokens=7168)
 
     @staticmethod
     def build_planning_prompt(

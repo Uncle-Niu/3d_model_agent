@@ -9,8 +9,8 @@
  *     positions are stashed in userData for restore.
  */
 
-import { Canvas, useThree } from '@react-three/fiber';
-import { OrbitControls, Environment, Grid, Center, useGLTF, Box, ContactShadows } from '@react-three/drei';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { OrbitControls, Environment, Grid, Center, useGLTF, Box, ContactShadows, Html, Line } from '@react-three/drei';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { useViewportStore, useSelectionStore, useAssemblyStore } from '../stores';
@@ -278,6 +278,171 @@ function BoundingBoxOverlay({ url }: { url: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// Dimension measurement overlay
+// ---------------------------------------------------------------------------
+
+interface DimensionBounds {
+  min: THREE.Vector3;
+  max: THREE.Vector3;
+  size: THREE.Vector3;
+}
+
+function getVisibleMeshBounds(root: THREE.Object3D): THREE.Box3 | null {
+  const bounds = new THREE.Box3().makeEmpty();
+  const meshBounds = new THREE.Box3();
+
+  root.updateWorldMatrix(true, true);
+  root.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.visible || !mesh.geometry) return;
+
+    const geometry = mesh.geometry as THREE.BufferGeometry;
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    if (!geometry.boundingBox) return;
+
+    meshBounds.copy(geometry.boundingBox).applyMatrix4(mesh.matrixWorld);
+    bounds.union(meshBounds);
+  });
+
+  return bounds.isEmpty() ? null : bounds;
+}
+
+function boundsChanged(a: DimensionBounds | null, b: THREE.Box3, epsilon = 0.001) {
+  if (!a) return true;
+  return (
+    Math.abs(a.min.x - b.min.x) > epsilon ||
+    Math.abs(a.min.y - b.min.y) > epsilon ||
+    Math.abs(a.min.z - b.min.z) > epsilon ||
+    Math.abs(a.max.x - b.max.x) > epsilon ||
+    Math.abs(a.max.y - b.max.y) > epsilon ||
+    Math.abs(a.max.z - b.max.z) > epsilon
+  );
+}
+
+function formatDimension(value: number) {
+  const abs = Math.abs(value);
+  const digits = abs >= 100 ? 0 : abs >= 10 ? 1 : 2;
+  return `${value.toFixed(digits)} mm`;
+}
+
+function DimensionLabel({ position, axis, value }: {
+  position: THREE.Vector3;
+  axis: 'X' | 'Y' | 'Z';
+  value: number;
+}) {
+  return (
+    <Html position={position} center distanceFactor={12} zIndexRange={[30, 0]}>
+      <div className={`viewport-dim-label viewport-dim-label--${axis.toLowerCase()}`}>
+        <span>{axis}</span>
+        {formatDimension(value)}
+      </div>
+    </Html>
+  );
+}
+
+function GuideLine({ points }: { points: THREE.Vector3[] }) {
+  return (
+    <Line
+      points={points}
+      color="#7bdcff"
+      lineWidth={1.5}
+      transparent
+      opacity={0.86}
+      depthTest={false}
+    />
+  );
+}
+
+function DimensionOverlay({ targetRef, enabled }: {
+  targetRef: React.MutableRefObject<THREE.Object3D | null>;
+  enabled: boolean;
+}) {
+  const [bounds, setBounds] = useState<DimensionBounds | null>(null);
+  const boundsRef = useRef<DimensionBounds | null>(null);
+
+  useEffect(() => {
+    if (!enabled) {
+      boundsRef.current = null;
+      setBounds(null);
+    }
+  }, [enabled]);
+
+  useFrame(() => {
+    if (!enabled || !targetRef.current) return;
+
+    const next = getVisibleMeshBounds(targetRef.current);
+    if (!next) {
+      if (boundsRef.current) {
+        boundsRef.current = null;
+        setBounds(null);
+      }
+      return;
+    }
+
+    if (!boundsChanged(boundsRef.current, next)) return;
+
+    const size = new THREE.Vector3();
+    next.getSize(size);
+    const snapshot = {
+      min: next.min.clone(),
+      max: next.max.clone(),
+      size,
+    };
+    boundsRef.current = snapshot;
+    setBounds(snapshot);
+  });
+
+  if (!enabled || !bounds) return null;
+
+  const { min, max, size } = bounds;
+  const maxDim = Math.max(size.x, size.y, size.z, 1);
+  const pad = maxDim * 0.08 + 4;
+  const tick = Math.min(Math.max(maxDim * 0.035, 2), 18);
+
+  const xY = min.y - pad;
+  const xZ = max.z + pad;
+  const zX = max.x + pad;
+  const zY = min.y - pad;
+  const yX = max.x + pad;
+  const yZ = max.z + pad;
+
+  const v = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+
+  const xStart = v(min.x, xY, xZ);
+  const xEnd = v(max.x, xY, xZ);
+  const zStart = v(zX, zY, min.z);
+  const zEnd = v(zX, zY, max.z);
+  const yStart = v(yX, min.y, yZ);
+  const yEnd = v(yX, max.y, yZ);
+
+  return (
+    <group>
+      <GuideLine points={[xStart, xEnd]} />
+      <GuideLine points={[v(min.x, min.y, max.z), v(min.x, xY, xZ)]} />
+      <GuideLine points={[v(max.x, min.y, max.z), v(max.x, xY, xZ)]} />
+      <GuideLine points={[v(min.x, xY - tick * 0.25, xZ), v(min.x, xY + tick * 0.25, xZ)]} />
+      <GuideLine points={[v(max.x, xY - tick * 0.25, xZ), v(max.x, xY + tick * 0.25, xZ)]} />
+
+      <GuideLine points={[zStart, zEnd]} />
+      <GuideLine points={[v(max.x, min.y, min.z), v(zX, zY, min.z)]} />
+      <GuideLine points={[v(max.x, min.y, max.z), v(zX, zY, max.z)]} />
+      <GuideLine points={[v(zX - tick * 0.25, zY, min.z), v(zX + tick * 0.25, zY, min.z)]} />
+      <GuideLine points={[v(zX - tick * 0.25, zY, max.z), v(zX + tick * 0.25, zY, max.z)]} />
+
+      <GuideLine points={[yStart, yEnd]} />
+      <GuideLine points={[v(max.x, min.y, max.z), v(yX, min.y, yZ)]} />
+      <GuideLine points={[v(max.x, max.y, max.z), v(yX, max.y, yZ)]} />
+      <GuideLine points={[v(yX - tick * 0.25, min.y, yZ), v(yX + tick * 0.25, min.y, yZ)]} />
+      <GuideLine points={[v(yX - tick * 0.25, max.y, yZ), v(yX + tick * 0.25, max.y, yZ)]} />
+
+      <DimensionLabel position={v((min.x + max.x) / 2, xY, xZ)} axis="X" value={size.x} />
+      <DimensionLabel position={v(zX, zY, (min.z + max.z) / 2)} axis="Z" value={size.z} />
+      <DimensionLabel position={v(yX, (min.y + max.y) / 2, yZ)} axis="Y" value={size.y} />
+    </group>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Loading / Empty states
 // ---------------------------------------------------------------------------
 
@@ -315,6 +480,7 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
   const { partsVisibility, explodedFactor } = useAssemblyStore();
   const [wireframe, setWireframe] = useState(false);
   const [showBbox, setShowBbox] = useState(false);
+  const [showDimensions, setShowDimensions] = useState(true);
   const [cameraAction, setCameraAction] = useState<CameraAction | null>(null);
   const { selectedFeatureName, setSelection } = useSelectionStore();
   const sceneRef = useRef<THREE.Object3D | null>(null);
@@ -323,6 +489,7 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
   useEffect(() => {
     setWireframe(false);
     setShowBbox(false);
+    setShowDimensions(true);
     setSelection(null);
     setCameraAction(null);
   }, [glbUrl, setSelection]);
@@ -394,6 +561,7 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
                 onSceneReady={(s) => { sceneRef.current = s; }}
               />
               {showBbox && <BoundingBoxOverlay url={glbUrl} />}
+              <DimensionOverlay targetRef={sceneRef} enabled={showDimensions} />
               <ContactShadows
                 position={[0, -0.01, 0]}
                 opacity={0.6}
@@ -488,6 +656,13 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
             title="Toggle bounding box"
           >
             BBox
+          </button>
+          <button
+            className={`btn btn-ghost btn-sm ${showDimensions ? 'is-active' : ''}`}
+            onClick={() => setShowDimensions((v) => !v)}
+            title="Toggle model dimensions"
+          >
+            Dims
           </button>
         </div>
       )}

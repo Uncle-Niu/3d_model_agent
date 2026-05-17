@@ -6,7 +6,6 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useChatStore, useSelectionStore } from '../stores';
 import { formatLocalDateTime } from '../time';
-import CritiquePanel from './CritiquePanel';
 import PipelineProgress from './PipelineProgress';
 import AppIcon from './AppIcon';
 
@@ -38,7 +37,7 @@ export default function Chat({ onSend, onCancel, disabled = false }: ChatProps) 
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingContent]);
+  }, [messages, streamingContent, currentSteps.length, isGenerating]);
 
   // Auto-grow textarea
   useEffect(() => {
@@ -122,7 +121,6 @@ export default function Chat({ onSend, onCancel, disabled = false }: ChatProps) 
                   <PipelineProgress steps={msg.steps!} defaultShowTimeline={true} />
                 )}
                 {hasSteps && hasContent && <div className="chat-message-text">{msg.content}</div>}
-                {isLastAssistant && <CritiquePanel />}
               </div>
             </div>
           );
@@ -142,11 +140,11 @@ export default function Chat({ onSend, onCancel, disabled = false }: ChatProps) 
           <div className="chat-message chat-message-assistant">
             <div className="chat-message-avatar" aria-hidden="true"><AppIcon size={16} /></div>
             <div className="chat-message-content">
+              {/* PipelineProgress hoists the vision verifier card (with
+                  render thumbnails + score + issue list) to the top of
+                  its timeline, so the user sees what the agent saw the
+                  moment the verifier returns. */}
               <PipelineProgress steps={currentSteps} isLive={true} />
-              {/* Surface render thumbnails + score the moment the vision
-                  verifier returns, so the user can see what the agent saw
-                  before the turn finishes. */}
-              <CritiquePanel />
             </div>
           </div>
         )}

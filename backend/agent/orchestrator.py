@@ -37,6 +37,7 @@ from ..models.llm_service import (
     build_repair_prompt,
     build_repair_system_prompt,
     build_system_prompt,
+    build_vision_repair_prompt,
     detect_repair_deletion,
     extract_code_from_response,
     plan_to_prompt_text,
@@ -90,7 +91,21 @@ class AgentOrchestrator:
         self.current_steps: List[PipelineStep] = []
 
         # Constants
-        self.MAX_REPAIR_ITERATIONS = 5
+        # Separate budgets for syntax/execution repairs vs. vision-driven
+        # repairs. Syntax bugs (LLM emits invalid Python, a wrong CadQuery
+        # call, etc.) burn cheaply through retries without producing
+        # meaningful design progress, so they get the larger budget. Vision
+        # repairs are slower (full render + LLM critique each round) but
+        # each one is supposed to move the design closer to the user's
+        # intent, so a smaller budget keeps the turn from running forever.
+        self.MAX_SYNTAX_REPAIR_ITERATIONS = 8
+        self.MAX_VISION_REPAIR_ITERATIONS = 5
+        # Absolute cap so a pathological loop can never exceed budget+1
+        # iterations even if both counters somehow misfire. Also the value
+        # the catch-all `except` uses to decide when to surface a fatal.
+        self.MAX_REPAIR_ITERATIONS = (
+            self.MAX_SYNTAX_REPAIR_ITERATIONS + self.MAX_VISION_REPAIR_ITERATIONS
+        )
         self.VISION_SCORE_THRESHOLD = 0.65
 
         # Per-run context
@@ -238,7 +253,7 @@ class AgentOrchestrator:
         # Perform smoke test to ensure image processing works
         await self._emit_debug("vision", "Performing vision smoke test...")
         await self._emit_status(
-            "critiquing",
+            "preflight",
             "Checking the vision model with a smoke-test image.",
             details=None,
             data={
@@ -988,6 +1003,12 @@ class AgentOrchestrator:
         last_geometry_stats: Dict = {}
         repair_notes: List[str] = []
         consecutive_empty = 0
+        # Separate per-kind counters. ``iteration`` is the absolute attempt
+        # index (used for model IDs / metadata); these track how many of each
+        # repair flavour we've actually spent, so syntax stumbles don't eat
+        # into the vision budget and vice versa.
+        syntax_repairs_used = 0
+        vision_repairs_used = 0
         # Error-pattern events recorded across this turn. Each repair attempt
         # appends one event so the post-turn summarizer can see the full
         # failure → fix → next-result trajectory.
@@ -997,7 +1018,9 @@ class AgentOrchestrator:
         error_turn_id = f"{project_id}:{thread_id}:{turn_index}"
 
         # 3. Iterative Loop
-        for iteration in range(1, self.MAX_REPAIR_ITERATIONS + 1):
+        iteration = 0
+        while iteration < self.MAX_REPAIR_ITERATIONS:
+            iteration += 1
             try:
                 # Generate the model ID for this iteration early
                 model_id = self.storage.next_model_id(project_id)
@@ -1038,19 +1061,44 @@ class AgentOrchestrator:
                         plan_text=plan_text,
                     )
                 elif last_critique and last_critique.issues:
-                    # Vision-driven repair
-                    repair_prompt = self._build_vision_repair_prompt(
+                    # Vision-driven repair. Bail out if we've already spent
+                    # the per-turn vision budget — better to accept the
+                    # current model and let the user iterate from there
+                    # than to spin forever trying to chase the verifier.
+                    if vision_repairs_used >= self.MAX_VISION_REPAIR_ITERATIONS:
+                        await self._emit_debug(
+                            "vision_budget_exhausted",
+                            f"Vision repair budget spent ({vision_repairs_used}/"
+                            f"{self.MAX_VISION_REPAIR_ITERATIONS}); accepting current model.",
+                        )
+                        # Re-render + accept the *previous* successful model
+                        # as the final output. The previous loop iteration
+                        # already saved its metadata; just exit cleanly.
+                        return current_model_id
+                    vision_repairs_used += 1
+                    repair_system_prompt = build_repair_system_prompt(config.hard_constraints, config.soft_constraints)
+                    repair_user_prompt = build_vision_repair_prompt(
                         last_code,
-                        last_critique,
-                        user_message,
-                        iteration,
-                        plan_text=plan_text,
-                        recipe_context=generation_reference_context,
+                        intent=user_message,
+                        iteration=iteration,
+                        issues=[
+                            {
+                                "severity": i.severity,
+                                "issue_type": i.issue_type,
+                                "description": i.description,
+                                "location_hint": i.location_hint,
+                            }
+                            for i in last_critique.issues
+                        ],
+                        repair_instructions=last_critique.repair_prompt or "",
+                        matches_intent=bool(last_critique.matches_intent),
+                        overall_score=last_critique.overall_printability,
+                        confidence=last_critique.confidence,
+                        plan_summary=plan.summary or "",
+                        key_features=list(plan.key_features) if plan.key_features else None,
                     )
-                    repair_system_prompt = build_system_prompt(config.hard_constraints, config.soft_constraints)
-                    repair_user_prompt = build_repair_prompt(last_code, repair_prompt, iteration)
                     await self._emit_status("repairing",
-                        f"Repairing for vision feedback (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS}) · `{model_id}`",
+                        f"Repairing for vision feedback (vision attempt {vision_repairs_used}/{self.MAX_VISION_REPAIR_ITERATIONS}) · `{model_id}`",
                         details=None,
                         data={
                             "iteration": iteration,
@@ -1078,12 +1126,10 @@ class AgentOrchestrator:
                     await self._emit_debug("repair_request", f"Vision repair attempt {iteration}", {
                         "score": last_critique.overall_printability,
                         "issues_count": len(last_critique.issues),
-                        "repair_prompt_preview": repair_prompt[:400],
+                        "user_prompt_chars": len(repair_user_prompt),
                     })
-                    repair_response = await self.llm.repair_cadquery(
-                        original_code=last_code,
-                        error_message=repair_prompt,
-                        iteration=iteration,
+                    repair_response = await self.llm.repair_cadquery_vision(
+                        user_prompt=repair_user_prompt,
                         hard_constraints=config.hard_constraints,
                         soft_constraints=config.soft_constraints,
                     )
@@ -1094,7 +1140,7 @@ class AgentOrchestrator:
                         candidate_code=candidate_code,
                         iteration=iteration,
                         repair_kind="vision",
-                        error_message=repair_prompt,
+                        error_message=repair_user_prompt,
                         failure_type=None,
                         geometry_stats=last_geometry_stats,
                         hard_constraints=config.hard_constraints,
@@ -1117,6 +1163,25 @@ class AgentOrchestrator:
                     if vision_event is not None:
                         turn_error_events.append(vision_event)
                 else:
+                    # Execution / syntax repair. Same idea as the vision
+                    # branch: if syntax bugs already burned through their
+                    # budget, give up rather than loop indefinitely.
+                    if syntax_repairs_used >= self.MAX_SYNTAX_REPAIR_ITERATIONS:
+                        await self._emit_debug(
+                            "syntax_budget_exhausted",
+                            f"Syntax repair budget spent ({syntax_repairs_used}/"
+                            f"{self.MAX_SYNTAX_REPAIR_ITERATIONS}); aborting turn.",
+                        )
+                        await self._emit_error(
+                            f"Could not produce executable CadQuery after "
+                            f"{self.MAX_SYNTAX_REPAIR_ITERATIONS} syntax/execution "
+                            f"repair attempts. Last error: "
+                            f"{(last_error.splitlines()[0][:200] if last_error else 'unknown')}",
+                            "execution_error",
+                        )
+                        self._save_failure_chat(project_id, thread_id, current_model_id)
+                        return None
+                    syntax_repairs_used += 1
                     # Execution-error repair
                     failure_label = (last_failure_type or "execution_error").replace("_", " ")
                     err_first = last_error.splitlines()[0][:120] if last_error else "previous attempt failed"
@@ -1148,7 +1213,7 @@ class AgentOrchestrator:
 
                     if mechanical_patch is not None:
                         await self._emit_status("repairing",
-                            f"Mechanical syntax fix (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS}) · `{model_id}`",
+                            f"Mechanical syntax fix (syntax attempt {syntax_repairs_used}/{self.MAX_SYNTAX_REPAIR_ITERATIONS}) · `{model_id}`",
                             details=None,
                             data={
                                 "iteration": iteration,
@@ -1184,7 +1249,7 @@ class AgentOrchestrator:
                             geometry_stats=last_geometry_stats,
                         )
                         await self._emit_status("repairing",
-                            f"Repairing {failure_label} (attempt {iteration}/{self.MAX_REPAIR_ITERATIONS}) · `{model_id}`",
+                            f"Repairing {failure_label} (syntax attempt {syntax_repairs_used}/{self.MAX_SYNTAX_REPAIR_ITERATIONS}) · `{model_id}`",
                             details=None,
                             data={
                                 "iteration": iteration,
@@ -1379,7 +1444,7 @@ class AgentOrchestrator:
                 shape = exec_result.get("_shape")
                 render_paths = {}
                 if shape is not None:
-                    render_result = await self._run_render(shape, model_dir)
+                    render_result = await self._run_render(shape, model_dir, iteration)
                     if isinstance(render_result, dict):
                         render_paths = render_result
                     elif render_result:
@@ -1397,6 +1462,7 @@ class AgentOrchestrator:
                 if render_paths and vision_ok:
                     critique = await self._run_vision_critique(
                         render_paths, user_message, geometry_stats, project_id, model_id,
+                        iteration=iteration,
                         plan=plan,
                         recipe_context=planning_reference_context,
                     )
@@ -1506,11 +1572,23 @@ class AgentOrchestrator:
                     vision_score < self.VISION_SCORE_THRESHOLD or has_errors or intent_mismatch
                 )
 
-                if needs_repair and iteration < self.MAX_REPAIR_ITERATIONS:
+                if needs_repair and vision_repairs_used < self.MAX_VISION_REPAIR_ITERATIONS:
                     last_critique = critique
-                    await self._emit_debug("vision_repair_trigger", 
-                        f"Vision score {vision_score:.2f} below threshold — triggering repair")
+                    await self._emit_debug("vision_repair_trigger",
+                        f"Vision score {vision_score:.2f} below threshold — triggering "
+                        f"repair ({vision_repairs_used}/{self.MAX_VISION_REPAIR_ITERATIONS} "
+                        f"vision attempts used)")
                     continue
+                if needs_repair:
+                    # Vision budget exhausted — accept this iteration as the
+                    # final output rather than ship-nothing. Log it so the
+                    # user can see why we stopped repairing.
+                    await self._emit_debug(
+                        "vision_budget_exhausted",
+                        f"Vision score {vision_score:.2f} still below threshold but "
+                        f"used {vision_repairs_used}/{self.MAX_VISION_REPAIR_ITERATIONS} "
+                        f"vision attempts; shipping current model.",
+                    )
 
                 # Promote this metadata to final and persist again. We re-save
                 # the same metadata object with is_final=True so the version
@@ -1740,10 +1818,11 @@ class AgentOrchestrator:
         
         return extract_code_from_response(full_response)
 
-    async def _run_render(self, shape, model_dir) -> Dict[str, str]:
+    async def _run_render(self, shape, model_dir, iteration: int) -> Dict[str, str]:
         await self._emit_status("rendering", "Rendering ISO / Top / Front / Side views…",
                               details=None,
                               data={
+                                  "iteration": iteration,
                                   "rationale": "Multi-angle snapshots feed the vision verifier.",
                                   "inputs": ["3D shape"],
                                   "in_progress": True,
@@ -1763,6 +1842,7 @@ class AgentOrchestrator:
     async def _run_vision_critique(
         self, render_paths: Dict[str, str], user_intent: str,
         geometry_stats: Dict, project_id: str, model_id: str,
+        iteration: int,
         plan: Optional[DesignPlan] = None,
         recipe_context: str = "",
     ) -> Optional[CritiqueReport]:
@@ -1780,6 +1860,7 @@ class AgentOrchestrator:
         await self._emit_status("critiquing", "Vision verifier reviewing the renders…",
                               details=None,
                               data={
+                                  "iteration": iteration,
                                   "rationale": "A multimodal LLM scores each plan key-feature as present / missing.",
                                   "inputs": [f"{len(render_paths)} render(s)", "design plan checklist"],
                                   "model": vision_model,
@@ -1808,6 +1889,7 @@ class AgentOrchestrator:
                     "Vision verifier returned no usable feedback — continuing.",
                     details=None,
                     data={
+                        "iteration": iteration,
                         "outcome": critique_result.message or "Verifier output could not be parsed.",
                         "skipped": ["vision repair"],
                     },
@@ -1838,6 +1920,7 @@ class AgentOrchestrator:
                 headline,
                 details=None,
                 data={
+                    "iteration": iteration,
                     "outcome": (report.repair_prompt or "")[:300] or None,
                     "vision_score": score,
                     "matches_intent": critique_result.matches_intent,
@@ -1851,6 +1934,11 @@ class AgentOrchestrator:
                         }
                         for i in report.issues
                     ],
+                    # Render URLs travel with the critiquing step so the UI
+                    # timeline can show the same thumbnails the verifier
+                    # actually scored, alongside the issue list — no need
+                    # to keep a separate live-critique store in sync.
+                    "render_urls": render_urls,
                 },
             )
 
@@ -1918,16 +2006,34 @@ class AgentOrchestrator:
         )
 
         try:
-            retry_response = await self.llm.repair_cadquery(
-                original_code=original_code,
-                error_message=error_message,
-                iteration=iteration,
-                hard_constraints=hard_constraints,
-                soft_constraints=soft_constraints,
-                failure_type=failure_type,
-                geometry_stats=geometry_stats,
-                extra_preservation_warning=True,
-            )
+            if repair_kind == "vision":
+                # Vision retries: the `error_message` argument is already the
+                # full vision-repair user prompt. Re-send it (with a stronger
+                # "don't delete" preface) via the vision path so it isn't
+                # truncated by ``build_repair_prompt``'s 2000-char slice.
+                retry_user_prompt = (
+                    "⚠️ The previous repair attempt deleted most of the program. "
+                    "That was wrong. Restore the original components and apply "
+                    "only the minimum geometry changes needed to address the "
+                    "vision issues below.\n\n"
+                    + error_message
+                )
+                retry_response = await self.llm.repair_cadquery_vision(
+                    user_prompt=retry_user_prompt,
+                    hard_constraints=hard_constraints,
+                    soft_constraints=soft_constraints,
+                )
+            else:
+                retry_response = await self.llm.repair_cadquery(
+                    original_code=original_code,
+                    error_message=error_message,
+                    iteration=iteration,
+                    hard_constraints=hard_constraints,
+                    soft_constraints=soft_constraints,
+                    failure_type=failure_type,
+                    geometry_stats=geometry_stats,
+                    extra_preservation_warning=True,
+                )
         except Exception as exc:
             await self._emit_debug(
                 "repair_retry_error",
@@ -1963,60 +2069,6 @@ class AgentOrchestrator:
         # Returning the original lets the next iteration see the real program
         # plus a new repair attempt — instead of inheriting a 2-line stub.
         return original_code
-
-    def _build_vision_repair_prompt(
-        self,
-        code: str,
-        critique: CritiqueReport,
-        intent: str,
-        iter: int,
-        plan_text: str = "",
-        recipe_context: str = "",
-    ) -> str:
-        issues_text = "\n".join(
-            f"- [{i.severity.upper()}] {i.issue_type} ({i.location_hint or 'unknown location'}): {i.description}"
-            for i in critique.issues
-        ) or "- (no specific issues listed — overall score below threshold or intent mismatch)"
-
-        intent_match_text = ""
-        if not critique.matches_intent:
-            intent_match_text = (
-                "\n## CRITICAL: The vision verifier reports the model does NOT match the user's intent. "
-                "Re-read the user's request and the plan; the current code is producing the wrong shape, "
-                "not just an imperfect one. Rework the geometry rather than tweaking dimensions.\n"
-            )
-
-        plan_block = f"\n{plan_text}\n" if plan_text else ""
-        recipe_block = f"\n## CAD Recipe / Product Archetype Context\n{recipe_context}\n" if recipe_context else ""
-
-        return f"""The CAD model was rendered and reviewed by a vision verifier. Repair it.
-
-## User Intent
-{intent}
-{recipe_block}
-{plan_block}
-## Current Code
-```python
-{code}
-```
-
-## Vision Critique (iteration {iter})
-- Overall score: {critique.overall_printability:.2f}
-- Matches intent: {critique.matches_intent}
-- Confidence: {critique.confidence:.2f}
-
-### Issues
-{issues_text}
-{intent_match_text}
-## Required fixes (from verifier)
-{critique.repair_prompt or '(none provided — fix the issues listed above)'}
-
-## Output rules
-- Output ONLY a single ```python block with the corrected code.
-- Keep the same named parameters at the top so the design stays editable.
-- Make the fewest changes needed to address every listed issue.
-- If required features are missing, rework the structure using the recipe/archetype; do not merely resize the existing boxes.
-"""
 
     def _build_final_response(self, mid, iter, res, critique, score, repair_notes: List[str] = None) -> str:
         stats = res.get("geometry_stats", {})

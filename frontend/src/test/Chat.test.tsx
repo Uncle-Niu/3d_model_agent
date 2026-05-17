@@ -9,13 +9,13 @@
  * - Disabled when isGenerating
  * - Streaming content appears
  * - Status indicator appears with generating + status
- * - CritiquePanel is mounted inside Chat
+ * - Vision verifier card surfaces inside the pipeline when critique data is present
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { useChatStore, useCritiqueStore } from '../stores';
+import { useChatStore } from '../stores';
 import Chat from '../components/Chat';
 
 // Mock heavy 3D/API deps
@@ -25,7 +25,6 @@ vi.mock('../api', () => ({
 
 beforeEach(() => {
   useChatStore.getState().reset();
-  useCritiqueStore.getState().clearCritique();
 });
 
 describe('Chat component', () => {
@@ -139,19 +138,29 @@ describe('Chat component', () => {
     expect(screen.getByText('Analyzing geometry with vision AI...')).toBeInTheDocument();
   });
 
-  it('critique panel is mounted (hidden when no critique)', () => {
+  it('no vision verifier card is shown when there is no critique step', () => {
     render(<Chat onSend={() => {}} />);
-    // CritiquePanel returns null when no critique — container should not show critique elements
-    expect(screen.queryByText(/Vision Critique/i)).toBeNull();
+    // VisionCritiqueCard only renders when a critiquing step carries
+    // vision data; nothing in this test produces one.
+    expect(screen.queryByText(/Vision verifier/i)).toBeNull();
   });
 
-  it('critique panel visible in chat when critique is set', () => {
-    useCritiqueStore.getState().setCritique({
-      score: 0.75, matchesIntent: true, issues: [], renderUrls: {},
-    });
+  it('vision verifier card is shown inline when a live critiquing step carries vision data', () => {
     useChatStore.getState().setGenerating(true);
+    useChatStore.getState().setStage(
+      'critiquing',
+      'Vision score 0.75 · ✓ matches intent · 0 error(s), 0 warning(s)',
+      undefined,
+      {
+        vision_score: 0.75,
+        matches_intent: true,
+        vision_issues: [],
+        render_urls: { iso: '/r/iso.png' },
+      },
+    );
     render(<Chat onSend={() => {}} />);
-    expect(screen.getByText(/Vision Critique/i)).toBeInTheDocument();
+    // The promoted card inside PipelineProgress now carries the critique.
+    expect(screen.getByText(/Vision verifier/i)).toBeInTheDocument();
   });
 
   it('disabled prop disables input and button', () => {
