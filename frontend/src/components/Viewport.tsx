@@ -10,7 +10,7 @@
  */
 
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, Environment, Grid, Center, useGLTF, Box, ContactShadows, Html, Line } from '@react-three/drei';
+import { OrbitControls, Environment, Grid, Center, useGLTF, Box, ContactShadows, Line, Billboard, Text } from '@react-three/drei';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { useViewportStore, useSelectionStore, useAssemblyStore } from '../stores';
@@ -86,9 +86,25 @@ const GENERIC_NAME = (n: string) =>
 const HIGHLIGHT_COLOR = '#ff5fc1';
 const HIGHLIGHT_EMISSIVE = '#5a0a3a';
 
+interface DimensionReadout {
+  x: number;
+  y: number;
+  z: number;
+  edges: StraightEdgeMeasurement[];
+}
+
+interface StraightEdgeMeasurement {
+  id: string;
+  length: number;
+  start: THREE.Vector3;
+  end: THREE.Vector3;
+}
+
 interface ModelProps {
   url: string;
   wireframe: boolean;
+  showDimensions: boolean;
+  onDimensionsChange: (dimensions: DimensionReadout | null) => void;
   selectedMeshName: string | null;
   onMeshClick: (name: string | null, point: THREE.Vector3) => void;
   partsVisibility: Record<string, boolean>;
@@ -96,7 +112,7 @@ interface ModelProps {
   onSceneReady?: (scene: THREE.Object3D) => void;
 }
 
-function Model({ url, wireframe, selectedMeshName, onMeshClick, partsVisibility, explodedFactor, onSceneReady }: ModelProps) {
+function Model({ url, wireframe, showDimensions, onDimensionsChange, selectedMeshName, onMeshClick, partsVisibility, explodedFactor, onSceneReady }: ModelProps) {
   const { scene: cachedScene } = useGLTF(url);
 
   // Clone the scene + materials once per url. This isolates us from the useGLTF
@@ -236,14 +252,17 @@ function Model({ url, wireframe, selectedMeshName, onMeshClick, partsVisibility,
   }
 
   return (
-    <Center>
-      <primitive
-        ref={groupRef}
-        object={scene}
-        onClick={handleClick}
-        onPointerMissed={handleMissedClick}
-      />
-    </Center>
+    <>
+      <Center>
+        <primitive
+          ref={groupRef}
+          object={scene}
+          onClick={handleClick}
+          onPointerMissed={handleMissedClick}
+        />
+      </Center>
+      <DimensionOverlay target={scene} enabled={showDimensions} onDimensionsChange={onDimensionsChange} />
+    </>
   );
 }
 
@@ -285,6 +304,7 @@ interface DimensionBounds {
   min: THREE.Vector3;
   max: THREE.Vector3;
   size: THREE.Vector3;
+  edges: StraightEdgeMeasurement[];
 }
 
 function getVisibleMeshBounds(root: THREE.Object3D): THREE.Box3 | null {
@@ -307,6 +327,49 @@ function getVisibleMeshBounds(root: THREE.Object3D): THREE.Box3 | null {
   return bounds.isEmpty() ? null : bounds;
 }
 
+function getVisibleStraightEdges(root: THREE.Object3D) {
+  const edges: Array<Omit<StraightEdgeMeasurement, 'id'>> = [];
+  const start = new THREE.Vector3();
+  const end = new THREE.Vector3();
+
+  root.updateWorldMatrix(true, true);
+  root.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.visible || !mesh.geometry) return;
+
+    const edgeGeometry = new THREE.EdgesGeometry(mesh.geometry as THREE.BufferGeometry, 12);
+    const positions = edgeGeometry.getAttribute('position');
+    for (let i = 0; i < positions.count; i += 2) {
+      start.fromBufferAttribute(positions, i).applyMatrix4(mesh.matrixWorld);
+      end.fromBufferAttribute(positions, i + 1).applyMatrix4(mesh.matrixWorld);
+      const length = start.distanceTo(end);
+      if (length > 0.01) {
+        edges.push({
+          length,
+          start: start.clone(),
+          end: end.clone(),
+        });
+      }
+    }
+    edgeGeometry.dispose();
+  });
+
+  const distinct = edges
+    .sort((a, b) => b - a)
+    .reduce<StraightEdgeMeasurement[]>((acc, edge) => {
+      const tolerance = Math.max(0.1, edge.length * 0.002);
+      if (!acc.some((existing) => Math.abs(existing.length - edge.length) <= tolerance)) {
+        acc.push({
+          ...edge,
+          id: `E${acc.length + 1}`,
+        });
+      }
+      return acc;
+    }, []);
+
+  return distinct.slice(0, 5);
+}
+
 function boundsChanged(a: DimensionBounds | null, b: THREE.Box3, epsilon = 0.001) {
   if (!a) return true;
   return (
@@ -325,37 +388,78 @@ function formatDimension(value: number) {
   return `${value.toFixed(digits)} mm`;
 }
 
-function DimensionLabel({ position, axis, value }: {
-  position: THREE.Vector3;
-  axis: 'X' | 'Y' | 'Z';
-  value: number;
+function GuideLine({ points, color = '#7bdcff', opacity = 0.86 }: {
+  points: THREE.Vector3[];
+  color?: string;
+  opacity?: number;
 }) {
-  return (
-    <Html position={position} center distanceFactor={12} zIndexRange={[30, 0]}>
-      <div className={`viewport-dim-label viewport-dim-label--${axis.toLowerCase()}`}>
-        <span>{axis}</span>
-        {formatDimension(value)}
-      </div>
-    </Html>
-  );
-}
-
-function GuideLine({ points }: { points: THREE.Vector3[] }) {
   return (
     <Line
       points={points}
-      color="#7bdcff"
+      color={color}
       lineWidth={1.5}
       transparent
-      opacity={0.86}
+      opacity={opacity}
       depthTest={false}
     />
   );
 }
 
-function DimensionOverlay({ targetRef, enabled }: {
-  targetRef: React.MutableRefObject<THREE.Object3D | null>;
+function AxisGuideLabel({ position, axis, color, size }: {
+  position: THREE.Vector3;
+  axis: 'X' | 'Y' | 'Z';
+  color: string;
+  size: number;
+}) {
+  return (
+    <Billboard position={position}>
+      <Text
+        fontSize={size}
+        color={color}
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={size * 0.08}
+        outlineColor="#080c14"
+        depthTest={false}
+        renderOrder={50}
+      >
+        {axis}
+      </Text>
+    </Billboard>
+  );
+}
+
+function EdgeGuideLabel({ edge, color, size }: {
+  edge: StraightEdgeMeasurement;
+  color: string;
+  size: number;
+}) {
+  const midpoint = edge.start.clone().lerp(edge.end, 0.5);
+  const direction = edge.end.clone().sub(edge.start).normalize();
+  const offset = new THREE.Vector3(-direction.z, 0.4, direction.x).normalize().multiplyScalar(size * 0.9);
+
+  return (
+    <Billboard position={midpoint.add(offset)}>
+      <Text
+        fontSize={size}
+        color={color}
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={size * 0.08}
+        outlineColor="#080c14"
+        depthTest={false}
+        renderOrder={55}
+      >
+        {edge.id}
+      </Text>
+    </Billboard>
+  );
+}
+
+function DimensionOverlay({ target, enabled, onDimensionsChange }: {
+  target: THREE.Object3D;
   enabled: boolean;
+  onDimensionsChange: (dimensions: DimensionReadout | null) => void;
 }) {
   const [bounds, setBounds] = useState<DimensionBounds | null>(null);
   const boundsRef = useRef<DimensionBounds | null>(null);
@@ -364,17 +468,19 @@ function DimensionOverlay({ targetRef, enabled }: {
     if (!enabled) {
       boundsRef.current = null;
       setBounds(null);
+      onDimensionsChange(null);
     }
-  }, [enabled]);
+  }, [enabled, onDimensionsChange]);
 
   useFrame(() => {
-    if (!enabled || !targetRef.current) return;
+    if (!enabled) return;
 
-    const next = getVisibleMeshBounds(targetRef.current);
+    const next = getVisibleMeshBounds(target);
     if (!next) {
       if (boundsRef.current) {
         boundsRef.current = null;
         setBounds(null);
+        onDimensionsChange(null);
       }
       return;
     }
@@ -383,21 +489,26 @@ function DimensionOverlay({ targetRef, enabled }: {
 
     const size = new THREE.Vector3();
     next.getSize(size);
+    const edges = getVisibleStraightEdges(target);
     const snapshot = {
       min: next.min.clone(),
       max: next.max.clone(),
       size,
+      edges,
     };
     boundsRef.current = snapshot;
     setBounds(snapshot);
+    onDimensionsChange({ x: size.x, y: size.y, z: size.z, edges });
   });
 
   if (!enabled || !bounds) return null;
 
-  const { min, max, size } = bounds;
+  const { min, max, size, edges } = bounds;
   const maxDim = Math.max(size.x, size.y, size.z, 1);
   const pad = maxDim * 0.08 + 4;
   const tick = Math.min(Math.max(maxDim * 0.035, 2), 18);
+  const labelSize = Math.min(Math.max(maxDim * 0.055, 4), 18);
+  const edgeLabelSize = Math.min(Math.max(maxDim * 0.035, 3), 10);
 
   const xY = min.y - pad;
   const xZ = max.z + pad;
@@ -414,30 +525,43 @@ function DimensionOverlay({ targetRef, enabled }: {
   const zEnd = v(zX, zY, max.z);
   const yStart = v(yX, min.y, yZ);
   const yEnd = v(yX, max.y, yZ);
+  const guide = {
+    x: '#7bdcff',
+    y: '#9ee87d',
+    z: '#ffd166',
+    extension: '#8fb9c7',
+    edge: '#f2f7ff',
+  };
 
   return (
     <group>
-      <GuideLine points={[xStart, xEnd]} />
-      <GuideLine points={[v(min.x, min.y, max.z), v(min.x, xY, xZ)]} />
-      <GuideLine points={[v(max.x, min.y, max.z), v(max.x, xY, xZ)]} />
-      <GuideLine points={[v(min.x, xY - tick * 0.25, xZ), v(min.x, xY + tick * 0.25, xZ)]} />
-      <GuideLine points={[v(max.x, xY - tick * 0.25, xZ), v(max.x, xY + tick * 0.25, xZ)]} />
+      {edges.map((edge) => (
+        <group key={`${edge.id}-${edge.length}`}>
+          <GuideLine points={[edge.start, edge.end]} color={guide.edge} opacity={0.9} />
+          <EdgeGuideLabel edge={edge} color={guide.edge} size={edgeLabelSize} />
+        </group>
+      ))}
 
-      <GuideLine points={[zStart, zEnd]} />
-      <GuideLine points={[v(max.x, min.y, min.z), v(zX, zY, min.z)]} />
-      <GuideLine points={[v(max.x, min.y, max.z), v(zX, zY, max.z)]} />
-      <GuideLine points={[v(zX - tick * 0.25, zY, min.z), v(zX + tick * 0.25, zY, min.z)]} />
-      <GuideLine points={[v(zX - tick * 0.25, zY, max.z), v(zX + tick * 0.25, zY, max.z)]} />
+      <GuideLine points={[xStart, xEnd]} color={guide.x} />
+      <GuideLine points={[v(min.x, min.y, max.z), v(min.x, xY, max.z), v(min.x, xY, xZ)]} color={guide.extension} opacity={0.65} />
+      <GuideLine points={[v(max.x, min.y, max.z), v(max.x, xY, max.z), v(max.x, xY, xZ)]} color={guide.extension} opacity={0.65} />
+      <GuideLine points={[v(min.x, xY - tick * 0.25, xZ), v(min.x, xY + tick * 0.25, xZ)]} color={guide.x} />
+      <GuideLine points={[v(max.x, xY - tick * 0.25, xZ), v(max.x, xY + tick * 0.25, xZ)]} color={guide.x} />
+      <AxisGuideLabel position={v((min.x + max.x) / 2, xY - tick * 0.7, xZ)} axis="X" color={guide.x} size={labelSize} />
 
-      <GuideLine points={[yStart, yEnd]} />
-      <GuideLine points={[v(max.x, min.y, max.z), v(yX, min.y, yZ)]} />
-      <GuideLine points={[v(max.x, max.y, max.z), v(yX, max.y, yZ)]} />
-      <GuideLine points={[v(yX - tick * 0.25, min.y, yZ), v(yX + tick * 0.25, min.y, yZ)]} />
-      <GuideLine points={[v(yX - tick * 0.25, max.y, yZ), v(yX + tick * 0.25, max.y, yZ)]} />
+      <GuideLine points={[zStart, zEnd]} color={guide.z} />
+      <GuideLine points={[v(max.x, min.y, min.z), v(zX, min.y, min.z), v(zX, zY, min.z)]} color={guide.extension} opacity={0.65} />
+      <GuideLine points={[v(max.x, min.y, max.z), v(zX, min.y, max.z), v(zX, zY, max.z)]} color={guide.extension} opacity={0.65} />
+      <GuideLine points={[v(zX - tick * 0.25, zY, min.z), v(zX + tick * 0.25, zY, min.z)]} color={guide.z} />
+      <GuideLine points={[v(zX - tick * 0.25, zY, max.z), v(zX + tick * 0.25, zY, max.z)]} color={guide.z} />
+      <AxisGuideLabel position={v(zX + tick * 0.7, zY, (min.z + max.z) / 2)} axis="Z" color={guide.z} size={labelSize} />
 
-      <DimensionLabel position={v((min.x + max.x) / 2, xY, xZ)} axis="X" value={size.x} />
-      <DimensionLabel position={v(zX, zY, (min.z + max.z) / 2)} axis="Z" value={size.z} />
-      <DimensionLabel position={v(yX, (min.y + max.y) / 2, yZ)} axis="Y" value={size.y} />
+      <GuideLine points={[yStart, yEnd]} color={guide.y} />
+      <GuideLine points={[v(max.x, min.y, max.z), v(yX, min.y, max.z), v(yX, min.y, yZ)]} color={guide.extension} opacity={0.65} />
+      <GuideLine points={[v(max.x, max.y, max.z), v(yX, max.y, max.z), v(yX, max.y, yZ)]} color={guide.extension} opacity={0.65} />
+      <GuideLine points={[v(yX - tick * 0.25, min.y, yZ), v(yX + tick * 0.25, min.y, yZ)]} color={guide.y} />
+      <GuideLine points={[v(yX - tick * 0.25, max.y, yZ), v(yX + tick * 0.25, max.y, yZ)]} color={guide.y} />
+      <AxisGuideLabel position={v(yX + tick * 0.7, (min.y + max.y) / 2, yZ)} axis="Y" color={guide.y} size={labelSize} />
     </group>
   );
 }
@@ -481,6 +605,7 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
   const [wireframe, setWireframe] = useState(false);
   const [showBbox, setShowBbox] = useState(false);
   const [showDimensions, setShowDimensions] = useState(true);
+  const [dimensionReadout, setDimensionReadout] = useState<DimensionReadout | null>(null);
   const [cameraAction, setCameraAction] = useState<CameraAction | null>(null);
   const { selectedFeatureName, setSelection } = useSelectionStore();
   const sceneRef = useRef<THREE.Object3D | null>(null);
@@ -490,6 +615,7 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
     setWireframe(false);
     setShowBbox(false);
     setShowDimensions(true);
+    setDimensionReadout(null);
     setSelection(null);
     setCameraAction(null);
   }, [glbUrl, setSelection]);
@@ -554,6 +680,8 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
               <Model
                 url={glbUrl}
                 wireframe={wireframe}
+                showDimensions={showDimensions}
+                onDimensionsChange={setDimensionReadout}
                 selectedMeshName={selectedFeatureName}
                 onMeshClick={handleMeshClick}
                 partsVisibility={partsVisibility}
@@ -561,7 +689,6 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
                 onSceneReady={(s) => { sceneRef.current = s; }}
               />
               {showBbox && <BoundingBoxOverlay url={glbUrl} />}
-              <DimensionOverlay targetRef={sceneRef} enabled={showDimensions} />
               <ContactShadows
                 position={[0, -0.01, 0]}
                 opacity={0.6}
@@ -601,6 +728,37 @@ export default function Viewport({ onSelect, sendWsMessage }: ViewportProps = {}
               ? 'This iteration didn’t produce viewable geometry. Open the Source panel to inspect the code.'
               : 'Send a message to generate a 3D model'}
           </div>
+        </div>
+      )}
+
+      {glbUrl && !isLoading && showDimensions && dimensionReadout && (
+        <div className="viewport-dim-readout" aria-label="Model dimensions">
+          <div className="viewport-dim-readout-title">Bounds</div>
+          <div className="viewport-dim-readout-row viewport-dim-readout-row--x">
+            <span>X</span>
+            <strong>{formatDimension(dimensionReadout.x)}</strong>
+          </div>
+          <div className="viewport-dim-readout-row viewport-dim-readout-row--y">
+            <span>Y</span>
+            <strong>{formatDimension(dimensionReadout.y)}</strong>
+          </div>
+          <div className="viewport-dim-readout-row viewport-dim-readout-row--z">
+            <span>Z</span>
+            <strong>{formatDimension(dimensionReadout.z)}</strong>
+          </div>
+          {dimensionReadout.edges.length > 0 && (
+            <>
+              <div className="viewport-dim-readout-title viewport-dim-readout-subtitle">
+                Straight edges
+              </div>
+              {dimensionReadout.edges.map((edge) => (
+                <div className="viewport-dim-readout-row viewport-dim-readout-row--edge" key={edge.id}>
+                  <span>{edge.id}</span>
+                  <strong>{formatDimension(edge.length)}</strong>
+                </div>
+              ))}
+            </>
+          )}
         </div>
       )}
 

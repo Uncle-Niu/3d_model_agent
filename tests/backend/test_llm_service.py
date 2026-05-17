@@ -296,6 +296,60 @@ class TestPreservationInRepairPrompt(unittest.TestCase):
         self.assertNotIn("previous repair attempt deleted", plain)
         self.assertIn("previous repair attempt deleted", warn)
 
+    def test_fillet_stdfail_guidance_in_generic_execution_path(self):
+        # The fillet-specific guidance must be present in the generic
+        # execution-error branch so the model has a concrete alternative when
+        # OCC fails on .fillet() / .chamfer().
+        prompt = build_repair_prompt(self.SAMPLE_CODE, "boom", 1, failure_type=None)
+        self.assertIn("StdFail_NotDone", prompt)
+        self.assertIn(".fillet()", prompt)
+
+    def test_prior_attempts_block_renders_when_provided(self):
+        prior = [
+            {
+                "iteration": 2,
+                "error_first_line": "StdFail_NotDone: BRep_API: command not done",
+                "failing_source_line": 'line 85: result = base.edges("|Z").fillet(3)',
+            }
+        ]
+        prompt = build_repair_prompt(
+            self.SAMPLE_CODE, "boom", 3, prior_attempts=prior
+        )
+        self.assertIn("Prior repair attempts on this turn", prompt)
+        self.assertIn("Attempt 2", prompt)
+        self.assertIn(".fillet(3)", prompt)
+
+    def test_prior_attempts_absent_block_not_rendered(self):
+        prompt = build_repair_prompt(self.SAMPLE_CODE, "boom", 1)
+        self.assertNotIn("Prior repair attempts on this turn", prompt)
+
+    def test_same_error_recurring_switches_to_structural_framing(self):
+        # When the prior attempt's error signature matches the current
+        # error's, the prompt should drop the "minimum fix" framing and
+        # demand a structurally different change.
+        err = (
+            "Execution error:\n"
+            "Traceback (most recent call last):\n"
+            "  File \"<string>\", line 3, in <module>\n"
+            "OCP.OCP.StdFail.StdFail_NotDone: BRep_API: command not done"
+        )
+        prior = [
+            {
+                "iteration": 2,
+                "error_first_line": "OCP.OCP.StdFail.StdFail_NotDone: BRep_API: command not done",
+                "failing_source_line": "line 3: result = base.edges().fillet(3)",
+            }
+        ]
+        prompt = build_repair_prompt(
+            self.SAMPLE_CODE, err, 3, prior_attempts=prior
+        )
+        self.assertIn("same error", prompt.lower())
+        self.assertIn("structurally different", prompt)
+        # The strong "DO NOT shorten" framing should be replaced when stuck.
+        self.assertNotIn(
+            "DO NOT shorten the program. Your output should have at least", prompt
+        )
+
 
 class TestParseDesignPlan(unittest.TestCase):
 

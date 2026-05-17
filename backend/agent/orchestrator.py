@@ -8,11 +8,58 @@ reusable, structured generation workflow.
 import asyncio
 import inspect
 import os
+import re
 import time
 import traceback
 from typing import Any, Callable, Dict, List, Optional
 
 import httpx
+
+
+def _extract_failing_source_line(error_message: str, code: str) -> Optional[str]:
+    """Pull the source line referenced by ``File "<string>", line N`` from a
+    CadQuery execution traceback.
+
+    Returns ``"line N: <stripped source>"`` (truncated) or ``None`` if the
+    traceback doesn't pin a single line in the user's code. Used to label
+    each entry in the repair-attempt history so the next prompt can show
+    *which* line the previous attempt touched.
+    """
+    if not error_message or not code:
+        return None
+    m = re.search(r'File "<string>", line (\d+)', error_message)
+    if not m:
+        # Syntax error path: ``Syntax error at line N: msg``
+        m = re.search(r"line (\d+)", error_message)
+        if not m:
+            return None
+    try:
+        lineno = int(m.group(1))
+    except ValueError:
+        return None
+    lines = code.splitlines()
+    if not (1 <= lineno <= len(lines)):
+        return None
+    snippet = lines[lineno - 1].strip()
+    if len(snippet) > 140:
+        snippet = snippet[:140] + "…"
+    return f"line {lineno}: {snippet}"
+
+
+def _error_signature(error_message: str) -> str:
+    """Return the most-informative single line of a traceback.
+
+    Tracebacks put the exception type/message on the LAST non-empty line
+    (``OCP.OCP.StdFail.StdFail_NotDone: BRep_API: command not done``). The
+    first line is just ``Execution error:`` — useless for deduping. We use
+    this signature to detect "same error recurred" across repair attempts.
+    """
+    if not error_message:
+        return ""
+    for ln in reversed(error_message.strip().splitlines()):
+        if ln.strip():
+            return ln.strip()[:200]
+    return ""
 
 from ..cad.engine import process_cadquery_code
 from ..cad.example_bank import build_example_bank_prompt_context, retrieve_example_snippets
@@ -1002,6 +1049,14 @@ class AgentOrchestrator:
         last_failure_type: Optional[str] = None
         last_geometry_stats: Dict = {}
         repair_notes: List[str] = []
+        # Per-turn history of failed execution attempts. Each entry captures
+        # the failing source line (extracted from the traceback) and the
+        # first significant line of the error. Passed into the next repair
+        # prompt so the LLM can see when it's repeating itself — the previous
+        # behaviour was to call repair_cadquery with only the latest failed
+        # code + error, so the model had no idea it had already tried the
+        # same micro-edit twice.
+        repair_attempt_history: List[Dict] = []
         consecutive_empty = 0
         # Separate per-kind counters. ``iteration`` is the absolute attempt
         # index (used for model IDs / metadata); these track how many of each
@@ -1241,12 +1296,20 @@ class AgentOrchestrator:
                             turn_error_events[-1].fix_kind = "mechanical"
                     else:
                         repair_system_prompt = build_repair_system_prompt(config.hard_constraints, config.soft_constraints)
+                        # Pass the prior attempts EXCEPT the most recent one
+                        # (which corresponds to the failure we're repairing
+                        # right now — that's already in ``last_error`` /
+                        # ``last_code``). When the same error signature
+                        # recurs across multiple entries, the prompt builder
+                        # switches to a "structural fix required" framing.
+                        prior_for_prompt = repair_attempt_history[:-1] if repair_attempt_history else []
                         repair_user_prompt = build_repair_prompt(
                             last_code,
                             last_error,
                             iteration,
                             failure_type=last_failure_type,
                             geometry_stats=last_geometry_stats,
+                            prior_attempts=prior_for_prompt,
                         )
                         await self._emit_status("repairing",
                             f"Repairing {failure_label} (syntax attempt {syntax_repairs_used}/{self.MAX_SYNTAX_REPAIR_ITERATIONS}) · `{model_id}`",
@@ -1274,6 +1337,7 @@ class AgentOrchestrator:
                             soft_constraints=config.soft_constraints,
                             failure_type=last_failure_type,
                             geometry_stats=last_geometry_stats,
+                            prior_attempts=prior_for_prompt,
                         )
                         error_summary = last_error.splitlines()[0][:60] if last_error else "previous attempt failed"
                         repair_notes.append(f"Fixed {failure_label}: {error_summary}...")
@@ -1364,6 +1428,18 @@ class AgentOrchestrator:
                     last_critique = None
                     last_failure_type = exec_result.get("failure_type") or "execution_error"
                     last_geometry_stats = exec_result.get("geometry_stats", {})
+
+                    # Capture this failed attempt in the per-turn history so
+                    # the next repair prompt can show prior attempts. Keeping
+                    # the last few entries is enough; more would just bloat
+                    # the prompt.
+                    repair_attempt_history.append({
+                        "iteration": iteration,
+                        "error_first_line": _error_signature(last_error),
+                        "failing_source_line": _extract_failing_source_line(last_error, last_code),
+                    })
+                    if len(repair_attempt_history) > 5:
+                        del repair_attempt_history[:-5]
 
                     # Record the failure for the pattern-learning log. ``fix_kind``
                     # and ``succeeded`` will be updated on the next iteration when

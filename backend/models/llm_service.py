@@ -151,6 +151,7 @@ def build_repair_prompt(
     geometry_stats: Optional[dict] = None,
     *,
     extra_preservation_warning: bool = False,
+    prior_attempts: Optional[list[dict]] = None,
 ) -> str:
     """
     Build a targeted repair prompt based on the failure type.
@@ -162,6 +163,15 @@ def build_repair_prompt(
     that touched them), turning a 70-line holder into a 2-line stub. The
     instructions and the line-numbered failing code together push the model
     to patch the specific offending line, not rewrite from scratch.
+
+    ``prior_attempts`` is an optional list of prior failed repair attempts on
+    the same turn, each a dict with keys ``iteration``, ``error_first_line``,
+    and ``failing_source_line``. When the current error's first line matches
+    a previous attempt's, the prompt switches tone: the "apply the minimum
+    fix" framing is replaced with explicit "your previous fixes did not change
+    the error — try a structurally different approach" guidance. This breaks
+    the loop where the LLM wiggles the same selector across 4 iterations and
+    keeps getting the same OCC failure.
     """
     stats_text = ""
     if geometry_stats:
@@ -169,6 +179,47 @@ def build_repair_prompt(
         for k, v in geometry_stats.items():
             if v is not None:
                 stats_text += f"- {k}: {v}\n"
+
+    # Detect the "same error repeating" case. If the most recent prior
+    # attempt's error first line matches the current one, the previous
+    # "minimum fix" advice clearly is not working — surface that to the model
+    # explicitly and ask for a structural change instead of another wiggle.
+    current_err_first = (error_message or "").strip().splitlines()
+    current_err_first = current_err_first[-1] if current_err_first else ""
+    # Use the last non-empty line — OCC errors put the exception type there,
+    # whereas the first line is just "Execution error:".
+    for ln in reversed((error_message or "").strip().splitlines()):
+        if ln.strip():
+            current_err_first = ln.strip()
+            break
+    same_error_repeated = False
+    prior_block = ""
+    if prior_attempts:
+        prior_lines = []
+        for a in prior_attempts[-3:]:  # last 3 attempts is enough context
+            it = a.get("iteration", "?")
+            err = (a.get("error_first_line") or "").strip()
+            src = (a.get("failing_source_line") or "").strip()
+            if err and err == current_err_first:
+                same_error_repeated = True
+            bullet = f"- Attempt {it}: changed `{src or '(unknown line)'}` — still got `{err[:160]}`"
+            prior_lines.append(bullet)
+        if prior_lines:
+            prior_block = (
+                "\n## Prior repair attempts on this turn\n"
+                + "\n".join(prior_lines)
+                + "\n"
+            )
+            if same_error_repeated:
+                prior_block += (
+                    "\n**The same error has now recurred across multiple attempts.** "
+                    "Your previous fixes did not change the failure mode. STOP tweaking "
+                    "the same line — apply a structurally different fix this time "
+                    "(reorder operations, swap the offending call for an equivalent, "
+                    "reduce a problematic parameter by 2-3x, or drop a non-essential "
+                    "feature like a fillet whose radius is incompatible with the "
+                    "underlying edges).\n"
+                )
 
     # Failure-type-specific guidance
     if failure_type == "syntax_error":
@@ -229,9 +280,24 @@ Common root causes:
 - **`NameError: name 'X' is not defined`**: the variable was used before assignment, used outside the function/scope where it was defined, or accidentally referenced before a function `def` closes over it. Hoist parameters above any `def` that uses them, or pass them in as arguments.
 - **AttributeError on a Workplane method**: check the method name spelling against CadQuery docs.
 - **Selector returned empty**: `.faces(">Z")` / `.edges("|Z")` did not match anything — usually because the chain doesn't have geometry yet, or you applied the selector after a `.cut()` that consumed the face you wanted. Move the selector earlier or simplify it.
-- **OCC kernel error from a boolean**: split the boolean into smaller steps and union at the end."""
+- **`StdFail_NotDone: BRep_API: command not done` from `.fillet()` or `.chamfer()`**: the OCC kernel could not blend the selected edges. This is NOT a Python error and tweaking the `.edges(...)` selector rarely helps. Real causes: (a) the radius is larger than the shortest selected edge (try halving or thirding `fillet_radius`), (b) the fillet runs over edges that were partly consumed by a later `.cut()` / `.union()` and now have slivers, or (c) two filleted edges meet at a corner OCC can't resolve. Fixes, in order of preference: **(1) move the fillet earlier** — apply it to each component before the union/cut, **(2) cut the radius by 2-3x**, **(3) restrict the selector to one face** (e.g. `.faces(">Z").edges()`), or **(4) drop this single fillet line** — sharp edges still print fine.
+- **Other OCC kernel error from a boolean**: split the boolean into smaller steps and union at the end."""
 
-    preservation_block = """\
+    if same_error_repeated:
+        # The minimum-fix framing is what got us stuck. Loosen it: the model
+        # is allowed (encouraged, even) to restructure the failing region or
+        # drop a non-essential feature, as long as the design's named
+        # parameters and primary components are still defined.
+        preservation_block = """\
+## Preserve the design (the error keeps recurring — structural fix is allowed)
+- Keep all named PARAMETERS defined at the top of the file.
+- Keep the primary COMPONENTS (the main solids that make up the design) defined.
+- You ARE allowed to: reorder operations, replace the offending call with an equivalent, halve/third a problematic numeric parameter, or DROP one non-essential feature (e.g. a single fillet line) if it's the source of the OCC failure.
+- You ARE NOT allowed to: delete the parameter block, delete primary components, or shorten the program to a 5-line stub.
+- DO NOT drop the `import cadquery as cq` line.
+"""
+    else:
+        preservation_block = """\
 ## Preserve the design (CRITICAL)
 - The error above is a localized bug. Apply the smallest possible fix.
 - DO NOT delete components, parameters, helper functions, or geometry to make the error go away. Every named variable defined in the failed code MUST still be defined in your output (unless it is the direct cause of the failure, in which case it must be replaced with an equivalent definition).
@@ -247,8 +313,14 @@ Common root causes:
             "that caused the error.\n"
         )
 
+    intro = (
+        f"The CadQuery code failed on attempt {iteration}. The same error keeps recurring — "
+        "STOP applying the same micro-edit and try a structurally different fix."
+        if same_error_repeated
+        else f"The CadQuery code failed on attempt {iteration}. Apply a minimal fix to the failing line(s) — do NOT rewrite the program."
+    )
     return f"""\
-The CadQuery code failed on attempt {iteration}. Apply a minimal fix to the failing line(s) — do NOT rewrite the program.
+{intro}
 
 ## Failed Code (with line numbers — match these to the traceback)
 ```python
@@ -259,7 +331,7 @@ The CadQuery code failed on attempt {iteration}. Apply a minimal fix to the fail
 ```
 {error_message[:2000]}
 ```
-{stats_text}
+{prior_block}{stats_text}
 {guidance}
 
 {preservation_block}
@@ -580,6 +652,7 @@ class LLMService:
         geometry_stats: Optional[dict] = None,
         *,
         extra_preservation_warning: bool = False,
+        prior_attempts: Optional[list[dict]] = None,
     ) -> str:
         """Generate repaired CadQuery code after a failure.
 
@@ -598,6 +671,7 @@ class LLMService:
             failure_type=failure_type,
             geometry_stats=geometry_stats,
             extra_preservation_warning=extra_preservation_warning,
+            prior_attempts=prior_attempts,
         )
         # Token budget bumped to accommodate the new <diagnosis> block plus the
         # full fixed program. ~6KB for diagnosis + code is comfortable headroom
