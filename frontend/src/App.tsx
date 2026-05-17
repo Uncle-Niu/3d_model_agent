@@ -26,7 +26,7 @@ interface AppRoute {
 
 const CHAT_PANEL_MIN_WIDTH = 320;
 const CHAT_PANEL_DEFAULT_WIDTH = 470;
-const CHAT_PANEL_MAX_WIDTH = 1200;
+const CHAT_PANEL_MAX_WIDTH = 1600;
 
 function readRoute(): AppRoute {
   const path = window.location.pathname;
