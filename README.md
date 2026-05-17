@@ -18,14 +18,19 @@ netstat -ano | findstr :11434
 ## Benchmark local Ollama models for CadQuery generation
 
 ```
-python scripts/benchmark_ollama_cadquery.py --all --case simple_hole_block --repairs 0
-python scripts/benchmark_ollama_cadquery.py --all --repeats 2 --repairs 1
+python scripts/benchmark_ollama_cadquery.py --all
+python scripts/benchmark_ollama_cadquery.py --models qwen3.6:27b phi4:14b --case simple_mounting_block
+python scripts/benchmark_ollama_cadquery.py --all --generation-context direct
+python scripts/benchmark_ollama_cadquery.py --all --skip-vision
 ```
 
 Results are written to `data/benchmarks/cadquery_models/<run-id>/results.json`.
-The benchmark asks each model for CadQuery, runs the source through the same
-validator/export path as the app, and ranks by first-pass success, final success,
-score, and latency.
+By default the benchmark runs 4 described cases (2 simple, 2 medium), 3 repeats
+per model/case, one repair attempt, fixed benchmark plans fed to code generation,
+deterministic CadQuery validation/export, and render-based vision judging averaged
+across `qwen3.6:27b`, `gemma4:31b`, and `nemotron3:33b`. Artifacts for each
+attempt include the generation prompt, raw model response, extracted code,
+process result, and vision critiques.
 
 ## Debug a single CAD generation end-to-end (no UI required)
 

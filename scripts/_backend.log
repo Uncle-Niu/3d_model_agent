@@ -1,0 +1,14 @@
+INFO:     Will watch for changes in these directories: ['D:\\workspace\\3d_model_agent\\backend']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [31004] using StatReload
+INFO:     Started server process [35220]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+[OK] Mission Crafter backend started (data: D:\workspace\3d_model_agent\data)
+INFO:     127.0.0.1:49343 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57134 - "WebSocket /ws/20260517-022518-1202423b?thread_id=20260517-022518-8fa7fb81" [accepted]
+INFO:     connection open
+INFO:     127.0.0.1:63532 - "POST /api/projects HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63534 - "POST /api/projects/20260517-054740-d4627e23/chat_threads HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63539 - "WebSocket /ws/20260517-054740-d4627e23?thread_id=20260517-054745-a1216d56" [accepted]
+INFO:     connection open
