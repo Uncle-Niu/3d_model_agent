@@ -117,29 +117,38 @@ GENERAL_REQUIREMENT_CUES: dict[str, tuple[str, ...]] = {
 
 FEATURE_FAMILY_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "fastener interfaces": (
-        "Explicitly model fastener geometry as cut components: through holes, counterbores, countersinks, slots, or bosses.",
-        "Include nominal diameters, clearances, and placement pattern dimensions as named parameters.",
+        "Consider whether fastener geometry (through holes, counterbores, countersinks, slots, or bosses) is actually needed for this design. If the user did not ask the part to attach to anything, do NOT add mounting holes by default — declare so in <feature_decisions>.",
+        "If fasteners ARE needed, include nominal diameters, clearances, and placement pattern dimensions as named parameters.",
     ),
     "clearance and access cutouts": (
-        "Represent ports, cable paths, hand access, and reliefs as negative-space/cut components.",
-        "Keep cutouts visible in the key-feature checklist so vision can verify them.",
+        "Consider whether ports, cable paths, hand access, or reliefs apply to this design. If applicable, represent them as negative-space/cut components and list them in key_features so vision can verify them.",
     ),
     "internal cavities or shells": (
-        "Do not make a solid block when the object implies storage, containment, or insertion.",
-        "Use shelling or explicit inner cutters and include wall thickness as a named parameter.",
+        "Consider whether the object implies storage, containment, or insertion. If yes, use shelling or explicit inner cutters and include wall thickness as a named parameter. If the user is asking for a solid display object, do not invent a cavity.",
     ),
     "retention geometry": (
-        "Add lips, hooks, side guides, detents, clips, jaws, or stops that physically retain the target object.",
-        "Include clearance/tolerance assumptions for the retained object.",
+        "If the part holds another object, consider lips, hooks, side guides, detents, clips, jaws, or stops to physically retain it — and include clearance/tolerance assumptions. If the user described 'a stand' or 'a tray' where the object simply rests, retention features may be unnecessary; document the choice in <feature_decisions>.",
     ),
     "load-bearing reinforcement": (
-        "Add ribs, gussets, thickened junctions, broad bases, or triangular supports where loads change direction.",
-        "Avoid tall thin slabs/posts unless they are reinforced.",
+        "Consider whether the design carries directional load and would benefit from ribs, gussets, thickened junctions, broad bases, or triangular supports. Reinforce tall thin slabs/posts only when the expected load actually demands it.",
     ),
     "moving or mating interfaces": (
-        "Define mating clearances, pivots, rails, stops, thread/gear/bearing assumptions, and assembly orientation.",
-        "Separate mating parts or named features so later edits can target them.",
+        "If parts move or mate, define mating clearances, pivots, rails, stops, thread/gear/bearing assumptions, and assembly orientation. Separate mating parts or named features so later edits can target them.",
     ),
+}
+
+
+# Map planner feature_decisions feature names to recipe requirement families.
+# The planner emits coarse families like "fasteners_or_mounting_holes"; this
+# table tells the recipe gate which feature-family text patterns those map to
+# so an explicit "needed=false" decision can suppress a specific complaint.
+FEATURE_DECISION_TO_FAMILY: dict[str, tuple[str, ...]] = {
+    "fasteners_or_mounting_holes": ("fastener", "mounting", "hole", "screw", "bolt", "boss"),
+    "internal_cavity_or_shell": ("cavity", "shell", "hollow", "compartment"),
+    "retention_geometry": ("lip", "retention", "guide", "clip", "hook", "rim", "wall"),
+    "load_bearing_reinforcement": ("rib", "gusset", "reinforce", "stiff", "junction"),
+    "clearance_or_port_cutouts": ("port", "cutout", "cable", "access", "notch", "slot"),
+    "moving_or_mating_interface": ("hinge", "thread", "rail", "slide", "bearing", "mate", "gear"),
 }
 
 
@@ -363,22 +372,28 @@ def build_adaptive_recipe_context(user_message: str) -> str:
     Static recipe cards are intentionally limited. This adaptive context teaches
     the planner to synthesize a recipe from the user's object/function words and
     the retrieved example bank instead of waiting for a hand-authored card.
+
+    The language here is intentionally permissive about optional features —
+    the planner is expected to *decide* (via ``<feature_decisions>``) whether
+    each family below applies, rather than mechanically adding every cue it
+    sees in the request.
     """
     families = infer_requirement_families(user_message)
     lines = [
         "## Adaptive CAD Recipe Synthesis",
         "If no exact recipe exists, synthesize a product-specific recipe before planning. Use the user's object/function words and the retrieved local CAD examples to decide what features are required.",
-        "A sufficient plan must describe:",
+        "A sufficient plan should describe:",
         "- Primary body or load path",
         "- Interfaces to the thing being held, mounted, enclosed, moved, or joined",
-        "- Required negative-space features such as holes, slots, ports, cavities, notches, clearances, and reliefs",
+        "- Negative-space features (holes, slots, ports, cavities, notches, clearances, reliefs) WHEN they are functionally required — not just because the recipe mentions them",
         "- Manufacturing details: wall thickness, fillets/chamfers, ribs/gussets, print orientation, and named parameters",
         "- A key-feature checklist detailed enough for visual verification",
-        "Reject placeholder designs that are only primitive boxes/cylinders when the request implies functional interfaces, cuts, retention, cavities, or reinforcement.",
+        "Reject placeholder designs that are only primitive boxes/cylinders when the request implies functional interfaces.",
+        "Use `<feature_decisions>` to make the include/skip choice explicit for each optional feature family below. Adding fastener holes to a part that never attaches to anything is a worse failure than omitting them.",
     ]
 
     if families:
-        lines.append("Inferred requirement families for this request:")
+        lines.append("Inferred candidate feature families for this request (decide explicitly which apply):")
         for family in families:
             lines.append(f"### {family}")
             for requirement in FEATURE_FAMILY_REQUIREMENTS[family]:
@@ -396,8 +411,38 @@ def build_combined_recipe_context(user_message: str, cards: list[CadRecipe] | No
     return "\n\n".join(part for part in parts if part)
 
 
+def _opted_out_keyword_patterns(plan: DesignPlan) -> set[str]:
+    """Collect keyword fragments that the planner explicitly marked as
+    not-needed via ``<feature_decisions>``. A required-feature is suppressed
+    when its keyword list overlaps any of these patterns.
+    """
+    patterns: set[str] = set()
+    for decision in getattr(plan, "feature_decisions", []) or []:
+        if decision.needed:
+            continue
+        family_keys = FEATURE_DECISION_TO_FAMILY.get(decision.feature.lower(), ())
+        patterns.update(family_keys)
+    return patterns
+
+
+def _feature_is_opted_out(feature: str, keywords: tuple[str, ...], opt_outs: set[str]) -> bool:
+    """A feature is considered opted out when its keywords (or its own name)
+    overlap with the planner's not-needed patterns.
+    """
+    if not opt_outs:
+        return False
+    haystack = list(keywords) + [feature.lower()]
+    return any(any(p in word for p in opt_outs) for word in haystack)
+
+
 def validate_plan_against_recipes(plan: DesignPlan, cards: list[CadRecipe]) -> PlanQualityReport:
-    """Check that the plan is detailed enough before code generation."""
+    """Check that the plan is detailed enough before code generation.
+
+    Respects ``plan.feature_decisions``: if the planner explicitly marked a
+    feature family as not needed (e.g. no mounting holes on a phone stand
+    that simply sits flat on a desk), the corresponding required-feature
+    check is suppressed and the plan is not gated on it.
+    """
     if not cards:
         return PlanQualityReport(is_sufficient=True)
 
@@ -406,6 +451,7 @@ def validate_plan_against_recipes(plan: DesignPlan, cards: list[CadRecipe]) -> P
     key_feature_count = len(plan.key_features)
     missing: list[str] = []
     missing_negative: list[str] = []
+    opt_outs = _opted_out_keyword_patterns(plan)
 
     # Gate against the primary recipe only. Secondary cards are useful prompt
     # inspiration, but enforcing all of them can overconstrain broad words like
@@ -413,6 +459,8 @@ def validate_plan_against_recipes(plan: DesignPlan, cards: list[CadRecipe]) -> P
     for card in cards[:1]:
         for feature in card.required_features:
             keywords = card.feature_keywords.get(feature, ())
+            if _feature_is_opted_out(feature, keywords, opt_outs):
+                continue
             if keywords and not any(keyword in plan_text for keyword in keywords):
                 missing.append(feature)
             elif not keywords and feature.lower() not in plan_text:
@@ -420,6 +468,8 @@ def validate_plan_against_recipes(plan: DesignPlan, cards: list[CadRecipe]) -> P
 
         for feature in card.negative_space_features:
             keywords = card.feature_keywords.get(feature, ())
+            if _feature_is_opted_out(feature, keywords, opt_outs):
+                continue
             has_keyword = any(keyword in plan_text for keyword in keywords) if keywords else feature.lower() in plan_text
             has_cut_component = any((component.operation or "").lower() == "cut" for component in plan.components)
             if not (has_keyword and has_cut_component):
@@ -441,7 +491,11 @@ def validate_plan_against_recipes(plan: DesignPlan, cards: list[CadRecipe]) -> P
         feedback_lines.append("Missing required negative-space/cut features:")
         feedback_lines.extend(f"- {item}" for item in missing_negative)
     if feedback_lines:
-        feedback_lines.append("Revise the plan before code generation. Do not solve this by producing a plain base plus slab.")
+        feedback_lines.append(
+            "Revise the plan before code generation. If any of these are genuinely not needed for "
+            "this design, list them as `needed=false` in <feature_decisions> with a clear rationale "
+            "instead of silently dropping them. Do not solve this by producing a plain base plus slab."
+        )
 
     return PlanQualityReport(
         is_sufficient=is_sufficient,

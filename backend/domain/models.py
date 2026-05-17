@@ -96,6 +96,49 @@ class DesignComponent(BaseModel):
     position: Optional[list[float]] = None  # [x, y, z] center in mm
     orientation: str = ""  # e.g. "axis=Z" or free-form
     operation: str = ""    # union | cut | intersect | base | pattern | fillet
+    # Provenance for this component: "explicit" came verbatim from the user,
+    # "inferred" was derived from the user's request, "default" is the agent's
+    # engineering choice. Empty when the planner didn't tag the spec source.
+    spec_source: str = ""
+
+
+class FeatureDecision(BaseModel):
+    """One yes/no decision about whether a recipe-style feature family is needed.
+
+    The planner emits these so the recipe gate knows what the planner *chose*
+    not to include vs. what it accidentally omitted. Keeps the agent from
+    being forced to add fastener holes to a phone stand that just sits flat.
+    """
+    feature: str            # e.g. "fasteners_or_mounting_holes"
+    needed: bool = False
+    rationale: str = ""
+
+
+class Connection(BaseModel):
+    """How two components join. Borrowed from TalkCAD's spec tracker.
+
+    Makes joinery explicit so the code generator and the vision verifier
+    agree on the assembly relationships (vs. inferring them from prose).
+    """
+    from_part: str = ""        # part name (Pydantic field name; `from` is a Python keyword)
+    to_part: str = ""
+    kind: str = ""             # union | cut | press_fit | screw | hinge | slide | contact | ...
+    description: str = ""
+
+
+class PhysicalUse(BaseModel):
+    """Real-world-use reasoning produced before component decomposition.
+
+    Captured so the planner explicitly considers gravity, contact, applied
+    forces, and how the object is actually used — the most common cause of
+    naive output is jumping straight to geometry without this step.
+    """
+    orientation: str = ""
+    contact_surfaces: str = ""
+    applied_forces: str = ""
+    use_cycle: str = ""
+    ergonomic_notes: str = ""
+    mating_object: str = ""
 
 
 class DesignPlan(BaseModel):
@@ -112,6 +155,14 @@ class DesignPlan(BaseModel):
     assumptions: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list)
     parameters: dict[str, float] = Field(default_factory=dict)
+    # Planner's reasoning about how the part lives in the real world.
+    physical_use: Optional[PhysicalUse] = None
+    # Yes/no decisions about each optional feature family (fastener holes,
+    # cavities, retention, reinforcement, ports, mating). The recipe gate
+    # checks these before complaining about a missing feature.
+    feature_decisions: list[FeatureDecision] = Field(default_factory=list)
+    # How parts connect. Empty for single-part designs.
+    connections: list[Connection] = Field(default_factory=list)
     raw_reasoning: str = ""                # the model's free-form thinking
     raw_text: str = ""                     # full raw planner response (for debug)
 

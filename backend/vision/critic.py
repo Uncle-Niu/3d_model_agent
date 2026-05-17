@@ -75,8 +75,16 @@ GROUND TRUTH — every entry must be checked individually.
    sub-shapes, extra sub-shapes that the plan did not call for.
 3. Look for printability problems: overhangs, thin walls, fragile pins, sharp
    internal corners, geometry that is clearly non-manifold (visible holes).
-4. Only mark `matches_intent=true` if the result looks like the plan AND no required
-   feature is missing.
+4. NEW — Physical-use sanity check: would this part actually work in real life?
+   - Stability: will it tip over? Is the base wider than the top is tall for tall parts?
+   - Proportions: are the visible features sized sensibly relative to the whole part?
+   - Contact patch: when sitting on a surface, is there a flat region that touches?
+   - Load path: do load-bearing sections look strong enough, or worryingly thin?
+   - Ergonomics: if a human interacts with it, does the interaction surface look usable?
+   The "Real-world use" section of the plan (if provided) describes the intended
+   physical behavior — verify the rendered geometry matches it.
+5. Only mark `matches_intent=true` if the result looks like the plan AND no required
+   feature is missing AND no major stability/proportion concern is visible.
 
 ## Output (STRICT)
 Respond with ONLY a JSON object, no markdown fences, no preamble:
@@ -87,9 +95,15 @@ Respond with ONLY a JSON object, no markdown fences, no preamble:
   "feature_checklist": [
     {"feature": "<from the key-feature checklist>", "present": <true|false|"partial">, "evidence": "<which view + what you saw>"}
   ],
+  "stability_proportions": {
+    "stable_under_gravity": <true|false>,
+    "proportions_ok": <true|false>,
+    "contact_patch_ok": <true|false>,
+    "notes": "<one-line description of any physical-use concern, or 'looks ok'>"
+  },
   "issues": [
     {
-      "issue_type": "missing_feature|wrong_shape|wrong_proportion|thin_wall|overhang|fragile_feature|non_manifold|symmetry|intent_mismatch|geometry_error|other",
+      "issue_type": "missing_feature|wrong_shape|wrong_proportion|thin_wall|overhang|fragile_feature|non_manifold|symmetry|intent_mismatch|geometry_error|tippy|bad_proportions|weak_contact_patch|insufficient_load_path|other",
       "severity": "error|warning|info",
       "description": "<concrete, specific — name the feature and what is wrong>",
       "location_hint": "<view + region, e.g. 'front view, lower-left'>"
@@ -102,6 +116,9 @@ Respond with ONLY a JSON object, no markdown fences, no preamble:
 ## Scoring rules
 - ANY missing key feature → severity=error, matches_intent=false, score <= 0.4.
 - Wrong overall shape → matches_intent=false, score <= 0.3.
+- Major stability issue (will tip, no usable contact patch, unsafe proportions for the
+  applied load described in the plan) → severity=warning at minimum, score <= 0.6.
+  Treat these as advisory unless they make the part unusable.
 - All features present, only printability concerns → matches_intent=true, score 0.7-0.95.
 - Perfect match with no concerns → matches_intent=true, score 0.95-1.0.
 
@@ -109,6 +126,8 @@ Respond with ONLY a JSON object, no markdown fences, no preamble:
 - Do NOT invent dimensions you cannot measure from the renders.
 - Do NOT mark `matches_intent=true` just because the renders look like *a* CAD model.
 - Do NOT wrap your response in ```json fences.
+- Do NOT flag stability issues that the part's intended use case allows
+  (e.g. a wall-mount bracket doesn't need to stand on a table).
 """
 
 
@@ -427,6 +446,25 @@ def _json_to_critique_report(data: dict) -> CritiqueReport:
                 description=f"Key feature only partially present: {entry.get('feature', '(unnamed)')}",
                 location_hint=str(entry.get("evidence", "")),
             ))
+
+    # Stability/proportions axis — vision models are noisy at physics, so these
+    # are warnings by default. Promote to errors only when explicitly flagged.
+    sp = data.get("stability_proportions")
+    if isinstance(sp, dict):
+        notes = str(sp.get("notes", "")).strip()
+        for flag, label in (
+            ("stable_under_gravity", "tippy"),
+            ("proportions_ok", "bad_proportions"),
+            ("contact_patch_ok", "weak_contact_patch"),
+        ):
+            value = sp.get(flag)
+            if value is False or value == "false":
+                issues.append(GeometryIssue(
+                    issue_type=label,
+                    severity="warning",
+                    description=f"Physical-use concern ({label}): {notes or 'see plan'}",
+                    location_hint="stability/proportions axis",
+                ))
 
     return CritiqueReport(
         issues=issues,

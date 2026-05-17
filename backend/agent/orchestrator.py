@@ -42,6 +42,7 @@ from ..models.llm_service import (
     plan_to_prompt_text,
 )
 from ..knowledge import LocalKnowledgeService
+from ..knowledge import error_patterns as _error_patterns
 from ..knowledge.local_recall import format_recall_for_prompt
 from ..storage import StorageService
 from ..tools.web_research import search_web, get_research_prompt_extension
@@ -987,6 +988,13 @@ class AgentOrchestrator:
         last_geometry_stats: Dict = {}
         repair_notes: List[str] = []
         consecutive_empty = 0
+        # Error-pattern events recorded across this turn. Each repair attempt
+        # appends one event so the post-turn summarizer can see the full
+        # failure → fix → next-result trajectory.
+        turn_error_events: List[_error_patterns.FailureEvent] = []
+        # Identifier used as ``turn_id`` in the error log so events from a
+        # single turn cluster together when humans audit pitfalls.
+        error_turn_id = f"{project_id}:{thread_id}:{turn_index}"
 
         # 3. Iterative Loop
         for iteration in range(1, self.MAX_REPAIR_ITERATIONS + 1):
@@ -1093,6 +1101,21 @@ class AgentOrchestrator:
                         soft_constraints=config.soft_constraints,
                         repair_notes=repair_notes,
                     )
+                    # Vision-driven repairs don't have a prior failed-execution
+                    # event to update — they fire after a *successful* render
+                    # whose critique flagged issues. Record an event so the
+                    # learner sees vision-repair journeys too.
+                    vision_event = _error_patterns.record_failure(
+                        failure_type="vision_critique",
+                        error_text=(last_critique.repair_prompt or "vision critique below threshold"),
+                        fix_kind="vision",
+                        succeeded=False,
+                        iteration=iteration,
+                        turn_id=error_turn_id,
+                        model=self.llm.model,
+                    )
+                    if vision_event is not None:
+                        turn_error_events.append(vision_event)
                 else:
                     # Execution-error repair
                     failure_label = (last_failure_type or "execution_error").replace("_", " ")
@@ -1145,6 +1168,12 @@ class AgentOrchestrator:
                         repair_notes.append(
                             f"Mechanical syntax fix (no LLM call): {mechanical_note}"
                         )
+                        # Record the fix on the most-recent pending failure so
+                        # the post-turn summarizer can see which strategy was
+                        # used. We won't know if it succeeded until step B
+                        # runs at the top of the next iteration.
+                        if turn_error_events:
+                            turn_error_events[-1].fix_kind = "mechanical"
                     else:
                         repair_system_prompt = build_repair_system_prompt(config.hard_constraints, config.soft_constraints)
                         repair_user_prompt = build_repair_prompt(
@@ -1196,6 +1225,11 @@ class AgentOrchestrator:
                             soft_constraints=config.soft_constraints,
                             repair_notes=repair_notes,
                         )
+                        # Tag the pending failure event with the actual fix
+                        # strategy (LLM repair). Outcome (succeeded/failed)
+                        # will be set when step B runs next iteration.
+                        if turn_error_events:
+                            turn_error_events[-1].fix_kind = "llm"
 
                 if not last_code.strip():
                     last_error = "LLM returned empty code"
@@ -1244,7 +1278,7 @@ class AgentOrchestrator:
                 )
                 t_exec_elapsed = time.time() - t_exec_start
 
-                await self._emit_debug("cadquery_result", 
+                await self._emit_debug("cadquery_result",
                     f"CadQuery execution {'succeeded' if exec_result['success'] else 'failed'} ({t_exec_elapsed:.2f}s)", {
                         "success": exec_result["success"],
                         "message": exec_result["message"],
@@ -1252,11 +1286,35 @@ class AgentOrchestrator:
                         "failure_type": exec_result.get("failure_type"),
                     })
 
+                # If a prior iteration recorded a failure and we now see a
+                # successful execution, that fix worked. Update the most-recent
+                # event so the summarizer sees a positive outcome.
+                if exec_result["success"] and turn_error_events:
+                    last_event = turn_error_events[-1]
+                    if not last_event.succeeded and last_event.fix_kind not in ("", "pending"):
+                        last_event.succeeded = True
+
                 if not exec_result["success"]:
                     last_error = exec_result["message"]
                     last_critique = None
                     last_failure_type = exec_result.get("failure_type") or "execution_error"
                     last_geometry_stats = exec_result.get("geometry_stats", {})
+
+                    # Record the failure for the pattern-learning log. ``fix_kind``
+                    # and ``succeeded`` will be updated on the next iteration when
+                    # we know which repair strategy was applied and whether it
+                    # actually worked.
+                    event = _error_patterns.record_failure(
+                        failure_type=last_failure_type,
+                        error_text=last_error,
+                        fix_kind="pending",
+                        succeeded=False,
+                        iteration=iteration,
+                        turn_id=error_turn_id,
+                        model=self.llm.model,
+                    )
+                    if event is not None:
+                        turn_error_events.append(event)
 
                     metadata = ModelMetadata(
                         model_id=model_id,
@@ -1474,6 +1532,19 @@ class AgentOrchestrator:
                         steps=self.current_steps
                     ),
                 )
+
+                # Autonomous error-pattern learning: if this successful turn
+                # involved at least one repair, fire-and-forget an LLM
+                # summarization that distills new pitfall cards from the
+                # journey. Does NOT block the response — runs in background.
+                try:
+                    _error_patterns.schedule_summarization(self.llm, turn_error_events)
+                except Exception as exc:
+                    await self._emit_debug(
+                        "error_patterns_skip",
+                        f"Pitfall summarization could not be scheduled: {exc}",
+                    )
+
                 return model_id
 
             except Exception as e:

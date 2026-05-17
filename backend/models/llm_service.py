@@ -33,11 +33,15 @@ class LLMBackendUnavailable(RuntimeError):
 
 from ..cad.examples import get_api_reference, get_examples_text
 from ..domain.models import (
+    Connection,
     DesignComponent,
     DesignPlan,
+    FeatureDecision,
     HardConstraints,
+    PhysicalUse,
     SoftConstraints,
 )
+from ..knowledge import error_patterns as _error_patterns
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +57,11 @@ def build_system_prompt(
         hard_constraints = HardConstraints()
     if soft_constraints is None:
         soft_constraints = SoftConstraints()
+
+    learned_pitfalls = _error_patterns.format_pitfalls_for_prompt(
+        _error_patterns.get_active_pitfalls()
+    )
+    learned_section = f"\n{learned_pitfalls}\n" if learned_pitfalls else ""
 
     return f"""\
 You are an expert mechanical CAD engineer specializing in FDM 3D-printable parts.
@@ -75,7 +84,7 @@ Generate production-quality CadQuery Python code for the user's request.
 - Every statement you start, finish on the same line or with explicit `\\` continuation. Never leave a trailing `,` or open paren that you intend to "come back to."
 
 ## Common Pitfalls (avoid these — they cause 1-3 wasted repair cycles each)
-- `cq.Workplane("XY").pushPoints(pts).hole(d)` is INVALID — `.hole()` needs a solid already in the chain. Either:
+{learned_section}- `cq.Workplane("XY").pushPoints(pts).hole(d)` is INVALID — `.hole()` needs a solid already in the chain. Either:
   - Chain off the existing solid: `body = body.faces(">Z").workplane().pushPoints(pts).hole(d)`, or
   - Build cylinders separately and cut: `holes = cq.Workplane("XY").pushPoints(pts).circle(d/2).extrude(depth); body = body.cut(holes)`
 - Same for `.faces()`, `.edges()`, `.workplane(offset=...)` — these need a solid already in the chain.
@@ -255,10 +264,24 @@ The CadQuery code failed on attempt {iteration}. Apply a minimal fix to the fail
 
 {preservation_block}
 ## Output
-- Output ONLY the corrected CadQuery Python code in a single ```python block — no prose
+
+FIRST, emit a short `<diagnosis>` block — 2-5 lines — explaining your understanding
+of the root cause and the smallest fix you plan to apply. This is the only place
+prose is allowed; put it BEFORE the python code block. Example:
+
+```
+<diagnosis>
+Root cause: line 47 calls `.hole(d)` on a fresh Workplane that has no base solid yet.
+Fix: chain the hole onto the existing `body` (body.faces('>Z').workplane().hole(d)).
+Preserve all 12 parameters and the 7 booleans below — only the one line changes.
+</diagnosis>
+```
+
+THEN, output the corrected program in a single ```python block:
 - Output the FULL program (all parameters, helper shapes, booleans, fillets, and the `result = ...` assignment), not just the diff
 - Keep variable names and structure of the failed code wherever possible
 - Assign the final shape to `result`
+- The python block must contain ONLY Python statements and comments — no English sentences.
 """
 
 
@@ -277,13 +300,21 @@ def build_repair_system_prompt(
     """
     hc = hard_constraints or HardConstraints()
     sc = soft_constraints or SoftConstraints()
+    learned_pitfalls = _error_patterns.format_pitfalls_for_prompt(
+        _error_patterns.get_active_pitfalls()
+    )
+    learned_section = f"\n{learned_pitfalls}\n" if learned_pitfalls else ""
     return f"""\
 You are an expert mechanical CAD engineer repairing a CadQuery program.
+{learned_section}
 
 ## Output Rules (CRITICAL)
-- Output ONLY a single ```python code block — no prose before or after
-- The block MUST contain the complete fixed program, not just the changed lines
-- The block MUST contain ONLY Python statements, comments, and blank lines. NO free-form English ("Wait,...", "Actually,...", "The error is...") inside the code block — that breaks `ast.parse` and forces another repair cycle.
+- FIRST, emit a single `<diagnosis>...</diagnosis>` block (2-5 lines) explaining your
+  understanding of the root cause and the smallest fix you plan to apply. This is the
+  ONLY place prose is allowed. Diagnosing the failure mode before patching produces
+  tighter, less destructive repairs than jumping straight to code.
+- THEN, output a single ```python code block with the complete fixed program.
+- The python block MUST contain ONLY Python statements, comments, and blank lines. NO free-form English ("Wait,...", "Actually,...", "The error is...") inside the code block — that breaks `ast.parse` and forces another repair cycle.
 - Always keep `import cadquery as cq` at the top
 - Assign the final shape to a variable named `result`
 - Use metric units (millimeters)
@@ -465,6 +496,11 @@ class LLMService:
         Uses a lean repair-specific system prompt (no full example bank) so
         the token budget goes to the actual fix rather than restating the
         ~10KB of canonical CadQuery snippets the generation pass already used.
+
+        The model is instructed to emit a short ``<diagnosis>`` block before
+        the code. We keep ``allow_thinking=False`` (thinking-mode reasoning
+        burns the budget without surfacing it) — the diagnosis lives in the
+        visible content stream where downstream code can extract it.
         """
         system_prompt = build_repair_system_prompt(hard_constraints, soft_constraints)
         repair_prompt = build_repair_prompt(
@@ -473,9 +509,10 @@ class LLMService:
             geometry_stats=geometry_stats,
             extra_preservation_warning=extra_preservation_warning,
         )
-        # Disable thinking so the whole token budget produces fixed code, and
-        # give the model enough headroom for a complete rewrite if needed.
-        return await self.generate(repair_prompt, system_prompt, max_tokens=6144)
+        # Token budget bumped to accommodate the new <diagnosis> block plus the
+        # full fixed program. ~6KB for diagnosis + code is comfortable headroom
+        # for designs up to ~120 lines of CadQuery.
+        return await self.generate(repair_prompt, system_prompt, max_tokens=7168)
 
     @staticmethod
     def build_planning_prompt(
@@ -505,8 +542,28 @@ class LLMService:
             "## Output format (STRICT)\n"
             "1. First, a short `<thinking>` section with your free-form reasoning (1-3 paragraphs). "
             "   Use this to consider proportions, references, ambiguities, and risks.\n"
-            "2. Then output a single `<design_plan>` XML block with this exact schema. DO NOT output JSON:\n"
+            "2. Then a `<physical_use>` block that grounds the design in the real world (see schema below). "
+            "   This is where you reason about gravity, contact surfaces, applied forces, and how the object is actually used.\n"
+            "3. Then a `<feature_decisions>` block where you decide which OPTIONAL feature families this design needs, "
+            "   with a one-line rationale per decision. Skip features the request does not actually require.\n"
+            "4. Finally, output a single `<design_plan>` XML block with this exact schema. DO NOT output JSON:\n"
             "```xml\n"
+            "<physical_use>\n"
+            "  <orientation>How the part sits in normal use — which face is the bottom under gravity?</orientation>\n"
+            "  <contact_surfaces>What the part touches in use (table, wall, hand, the object it holds)</contact_surfaces>\n"
+            "  <applied_forces>Where loads come from and roughly how big (e.g. 200g phone pulling forward on the holder lip)</applied_forces>\n"
+            "  <use_cycle>How a user interacts with it (place once, insert/remove repeatedly, screw down, etc.)</use_cycle>\n"
+            "  <ergonomic_notes>Any human-scale considerations: graspable, finger clearance, visibility</ergonomic_notes>\n"
+            "  <mating_object>If holding/mounting/joining something, describe its key dimensions and clearances</mating_object>\n"
+            "</physical_use>\n"
+            "<feature_decisions>\n"
+            "  <decision feature=\"fasteners_or_mounting_holes\" needed=\"true|false\">why this design does/does not need fastener holes</decision>\n"
+            "  <decision feature=\"internal_cavity_or_shell\" needed=\"true|false\">why this design does/does not need a hollow cavity</decision>\n"
+            "  <decision feature=\"retention_geometry\" needed=\"true|false\">why retention (lips, clips, hooks) is or is not required</decision>\n"
+            "  <decision feature=\"load_bearing_reinforcement\" needed=\"true|false\">whether ribs/gussets are needed for the expected loads</decision>\n"
+            "  <decision feature=\"clearance_or_port_cutouts\" needed=\"true|false\">whether cable paths/ports/access cutouts are required</decision>\n"
+            "  <decision feature=\"moving_or_mating_interface\" needed=\"true|false\">whether the design has hinges/threads/sliding parts</decision>\n"
+            "</feature_decisions>\n"
             "<design_plan>\n"
             "  <summary>one-sentence description of the final part</summary>\n"
             "  <overall_dimensions_mm>\n"
@@ -523,8 +580,14 @@ class LLMService:
             "      <position><x>0</x><y>0</y><z>0</z></position>\n"
             "      <orientation>axis=Z|free-form description</orientation>\n"
             "      <operation>base|union|cut|intersect|fillet|chamfer|shell|pattern</operation>\n"
+            "      <spec_source>explicit|inferred|default</spec_source>\n"
             "    </component>\n"
             "  </components>\n"
+            "  <connections>\n"
+            "    <connection from=\"part_a\" to=\"part_b\" kind=\"union|cut|press_fit|screw|hinge|slide|contact\">\n"
+            "      how the two parts join, including clearances/tolerances if applicable\n"
+            "    </connection>\n"
+            "  </connections>\n"
             "  <key_features>\n"
             "    <feature>feature 1 that must be visible in the result</feature>\n"
             "  </key_features>\n"
@@ -549,10 +612,18 @@ class LLMService:
             "  in CadQuery from the plan alone, without seeing the original prompt.\n"
             "- For each cut/hole, list it as a separate component with operation=cut and its own dimensions.\n"
             "- Treat negative space as real design content: slots, notches, cavities, cable pass-throughs, and clearance reliefs "
-            "  MUST appear as explicit cut components when they are functionally expected.\n"
-            "- If recipe context is provided, every required feature from that recipe must appear in components or key_features.\n"
+            "  MUST appear as explicit cut components WHEN THEY ARE FUNCTIONALLY EXPECTED. Do NOT add fastener holes or cavities "
+            "  just because the recipe mentions them — only add them if `<feature_decisions>` says they are needed.\n"
+            "- For each component, tag `<spec_source>` honestly: `explicit` (the user requested it verbatim), `inferred` "
+            "  (derived from the request — e.g. user said \"phone holder\", you inferred phone width), `default` "
+            "  (your engineering choice with no strong signal from the user). The vision critic will weight `explicit` highest.\n"
+            "- Use `<connections>` to record how parts join: a press-fit screw boss, a hinge axis, a sliding rail, or simply "
+            "  \"both parts share face X via union\". This makes assembly relationships explicit so the code generator and the "
+            "  vision verifier agree on intent.\n"
+            "- If recipe context is provided, every required feature from that recipe must EITHER appear in components/key_features "
+            "  OR be explicitly opted out in `<feature_decisions>` with a clear rationale.\n"
             "- Avoid under-modeled placeholder designs. A functional product should not degrade to a few primitive boxes when "
-            "  a known archetype calls for lips, ribs, clearances, holes, slots, or cutouts.\n"
+            "  a known archetype calls for lips, ribs, clearances, holes, slots, or cutouts AND the feature_decisions block says they are needed.\n"
             "- For multi-part assemblies, name parts so the names match the final cq.Assembly children.\n"
             "- `key_features` is a checklist used by the vision verifier — list every distinct visible feature.\n"
         )
@@ -776,6 +847,18 @@ Output your response in this exact XML format:
         return query, reasoning
 
 
+def extract_diagnosis_from_response(response: str) -> str:
+    """Pull the optional ``<diagnosis>`` block out of a repair LLM response.
+
+    Returns the inner text (trimmed) or an empty string when no block is
+    present. Safe to call on any response.
+    """
+    if not response:
+        return ""
+    m = re.search(r"<diagnosis\b[^>]*>(.*?)</diagnosis>", response, re.DOTALL | re.IGNORECASE)
+    return m.group(1).strip() if m else ""
+
+
 def _plan_has_structured_content(plan: DesignPlan) -> bool:
     """True if the parsed plan carries anything beyond an empty skeleton.
 
@@ -792,11 +875,99 @@ def _plan_has_structured_content(plan: DesignPlan) -> bool:
     )
 
 
+def _parse_physical_use_block(content: str) -> Optional[PhysicalUse]:
+    """Parse the inner XML of a <physical_use> block into a PhysicalUse model.
+
+    Resilient to namespace prefixes, mixed casing, and missing tags — any
+    missing field stays empty rather than tripping a parse error.
+    """
+    if not content or not content.strip():
+        return None
+
+    def _grab(tag: str) -> str:
+        m = re.search(rf"<{tag}\b[^>]*>(.*?)</{tag}>", content, re.DOTALL | re.IGNORECASE)
+        return m.group(1).strip() if m else ""
+
+    pu = PhysicalUse(
+        orientation=_grab("orientation"),
+        contact_surfaces=_grab("contact_surfaces"),
+        applied_forces=_grab("applied_forces"),
+        use_cycle=_grab("use_cycle"),
+        ergonomic_notes=_grab("ergonomic_notes"),
+        mating_object=_grab("mating_object"),
+    )
+    if not any([pu.orientation, pu.contact_surfaces, pu.applied_forces,
+                pu.use_cycle, pu.ergonomic_notes, pu.mating_object]):
+        return None
+    return pu
+
+
+_TRUE_TOKENS = {"true", "yes", "y", "1", "needed", "required"}
+_FALSE_TOKENS = {"false", "no", "n", "0", "not_needed", "skip", "omit", "none"}
+
+
+def _parse_bool_flag(value: str) -> bool:
+    """Parse a yes/no-ish string into a boolean. Defaults to False for
+    ambiguous values so the recipe gate doesn't accidentally force features
+    the planner wasn't sure about.
+    """
+    v = (value or "").strip().lower()
+    if v in _TRUE_TOKENS:
+        return True
+    if v in _FALSE_TOKENS:
+        return False
+    return False
+
+
+def _parse_feature_decisions_block(content: str) -> list[FeatureDecision]:
+    """Parse the inner XML of a <feature_decisions> block.
+
+    Tolerates two shapes the LLM tends to produce:
+    1. ``<decision feature="X" needed="true">rationale</decision>``
+    2. ``<decision><feature>X</feature><needed>true</needed><rationale>...</rationale></decision>``
+    """
+    if not content or not content.strip():
+        return []
+    decisions: list[FeatureDecision] = []
+    for m in re.finditer(r"<decision\b([^>]*)>(.*?)</decision>", content, re.DOTALL | re.IGNORECASE):
+        attrs = m.group(1) or ""
+        body = m.group(2) or ""
+        # Attribute-style
+        feature_attr = re.search(r'feature\s*=\s*"([^"]+)"', attrs, re.IGNORECASE)
+        needed_attr = re.search(r'needed\s*=\s*"([^"]+)"', attrs, re.IGNORECASE)
+        # Tag-style fallbacks
+        feature_tag = re.search(r"<feature\b[^>]*>(.*?)</feature>", body, re.DOTALL | re.IGNORECASE)
+        needed_tag = re.search(r"<needed\b[^>]*>(.*?)</needed>", body, re.DOTALL | re.IGNORECASE)
+        rationale_tag = re.search(r"<rationale\b[^>]*>(.*?)</rationale>", body, re.DOTALL | re.IGNORECASE)
+
+        feature = (feature_attr.group(1).strip() if feature_attr else
+                   (feature_tag.group(1).strip() if feature_tag else "")).lower()
+        needed = _parse_bool_flag(
+            needed_attr.group(1) if needed_attr else
+            (needed_tag.group(1) if needed_tag else "")
+        )
+        rationale = (rationale_tag.group(1).strip() if rationale_tag else body.strip())
+        # Strip nested tags from rationale (when it inherited the whole body).
+        rationale = re.sub(r"<[^>]+>", " ", rationale)
+        rationale = re.sub(r"\s+", " ", rationale).strip()
+
+        if feature:
+            decisions.append(FeatureDecision(
+                feature=feature,
+                needed=needed,
+                rationale=rationale[:400],
+            ))
+    return decisions
+
+
 def parse_design_plan(raw_text: str) -> DesignPlan:
     """Parse a planner LLM response into a structured `DesignPlan`.
 
-    The planner is asked to emit `<thinking>...</thinking>` followed by a 
-    `<design_plan>...</design_plan>` XML block.
+    The planner is asked to emit `<thinking>...</thinking>`, optional
+    `<physical_use>...</physical_use>` and `<feature_decisions>...</feature_decisions>`
+    blocks, then a `<design_plan>...</design_plan>` XML block. Older planner
+    outputs may skip the new blocks — those still parse, just with empty
+    physical_use and feature_decisions fields.
     """
     plan = DesignPlan(raw_text=raw_text)
 
@@ -805,10 +976,24 @@ def parse_design_plan(raw_text: str) -> DesignPlan:
     if think_match:
         plan.raw_reasoning = think_match.group(1).strip()
     else:
-        # If no tags, try to find text before the XML block
-        xml_start = re.search(r"<design_plan\b[^>]*>", raw_text, re.IGNORECASE)
+        # If no tags, try to find text before the first known XML block
+        xml_start = re.search(
+            r"<(?:design_plan|physical_use|feature_decisions)\b[^>]*>",
+            raw_text,
+            re.IGNORECASE,
+        )
         if xml_start and xml_start.start() > 0:
             plan.raw_reasoning = raw_text[:xml_start.start()].strip()
+
+    # 1b. <physical_use> — wraps the planner's real-world reasoning. Optional.
+    pu_match = re.search(r"<physical_use\b[^>]*>(.*?)</physical_use>", raw_text, re.DOTALL | re.IGNORECASE)
+    if pu_match:
+        plan.physical_use = _parse_physical_use_block(pu_match.group(1))
+
+    # 1c. <feature_decisions> — yes/no decisions on optional feature families.
+    fd_match = re.search(r"<feature_decisions\b[^>]*>(.*?)</feature_decisions>", raw_text, re.DOTALL | re.IGNORECASE)
+    if fd_match:
+        plan.feature_decisions = _parse_feature_decisions_block(fd_match.group(1))
 
     # 2. Extract <design_plan> block content
     plan_match = re.search(r"<design_plan\b[^>]*>(.*?)</design_plan>", raw_text, re.DOTALL | re.IGNORECASE)
@@ -874,12 +1059,13 @@ def parse_design_plan(raw_text: str) -> DesignPlan:
                     position=position,
                     orientation=(comp.findtext("orientation") or "").strip(),
                     operation=(comp.findtext("operation") or "").strip(),
+                    spec_source=(comp.findtext("spec_source") or "").strip().lower(),
                 ))
-            
+
             plan.key_features = [f.text.strip() for f in root.findall(".//key_features/feature") if f.text and f.text.strip()]
             plan.assumptions = [a.text.strip() for a in root.findall(".//assumptions/assumption") if a.text and a.text.strip()]
             plan.risks = [r.text.strip() for r in root.findall(".//risks/risk") if r.text and r.text.strip()]
-            
+
             for p in root.findall(".//parameters/parameter"):
                 p_name = p.get("name")
                 if p_name and p.text:
@@ -887,6 +1073,20 @@ def parse_design_plan(raw_text: str) -> DesignPlan:
                         plan.parameters[p_name] = float(p.text)
                     except ValueError:
                         pass
+
+            # Connections — optional, single-part designs may omit.
+            for conn in root.findall(".//connections/connection"):
+                kind = (conn.get("kind") or "").strip()
+                from_part = (conn.get("from") or "").strip()
+                to_part = (conn.get("to") or "").strip()
+                description = (conn.text or "").strip()
+                if from_part or to_part or kind or description:
+                    plan.connections.append(Connection(
+                        from_part=from_part,
+                        to_part=to_part,
+                        kind=kind,
+                        description=description,
+                    ))
         except Exception:
             # Robust Fallback: Regex extraction if XML parsing fails
             if not plan.summary:
@@ -939,6 +1139,37 @@ def plan_to_prompt_text(plan: DesignPlan) -> str:
         x, y, z = plan.overall_dimensions_mm
         lines.append(f"**Overall size target:** {x:.1f} × {y:.1f} × {z:.1f} mm")
 
+    pu = plan.physical_use
+    if pu and any([pu.orientation, pu.contact_surfaces, pu.applied_forces,
+                   pu.use_cycle, pu.ergonomic_notes, pu.mating_object]):
+        lines.append("**Real-world use (design must satisfy these):**")
+        if pu.orientation:
+            lines.append(f"- Orientation under gravity: {pu.orientation}")
+        if pu.contact_surfaces:
+            lines.append(f"- Contact surfaces: {pu.contact_surfaces}")
+        if pu.applied_forces:
+            lines.append(f"- Applied forces: {pu.applied_forces}")
+        if pu.use_cycle:
+            lines.append(f"- Use cycle: {pu.use_cycle}")
+        if pu.ergonomic_notes:
+            lines.append(f"- Ergonomics: {pu.ergonomic_notes}")
+        if pu.mating_object:
+            lines.append(f"- Mating object: {pu.mating_object}")
+
+    if plan.feature_decisions:
+        included = [d for d in plan.feature_decisions if d.needed]
+        excluded = [d for d in plan.feature_decisions if not d.needed]
+        if included:
+            lines.append("**Optional feature families the design DOES need (model them):**")
+            for d in included:
+                rationale = f" — {d.rationale}" if d.rationale else ""
+                lines.append(f"- {d.feature}{rationale}")
+        if excluded:
+            lines.append("**Optional feature families the design does NOT need (skip them):**")
+            for d in excluded:
+                rationale = f" — {d.rationale}" if d.rationale else ""
+                lines.append(f"- {d.feature}{rationale}")
+
     if plan.parameters:
         lines.append("**Named parameters (declare these at the top of the source):**")
         for k, v in plan.parameters.items():
@@ -950,10 +1181,20 @@ def plan_to_prompt_text(plan: DesignPlan) -> str:
             dim_text = ", ".join(f"{k}={v}" for k, v in c.dimensions.items())
             pos_text = f", position={c.position}" if c.position else ""
             op_text = f", operation={c.operation}" if c.operation else ""
+            src_text = f" [{c.spec_source}]" if c.spec_source else ""
             prim = c.primitive or "shape"
             lines.append(
-                f"{i}. `{c.name}` — {prim} ({dim_text}){pos_text}{op_text}: {c.description}"
+                f"{i}. `{c.name}`{src_text} — {prim} ({dim_text}){pos_text}{op_text}: {c.description}"
             )
+
+    if plan.connections:
+        lines.append("**Connections (how the components join):**")
+        for c in plan.connections:
+            kind = c.kind or "contact"
+            edges = f"{c.from_part} ↔ {c.to_part}" if (c.from_part or c.to_part) else ""
+            desc = f": {c.description}" if c.description else ""
+            head = f"`{edges}` [{kind}]" if edges else f"[{kind}]"
+            lines.append(f"- {head}{desc}")
 
     if plan.key_features:
         lines.append("**Key features that MUST be visible in the result:**")
@@ -974,7 +1215,23 @@ def plan_to_prompt_text(plan: DesignPlan) -> str:
 
 
 def extract_code_from_response(response: str) -> str:
-    """Extract Python code from an LLM response that may contain markdown."""
+    """Extract Python code from an LLM response that may contain markdown.
+
+    A leading ``<diagnosis>...</diagnosis>`` block (emitted by the repair
+    prompt) is stripped first so that, in the rare case the model omits the
+    triple-backtick fence, the diagnosis prose doesn't leak into the code.
+    """
+    if not response:
+        return ""
+    # Strip diagnosis block if present — keeps it out of the code path when
+    # the model forgot to fence the python block.
+    response = re.sub(
+        r"<diagnosis\b[^>]*>.*?</diagnosis>",
+        "",
+        response,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
     # Look for ```python ... ``` blocks
     if "```python" in response:
         parts = response.split("```python")
