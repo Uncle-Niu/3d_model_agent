@@ -38,7 +38,12 @@ async def drive(project_id: str, thread_id: str, prompt: str, *, timeout_s: floa
     last_stage = ""
 
     with TRANSCRIPT.open("w", encoding="utf-8") as f, SUMMARY.open("w", encoding="utf-8") as summary:
-        async with websockets.connect(url, max_size=64 * 1024 * 1024) as ws:
+        async with websockets.connect(
+            url,
+            max_size=64 * 1024 * 1024,
+            ping_interval=None,
+            close_timeout=None,
+        ) as ws:
             await ws.send(json.dumps({
                 "type": "chat_message",
                 "content": prompt,

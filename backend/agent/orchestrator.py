@@ -1395,7 +1395,7 @@ class AgentOrchestrator:
                 model_dir = self.storage.create_model_dir(project_id, model_id)
 
                 t_exec_start = time.time()
-                exec_result = await asyncio.get_event_loop().run_in_executor(
+                _exec_coro = asyncio.get_event_loop().run_in_executor(
                     None,
                     process_cadquery_code,
                     last_code,
@@ -1405,6 +1405,29 @@ class AgentOrchestrator:
                     project_id,
                     self.storage,
                 )
+                _cadquery_timeout_s: int = int(
+                    os.environ.get("CADQUERY_EXEC_TIMEOUT", "120")
+                )
+                try:
+                    exec_result = await asyncio.wait_for(
+                        _exec_coro, timeout=_cadquery_timeout_s
+                    )
+                except asyncio.TimeoutError:
+                    exec_result = {
+                        "success": False,
+                        "message": (
+                            f"CadQuery execution timed out after "
+                            f"{_cadquery_timeout_s}s — the OCCT kernel did not "
+                            "return. Likely cause: .edges().fillet() on a complex "
+                            "multi-body union/cut assembly. Simplify or move fillets "
+                            "to individual bodies before the union."
+                        ),
+                        "failure_type": "timeout",
+                        "geometry_stats": {},
+                        "violations": [],
+                        "warnings": [],
+                        "file_paths": {},
+                    }
                 t_exec_elapsed = time.time() - t_exec_start
 
                 await self._emit_debug("cadquery_result",

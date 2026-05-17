@@ -175,6 +175,23 @@ class TestExtractCodeFromResponse(unittest.TestCase):
         code = extract_code_from_response(response)
         self.assertIn("box(1,1,1)", code)
 
+    def test_uniform_tail_indent_in_python_block_is_normalized(self):
+        response = (
+            "```python\n"
+            "import cadquery as cq\n"
+            "   import math\n"
+            "\n"
+            "   base = cq.Workplane('XY').box(10, 10, 10)\n"
+            "   result = base\n"
+            "```"
+        )
+        code = extract_code_from_response(response)
+        self.assertIn("import math", code)
+        self.assertIn("result = base", code)
+        self.assertNotIn("   import math", code)
+        import ast
+        ast.parse(code)
+
 
 class TestDetectRepairDeletion(unittest.TestCase):
     """Anti-deletion guard for repair LLM output.

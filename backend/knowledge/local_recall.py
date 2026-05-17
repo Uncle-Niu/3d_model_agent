@@ -44,11 +44,11 @@ from ..domain.models import (
 from ..config import DEFAULT_LLM_MODEL as _MAIN_AGENT_MODEL
 
 DEFAULT_MODEL_CHAIN: tuple[str, ...] = (
-    _MAIN_AGENT_MODEL,        # Alibaba — main agent model, already warm in VRAM
-    "gemma4:31b",             # Google — different training data
+    "gemma4:31b",             # Google — first: strong recall, different corpus from qwen
     "nemotron3:33b",          # NVIDIA — freshest cutoff (multimodal)
-    "glm-4.7-flash:q4_K_M",   # Z.ai — strong in the 30B class
-    "phi4:14b",               # Microsoft — small (9 GB), fast, synthetic/textbook bias; last because it's the weakest
+    "glm-4.7-flash:q4_K_M",  # Z.ai — strong in the 30B class
+    "phi4:14b",               # Microsoft — small (9 GB), fast, synthetic/textbook bias
+    _MAIN_AGENT_MODEL,        # Alibaba qwen3.x — last: may prepend long <think> blocks
 )
 # `deepseek-r1:32b` is also installed but is a reasoning model — it burns
 # 30-80s thinking before answering for what is fundamentally a recall task.
@@ -159,7 +159,7 @@ Output the JSON array with no surrounding prose.
                         {"role": "user", "content": prompt + "\n\n/no_think"},
                     ],
                     temperature=0.0,
-                    max_tokens=2048,
+                    max_tokens=4096,
                 ),
                 timeout=self.per_call_timeout_s,
             )
@@ -272,7 +272,7 @@ Rules:
                         {"role": "user", "content": prompt},
                     ],
                     temperature=0.0,
-                    max_tokens=2048,
+                    max_tokens=4096,
                 ),
                 timeout=self.per_call_timeout_s,
             )
@@ -290,7 +290,14 @@ Rules:
                 or ""
             )
             raw = (content + ("\n" + reasoning if reasoning else "")).strip()
-            fields_parsed = _parse_fields(raw)
+            # Strip <think>…</think> blocks emitted by reasoning models (e.g.
+            # qwen3.x) even when /no_think is requested.  Without this the
+            # multi-paragraph preamble fills the token budget and truncates the
+            # JSON mid-value, causing _parse_fields to return {}.
+            raw_for_parse = re.sub(
+                r"<think>.*?</think>", "", raw, flags=re.DOTALL
+            ).strip()
+            fields_parsed = _parse_fields(raw_for_parse)
             return ModelRecallResponse(
                 model=model,
                 subject=subject,

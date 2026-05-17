@@ -251,6 +251,45 @@ def _looks_like_reasoning_prose(line: str) -> bool:
     return False
 
 
+def _fix_uniform_tail_indent(code: str) -> Optional[str]:
+    """Recover code blocks where every line after the first got indented.
+
+    Some LLM responses produce a fenced block like::
+
+        import cadquery as cq
+           import math
+           base = ...
+
+    That is not reasoning leakage; it is a formatting artifact.  Removing the
+    common leading spaces from the tail preserves the full program and avoids
+    the more destructive "longest parseable prefix" fallback.
+    """
+    lines = code.splitlines()
+    if len(lines) < 2 or lines[0].startswith((" ", "\t")):
+        return None
+
+    tail_with_text = [ln for ln in lines[1:] if ln.strip()]
+    if not tail_with_text:
+        return None
+    indents = [len(ln) - len(ln.lstrip(" ")) for ln in tail_with_text]
+    common_indent = min(indents)
+    if common_indent <= 0:
+        return None
+
+    candidate_lines = [lines[0]]
+    for ln in lines[1:]:
+        if ln.startswith(" " * common_indent):
+            candidate_lines.append(ln[common_indent:])
+        else:
+            candidate_lines.append(ln)
+    candidate = "\n".join(candidate_lines)
+    try:
+        ast.parse(candidate)
+    except SyntaxError:
+        return None
+    return candidate + ("\n" if not candidate.endswith("\n") else "")
+
+
 def strip_reasoning_leakage(code: str) -> Optional[str]:
     """Mechanical syntax repair: strip free-form reasoning prose that the LLM
     accidentally pasted INTO a python code block.
@@ -270,9 +309,10 @@ def strip_reasoning_leakage(code: str) -> Optional[str]:
 
     Strategy:
     1. If the code parses, return None (no work needed).
-    2. Otherwise, drop any line that `_looks_like_reasoning_prose` says is
+    2. If the source has a uniform accidental tail indent, dedent it.
+    3. Otherwise, drop any line that `_looks_like_reasoning_prose` says is
        narration, and try parsing again.
-    3. If still failing AND the failure is in the trailing region, truncate
+    4. If still failing AND the failure is in the trailing region, truncate
        to the longest prefix that parses. Returning None signals to the
        caller to fall back to the slow LLM-driven repair.
 
@@ -286,6 +326,10 @@ def strip_reasoning_leakage(code: str) -> Optional[str]:
         return None  # already valid
     except SyntaxError:
         pass
+
+    deindented = _fix_uniform_tail_indent(code)
+    if deindented is not None:
+        return deindented
 
     lines = code.splitlines()
     cleaned = [ln for ln in lines if not _looks_like_reasoning_prose(ln)]

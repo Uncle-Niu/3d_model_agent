@@ -6,6 +6,7 @@ Supports OpenAI-compatible APIs (Ollama, vLLM, OpenAI, etc.).
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -91,6 +92,7 @@ Generate production-quality CadQuery Python code for the user's request.
 - Hoist all parameters above any `def` that uses them. A nested function closing over an outer variable runs at call time, so the variable must already exist.
 - Avoid `.rotate()` immediately after `.translate()` with overlapping pivots — recompute the pivot or reverse the order.
 - `.fillet(r)` can fail on edges shorter than `2*r`. For mixed sizes, fillet vertical edges only: `body.edges("|Z").fillet(r)`.
+- On union-and-cut assemblies with multiple bodies, calling `.edges().fillet(r)` on the **final result** can freeze the OCCT kernel. Prefer filleting each body individually **before** the union: `body1 = body1.edges("|Z").fillet(r)` then `result = body1.union(body2)`. Single-body designs may fillet the final result normally.
 
 ## Engineering Quality Standards
 - **Watertight**: All geometry must be closed / manifold (no open shells unless intentional)
@@ -1394,6 +1396,42 @@ def plan_to_prompt_text(plan: DesignPlan) -> str:
     return "\n".join(lines)
 
 
+def _normalize_extracted_code(code: str) -> str:
+    """Fix harmless markdown indentation artifacts in extracted code blocks."""
+    if not code or not code.strip():
+        return ""
+    try:
+        ast.parse(code)
+        return code.strip()
+    except SyntaxError:
+        pass
+
+    lines = code.strip().splitlines()
+    if len(lines) < 2 or lines[0].startswith((" ", "\t")):
+        return code.strip()
+
+    tail_with_text = [ln for ln in lines[1:] if ln.strip()]
+    if not tail_with_text:
+        return code.strip()
+    indents = [len(ln) - len(ln.lstrip(" ")) for ln in tail_with_text]
+    common_indent = min(indents)
+    if common_indent <= 0:
+        return code.strip()
+
+    candidate_lines = [lines[0]]
+    for ln in lines[1:]:
+        if ln.startswith(" " * common_indent):
+            candidate_lines.append(ln[common_indent:])
+        else:
+            candidate_lines.append(ln)
+    candidate = "\n".join(candidate_lines).strip()
+    try:
+        ast.parse(candidate)
+    except SyntaxError:
+        return code.strip()
+    return candidate
+
+
 def extract_code_from_response(response: str) -> str:
     """Extract Python code from an LLM response that may contain markdown.
 
@@ -1417,7 +1455,7 @@ def extract_code_from_response(response: str) -> str:
         parts = response.split("```python")
         if len(parts) > 1:
             code_block = parts[1].split("```")[0]
-            return code_block.strip()
+            return _normalize_extracted_code(code_block)
 
     # Look for ``` ... ``` blocks
     if "```" in response:
@@ -1427,10 +1465,10 @@ def extract_code_from_response(response: str) -> str:
             # Strip a leading "python" line if present
             if code.startswith("python\n"):
                 code = code[7:]
-            return code.strip()
+            return _normalize_extracted_code(code)
 
     # Assume the entire response is code
-    return response.strip()
+    return _normalize_extracted_code(response)
 
 
 def _meaningful_lines(code: str) -> list[str]:

@@ -37,6 +37,15 @@ class TestStripReasoningLeakage(unittest.TestCase):
         "result = base.edges().fillet(1)\n"
     )
 
+    INDENTED_TAIL = (
+        "import cadquery as cq\n"
+        "   import math\n"
+        "\n"
+        "   base_length = 130.0\n"
+        "   base = cq.Workplane('XY').box(base_length, 100, 12)\n"
+        "   result = base.edges('|Z').fillet(1)\n"
+    )
+
     def test_passes_through_already_valid_code(self):
         # Valid code → None (no work needed). Caller stays on the fast path.
         self.assertIsNone(strip_reasoning_leakage(self.GOOD))
@@ -50,6 +59,19 @@ class TestStripReasoningLeakage(unittest.TestCase):
         self.assertNotIn("Actually", cleaned)
         self.assertNotIn("The error", cleaned)
         # Recovered code must actually parse now.
+        import ast
+        ast.parse(cleaned)
+
+    def test_dedents_uniform_tail_indent(self):
+        # Regression for data/projects/20260517-154023-cde5036b model-011:
+        # the first import was flush-left, while every later line had a
+        # uniform accidental indent. The old prefix fallback kept only line 1.
+        cleaned = strip_reasoning_leakage(self.INDENTED_TAIL)
+        self.assertIsNotNone(cleaned)
+        self.assertIn("import math", cleaned)
+        self.assertIn("base_length = 130.0", cleaned)
+        self.assertIn("result =", cleaned)
+        self.assertNotIn("   import math", cleaned)
         import ast
         ast.parse(cleaned)
 
