@@ -108,7 +108,7 @@ async def drive(project_id: str, thread_id: str, prompt: str, *, timeout_s: floa
                         flush=True,
                     )
 
-                if etype in ("final", "error", "done"):
+                if etype in ("final", "error", "done", "chat_response"):
                     print(f"[{elapsed:6.0f}s] TERMINAL event: {etype} -- {msg}", flush=True)
                     summary.write("\n=== Repair attempts seen ===\n")
                     for r in repair_seen:

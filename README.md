@@ -15,6 +15,18 @@ ollama pull qwen3.6:27b
 Get-Process | Where-Object {$_.ProcessName -like "*ollama*"}
 netstat -ano | findstr :11434
 
+## Benchmark local Ollama models for CadQuery generation
+
+```
+python scripts/benchmark_ollama_cadquery.py --all --case simple_hole_block --repairs 0
+python scripts/benchmark_ollama_cadquery.py --all --repeats 2 --repairs 1
+```
+
+Results are written to `data/benchmarks/cadquery_models/<run-id>/results.json`.
+The benchmark asks each model for CadQuery, runs the source through the same
+validator/export path as the app, and ranks by first-pass success, final success,
+score, and latency.
+
 ## Debug a single CAD generation end-to-end (no UI required)
 
 ```
