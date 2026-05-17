@@ -12,3 +12,11 @@ INFO:     127.0.0.1:63532 - "POST /api/projects HTTP/1.1" 200 OK
 INFO:     127.0.0.1:63534 - "POST /api/projects/20260517-054740-d4627e23/chat_threads HTTP/1.1" 200 OK
 INFO:     127.0.0.1:63539 - "WebSocket /ws/20260517-054740-d4627e23?thread_id=20260517-054745-a1216d56" [accepted]
 INFO:     connection open
+INFO:     127.0.0.1:53589 - "GET /api/health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53593 - "GET /api/projects/20260517-054740-d4627e23/chat_threads/20260517-054745-a1216d56/active_run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53595 - "GET /api/projects/20260517-054740-d4627e23/chat_threads/20260517-054745-a1216d56/active_run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59110 - "GET /api/projects/20260517-054740-d4627e23/chat_threads/20260517-054745-a1216d56/active_run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59112 - "GET /api/projects/20260517-054740-d4627e23/chat_threads/20260517-054745-a1216d56/active_run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57123 - "GET /api/projects/20260517-054740-d4627e23/chat_threads/20260517-054745-a1216d56/active_run HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54885 - "POST /api/projects/20260517-054740-d4627e23/chat_threads/20260517-054745-a1216d56/cancel HTTP/1.1" 200 OK
+INFO:     connection closed
