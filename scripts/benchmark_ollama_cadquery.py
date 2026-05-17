@@ -82,6 +82,7 @@ class AttemptResult:
     latency_s: float
     repaired: bool = False
     repair_count: int = 0
+    artifact_dir: Path | None = None
 
 
 def _ollama_models() -> list[str]:
@@ -168,6 +169,24 @@ def _score(result: AttemptResult) -> float:
     if result.repaired:
         score -= min(8.0, result.repair_count * 4.0)
     return round(max(0.0, min(100.0, score)), 2)
+
+
+def _write_attempt_artifacts(result: AttemptResult, artifact_dir: Path) -> dict[str, str]:
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = artifact_dir / "raw_response.txt"
+    code_path = artifact_dir / "extracted_code.py"
+    process_path = artifact_dir / "process_result.json"
+    raw_path.write_text(result.raw, encoding="utf-8", errors="replace")
+    code_path.write_text(result.code, encoding="utf-8", errors="replace")
+    process_path.write_text(
+        json.dumps(_sanitize_for_json(result.process), indent=2),
+        encoding="utf-8",
+    )
+    return {
+        "raw_response": str(raw_path),
+        "extracted_code": str(code_path),
+        "process_result": str(process_path),
+    }
 
 
 async def _run_one(
@@ -307,7 +326,7 @@ async def amain() -> None:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     out_dir = args.out / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
-    temp_root = Path(tempfile.mkdtemp(prefix="cad_bench_"))
+    temp_root = out_dir / "cad_exports" if args.keep_temp else Path(tempfile.mkdtemp(prefix="cad_bench_"))
     rows: list[dict[str, Any]] = []
     prompts = DEFAULT_PROMPTS
     if args.cases:
@@ -342,6 +361,8 @@ async def amain() -> None:
                         )
                         score = _score(result)
                         process = result.process
+                        artifact_dir = out_dir / "artifacts" / model.replace(":", "_").replace("/", "_") / f"{case_id}_{repeat + 1}"
+                        artifacts = _write_attempt_artifacts(result, artifact_dir)
                         row = {
                             "model": model,
                             "case_id": case_id,
@@ -356,6 +377,7 @@ async def amain() -> None:
                             "violations": process.get("violations", []),
                             "geometry_stats": process.get("geometry_stats", {}),
                             "code_lines": len(result.code.splitlines()),
+                            "artifacts": artifacts,
                             "output_dir": str(run_dir) if args.keep_temp else "",
                         }
                         rows.append(row)
