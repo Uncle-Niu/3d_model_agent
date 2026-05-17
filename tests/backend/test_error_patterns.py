@@ -64,6 +64,67 @@ class TestErrorPatternStore(unittest.TestCase):
         result = ep.record_failure(failure_type="", error_text="", fix_kind="", succeeded=False)
         self.assertIsNone(result)
 
+    def test_update_failure_outcome_patches_persisted_row(self):
+        # Without this, the orchestrator's in-memory mutations of fix_kind
+        # and succeeded never reach disk and the log forever shows
+        # "pending/false" — which makes the summarizer think nothing ever
+        # works.
+        ep.record_failure(
+            failure_type="syntax_error",
+            error_text="SyntaxError: unexpected EOF",
+            fix_kind="pending",
+            succeeded=False,
+            iteration=1,
+            turn_id="t-update",
+        )
+        patched = ep.update_failure_outcome(
+            turn_id="t-update", iteration=1, fix_kind="mechanical", succeeded=True
+        )
+        self.assertTrue(patched)
+        events = ep.read_log()
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].fix_kind, "mechanical")
+        self.assertTrue(events[0].succeeded)
+
+    def test_update_failure_outcome_returns_false_when_no_match(self):
+        ep.record_failure(
+            failure_type="syntax_error",
+            error_text="SyntaxError",
+            fix_kind="pending",
+            succeeded=False,
+            iteration=1,
+            turn_id="t-real",
+        )
+        patched = ep.update_failure_outcome(
+            turn_id="t-does-not-exist", iteration=1, fix_kind="llm"
+        )
+        self.assertFalse(patched)
+        # Original row untouched.
+        events = ep.read_log()
+        self.assertEqual(events[0].fix_kind, "pending")
+
+    def test_update_failure_outcome_targets_most_recent_duplicate(self):
+        # The orchestrator never reuses (turn_id, iteration) pairs, but if
+        # something pathological does, the patch should hit the latest row.
+        for fix in ("pending", "pending"):
+            ep.record_failure(
+                failure_type="execution_error",
+                error_text="boom",
+                fix_kind=fix,
+                succeeded=False,
+                iteration=1,
+                turn_id="t-dupe",
+            )
+        ep.update_failure_outcome(
+            turn_id="t-dupe", iteration=1, fix_kind="llm", succeeded=True
+        )
+        events = ep.read_log()
+        self.assertEqual(len(events), 2)
+        # Most recent (last in file) gets the update; the older one stays.
+        self.assertEqual(events[-1].fix_kind, "llm")
+        self.assertTrue(events[-1].succeeded)
+        self.assertEqual(events[0].fix_kind, "pending")
+
     def test_log_rotation_keeps_only_max_lines(self):
         ep.LOG_MAX_LINES = 5  # type: ignore[attr-defined]
         try:
@@ -143,9 +204,24 @@ class TestSummarizerLLMIntegration(unittest.IsolatedAsyncioTestCase):
             ]
         })
         llm = _FakeLLM(llm_response)
+        # Two repair events — the firing gate requires at least
+        # MIN_REPAIRS_FOR_SUMMARY (2) non-pending repairs in the turn before
+        # the summarizer LLM is even called. A real recovered turn always
+        # has multiple events; matching that floor here keeps the gate
+        # under test rather than the placeholder threshold of 1.
         events = [
             ep.FailureEvent(
                 timestamp="2026-05-15T10:00:00+00:00",
+                failure_type="execution_error",
+                error_first_line="NameError: name 'wall' is not defined",
+                error_signature="nameerror: name 'x' is not defined",
+                fix_kind="llm",
+                succeeded=False,
+                iteration=1,
+                turn_id="t1",
+            ),
+            ep.FailureEvent(
+                timestamp="2026-05-15T10:00:01+00:00",
                 failure_type="execution_error",
                 error_first_line="NameError: name 'wall' is not defined",
                 error_signature="nameerror: name 'x' is not defined",

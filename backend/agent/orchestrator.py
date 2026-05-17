@@ -46,6 +46,29 @@ def _extract_failing_source_line(error_message: str, code: str) -> Optional[str]
     return f"line {lineno}: {snippet}"
 
 
+def _collect_recent_turn_errors(turn_error_events) -> list[str]:
+    """Return the de-duplicated first-line text of failures that already
+    happened on this turn, capped at 5. The repair system prompt uses this
+    to highlight "errors hit THIS turn — must avoid" as a higher-priority
+    signal than the long-running learned-pitfalls aggregate.
+
+    Order-preserving dedup so the most recent failures appear first when
+    the cap kicks in. Empty strings are dropped silently.
+    """
+    seen: list[str] = []
+    for ev in reversed(turn_error_events or []):
+        line = (getattr(ev, "error_first_line", "") or "").strip()
+        if not line:
+            continue
+        # Truncate to keep the prompt block compact.
+        line = line[:200]
+        if line not in seen:
+            seen.append(line)
+        if len(seen) >= 5:
+            break
+    return seen
+
+
 def _error_signature(error_message: str) -> str:
     """Return the most-informative single line of a traceback.
 
@@ -1131,7 +1154,11 @@ class AgentOrchestrator:
                         # already saved its metadata; just exit cleanly.
                         return current_model_id
                     vision_repairs_used += 1
-                    repair_system_prompt = build_repair_system_prompt(config.hard_constraints, config.soft_constraints)
+                    recent_turn_errors = _collect_recent_turn_errors(turn_error_events)
+                    repair_system_prompt = build_repair_system_prompt(
+                        config.hard_constraints, config.soft_constraints,
+                        recent_turn_errors=recent_turn_errors,
+                    )
                     repair_user_prompt = build_vision_repair_prompt(
                         last_code,
                         intent=user_message,
@@ -1187,6 +1214,7 @@ class AgentOrchestrator:
                         user_prompt=repair_user_prompt,
                         hard_constraints=config.hard_constraints,
                         soft_constraints=config.soft_constraints,
+                        recent_turn_errors=recent_turn_errors,
                     )
                     repair_notes.append(f"Vision critique identified {len(last_critique.issues)} issues (score: {last_critique.overall_printability:.2f})")
                     candidate_code = extract_code_from_response(repair_response)
@@ -1235,6 +1263,7 @@ class AgentOrchestrator:
                             "execution_error",
                         )
                         self._save_failure_chat(project_id, thread_id, current_model_id)
+                        self._schedule_summarization_safely(turn_error_events, turn_succeeded=False)
                         return None
                     syntax_repairs_used += 1
                     # Execution-error repair
@@ -1294,8 +1323,17 @@ class AgentOrchestrator:
                         # runs at the top of the next iteration.
                         if turn_error_events:
                             turn_error_events[-1].fix_kind = "mechanical"
+                            _error_patterns.update_failure_outcome(
+                                turn_id=turn_error_events[-1].turn_id,
+                                iteration=turn_error_events[-1].iteration,
+                                fix_kind="mechanical",
+                            )
                     else:
-                        repair_system_prompt = build_repair_system_prompt(config.hard_constraints, config.soft_constraints)
+                        recent_turn_errors = _collect_recent_turn_errors(turn_error_events)
+                        repair_system_prompt = build_repair_system_prompt(
+                            config.hard_constraints, config.soft_constraints,
+                            recent_turn_errors=recent_turn_errors,
+                        )
                         # Pass the prior attempts EXCEPT the most recent one
                         # (which corresponds to the failure we're repairing
                         # right now — that's already in ``last_error`` /
@@ -1338,6 +1376,7 @@ class AgentOrchestrator:
                             failure_type=last_failure_type,
                             geometry_stats=last_geometry_stats,
                             prior_attempts=prior_for_prompt,
+                            recent_turn_errors=recent_turn_errors,
                         )
                         error_summary = last_error.splitlines()[0][:60] if last_error else "previous attempt failed"
                         repair_notes.append(f"Fixed {failure_label}: {error_summary}...")
@@ -1359,6 +1398,11 @@ class AgentOrchestrator:
                         # will be set when step B runs next iteration.
                         if turn_error_events:
                             turn_error_events[-1].fix_kind = "llm"
+                            _error_patterns.update_failure_outcome(
+                                turn_id=turn_error_events[-1].turn_id,
+                                iteration=turn_error_events[-1].iteration,
+                                fix_kind="llm",
+                            )
 
                 if not last_code.strip():
                     last_error = "LLM returned empty code"
@@ -1378,6 +1422,7 @@ class AgentOrchestrator:
                             "execution_error",
                         )
                         self._save_failure_chat(project_id, thread_id, None)
+                        self._schedule_summarization_safely(turn_error_events, turn_succeeded=False)
                         return None
                     continue
                 consecutive_empty = 0
@@ -1445,6 +1490,11 @@ class AgentOrchestrator:
                     last_event = turn_error_events[-1]
                     if not last_event.succeeded and last_event.fix_kind not in ("", "pending"):
                         last_event.succeeded = True
+                        _error_patterns.update_failure_outcome(
+                            turn_id=last_event.turn_id,
+                            iteration=last_event.iteration,
+                            succeeded=True,
+                        )
 
                 if not exec_result["success"]:
                     last_error = exec_result["message"]
@@ -1714,13 +1764,7 @@ class AgentOrchestrator:
                 # involved at least one repair, fire-and-forget an LLM
                 # summarization that distills new pitfall cards from the
                 # journey. Does NOT block the response — runs in background.
-                try:
-                    _error_patterns.schedule_summarization(self.llm, turn_error_events)
-                except Exception as exc:
-                    await self._emit_debug(
-                        "error_patterns_skip",
-                        f"Pitfall summarization could not be scheduled: {exc}",
-                    )
+                self._schedule_summarization_safely(turn_error_events, turn_succeeded=True)
 
                 return model_id
 
@@ -1734,6 +1778,7 @@ class AgentOrchestrator:
 
         # If loop finished without success
         self._save_failure_chat(project_id, thread_id, current_model_id)
+        self._schedule_summarization_safely(turn_error_events, turn_succeeded=False)
         return None
 
     def _build_code_generation_user_prompt(
@@ -2201,3 +2246,27 @@ class AgentOrchestrator:
                 steps=self.current_steps,
             ),
         )
+
+    def _schedule_summarization_safely(
+        self,
+        turn_error_events: List[_error_patterns.FailureEvent],
+        *,
+        turn_succeeded: bool,
+    ) -> None:
+        """Fire-and-forget pitfall summarization. Never raises; logs to debug
+        if scheduling fails. Both success and failure paths feed this — a
+        budget-exhausted turn carries different but equally useful signal."""
+        try:
+            _error_patterns.schedule_summarization(
+                self.llm,
+                turn_error_events,
+                turn_succeeded=turn_succeeded,
+            )
+        except Exception as exc:
+            # _emit_debug is async; we can't await here because the failure
+            # paths call this synchronously after `await` is no longer
+            # appropriate. Fall back to module logger.
+            import logging
+            logging.getLogger(__name__).warning(
+                "Pitfall summarization could not be scheduled: %s", exc
+            )

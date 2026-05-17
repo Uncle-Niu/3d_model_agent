@@ -1,11 +1,59 @@
 import unittest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
-from backend.agent.orchestrator import AgentOrchestrator
+from backend.agent.orchestrator import AgentOrchestrator, _collect_recent_turn_errors
+from backend.knowledge.error_patterns import FailureEvent
 from backend.domain.models import (
     ProjectConfig, ChatMessage, ModelMetadata, CritiqueReport, GeometryIssue,
     DesignPlan, FailureType, SearchResult
 )
+
+
+class TestCollectRecentTurnErrors(unittest.TestCase):
+    """Feeds the 'errors hit THIS turn' block in the repair system prompt.
+
+    Order, dedup, and cap matter — those decide which live failure signals
+    reach the repair LLM, and which historical context-window slots they
+    push out.
+    """
+
+    def _ev(self, line: str, iteration: int = 1) -> FailureEvent:
+        return FailureEvent(
+            timestamp="2026-05-17T00:00:00+00:00",
+            failure_type="syntax_error",
+            error_first_line=line,
+            error_signature=line.lower(),
+            fix_kind="pending",
+            succeeded=False,
+            iteration=iteration,
+            turn_id="t1",
+        )
+
+    def test_returns_empty_for_no_events(self):
+        self.assertEqual(_collect_recent_turn_errors([]), [])
+        self.assertEqual(_collect_recent_turn_errors(None), [])
+
+    def test_dedupes_and_orders_most_recent_first(self):
+        events = [
+            self._ev("oldest", 1),
+            self._ev("middle", 2),
+            self._ev("oldest", 3),  # duplicate; the most recent occurrence wins position
+            self._ev("newest", 4),
+        ]
+        collected = _collect_recent_turn_errors(events)
+        # Most recent first, dedupe keeps first occurrence walking from the end.
+        self.assertEqual(collected, ["newest", "oldest", "middle"])
+
+    def test_caps_at_five(self):
+        events = [self._ev(f"err {i}", i) for i in range(1, 10)]
+        collected = _collect_recent_turn_errors(events)
+        self.assertEqual(len(collected), 5)
+        # Newest-first ordering survives the cap.
+        self.assertEqual(collected[0], "err 9")
+
+    def test_skips_blank_lines(self):
+        events = [self._ev(""), self._ev("real")]
+        self.assertEqual(_collect_recent_turn_errors(events), ["real"])
 
 class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
 

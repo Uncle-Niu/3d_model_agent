@@ -87,6 +87,31 @@ class GeometryIssue(BaseModel):
     location_hint: str = ""
 
 
+class Rotation(BaseModel):
+    """One declared rotation on a component.
+
+    Captured in the plan so the code generator does not have to guess which
+    axis ``tilt 20° backward`` means. The renderer turns this into a
+    ready-to-paste ``.rotate((0,0,0),(1,0,0),-20)`` call in the prompt block
+    so the LLM cannot get the axis vector wrong.
+
+    Convention (must match the system prompt cheatsheet):
+    - Z is up (print direction).
+    - +Y points away from the user (depth).
+    - +X points to the user's right (width).
+    - ``axis`` is the rotation axis as a single letter: ``X``, ``Y``, or ``Z``.
+    - ``angle_deg`` is signed; positive follows the right-hand rule.
+    """
+
+    axis: str  # "X" | "Y" | "Z"
+    angle_deg: float
+    # Pivot point [x, y, z]; defaults to (0,0,0) — the origin. Most rotations
+    # are around the origin then translated; if the planner needs to rotate
+    # around a non-origin pivot it can set this explicitly.
+    pivot: Optional[list[float]] = None
+    intent: str = ""  # free-form note: "tilt backward", "spin", etc.
+
+
 class DesignComponent(BaseModel):
     """One sub-shape in the decomposition of a design."""
     name: str
@@ -95,6 +120,9 @@ class DesignComponent(BaseModel):
     dimensions: dict[str, float] = Field(default_factory=dict)  # named dims in mm
     position: Optional[list[float]] = None  # [x, y, z] center in mm
     orientation: str = ""  # e.g. "axis=Z" or free-form
+    # Structured rotation. ``None`` when the component does not rotate.
+    # Optional and additive — old plans that pre-date this field parse fine.
+    rotation: Optional[Rotation] = None
     operation: str = ""    # union | cut | intersect | base | pattern | fillet
     # Provenance for this component: "explicit" came verbatim from the user,
     # "inferred" was derived from the user's request, "default" is the agent's

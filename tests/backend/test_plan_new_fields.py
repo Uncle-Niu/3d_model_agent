@@ -18,6 +18,7 @@ from backend.domain.models import (
     DesignPlan,
     FeatureDecision,
     PhysicalUse,
+    Rotation,
 )
 from backend.models.llm_service import parse_design_plan, plan_to_prompt_text
 
@@ -132,6 +133,120 @@ class TestPlanToPromptTextIncludesNewSections(unittest.TestCase):
         text = plan_to_prompt_text(plan)
         self.assertIn("Real-world use", text)
         self.assertIn("200g phone load", text)
+
+    def test_rotation_renders_with_precomputed_rotate_snippet(self):
+        # The whole point of the structured rotation field: the LLM gets a
+        # paste-ready .rotate(...) call instead of having to translate
+        # "around X" into (1,0,0) itself.
+        plan = DesignPlan(
+            summary="phone stand",
+            components=[
+                DesignComponent(
+                    name="backrest",
+                    description="angled support",
+                    primitive="box",
+                    rotation=Rotation(axis="X", angle_deg=-20.0, intent="tilt backward"),
+                ),
+            ],
+        )
+        text = plan_to_prompt_text(plan)
+        # Axis vector pre-computed; angle preserved with sign; pivot defaults to origin.
+        self.assertIn(".rotate((0, 0, 0), (1, 0, 0), -20)", text)
+        self.assertIn("around X axis", text)
+        self.assertIn("tilt backward", text)
+
+    def test_rotation_around_y_uses_y_axis_vector(self):
+        # Regression guard: "Y" must render as (0,1,0), not (1,0,0). The
+        # specific failure mode this whole feature exists to prevent is
+        # the planner saying "around Y" while the LLM writes (1,0,0,X).
+        plan = DesignPlan(
+            summary="hinge",
+            components=[
+                DesignComponent(
+                    name="arm",
+                    description="hinged arm",
+                    primitive="box",
+                    rotation=Rotation(axis="Y", angle_deg=90.0, intent="swing outward"),
+                ),
+            ],
+        )
+        text = plan_to_prompt_text(plan)
+        self.assertIn("(0, 1, 0)", text)
+        self.assertNotIn("(1, 0, 0)", text)
+
+    def test_rotation_omitted_when_none(self):
+        # Components with no rotation should not get a rotation: bullet.
+        plan = DesignPlan(
+            summary="plain",
+            components=[
+                DesignComponent(name="body", description="just a box", primitive="box"),
+            ],
+        )
+        text = plan_to_prompt_text(plan)
+        self.assertNotIn("rotation:", text)
+
+    def test_parse_rotation_attribute_form(self):
+        raw = """
+        <design_plan>
+          <summary>stand</summary>
+          <components>
+            <component>
+              <name>backrest</name>
+              <description>angled support</description>
+              <primitive>box</primitive>
+              <rotation axis="X" angle_deg="-20" intent="tilt backward"/>
+              <operation>union</operation>
+            </component>
+          </components>
+        </design_plan>
+        """
+        plan = parse_design_plan(raw)
+        rot = plan.components[0].rotation
+        self.assertIsNotNone(rot)
+        self.assertEqual(rot.axis, "X")
+        self.assertEqual(rot.angle_deg, -20.0)
+        self.assertEqual(rot.intent, "tilt backward")
+
+    def test_parse_rotation_zero_angle_is_none(self):
+        # A zero-angle rotation is a no-op; the parser drops it so we don't
+        # emit a pointless .rotate(...) bullet to the LLM.
+        raw = """
+        <design_plan>
+          <summary>x</summary>
+          <components>
+            <component>
+              <name>body</name>
+              <description>box</description>
+              <primitive>box</primitive>
+              <rotation axis="Z" angle_deg="0" intent=""/>
+              <operation>base</operation>
+            </component>
+          </components>
+        </design_plan>
+        """
+        plan = parse_design_plan(raw)
+        self.assertIsNone(plan.components[0].rotation)
+
+    def test_parse_rotation_bad_axis_returns_none(self):
+        raw = """
+        <design_plan>
+          <summary>x</summary>
+          <components>
+            <component>
+              <name>body</name>
+              <description>box</description>
+              <primitive>box</primitive>
+              <rotation axis="diagonal" angle_deg="45"/>
+              <operation>base</operation>
+            </component>
+          </components>
+        </design_plan>
+        """
+        plan = parse_design_plan(raw)
+        # Compound / unknown axes are rejected; the LLM is forced to
+        # decompose them in the planner output rather than send through
+        # ambiguity.
+        self.assertIsNone(plan.components[0].rotation)
 
     def test_feature_decisions_split_included_excluded(self):
         plan = DesignPlan(

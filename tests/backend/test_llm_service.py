@@ -282,6 +282,67 @@ class TestBuildRepairSystemPrompt(unittest.TestCase):
         self.assertIn("MINIMUM", repair)
         self.assertIn("Preserve", repair)
 
+    def test_includes_just_hit_errors_when_provided(self):
+        # The "errors hit THIS turn" block must appear with the supplied
+        # error text, framed as higher priority than the general pitfalls
+        # list. Without it, the repair LLM treats the live failure signal
+        # the same as the long-running aggregate of historical patterns.
+        prompt = build_repair_system_prompt(
+            recent_turn_errors=[
+                "Code must assign the final shape to a variable named 'result'",
+                "'result' is not a CadQuery shape (got float)",
+            ],
+        )
+        self.assertIn("Errors hit on THIS turn", prompt)
+        self.assertIn("'result' is not a CadQuery shape", prompt)
+        self.assertIn("highest priority", prompt.lower())
+
+    def test_omits_just_hit_section_when_no_errors(self):
+        prompt = build_repair_system_prompt(recent_turn_errors=None)
+        self.assertNotIn("Errors hit on THIS turn", prompt)
+        prompt_empty = build_repair_system_prompt(recent_turn_errors=[])
+        self.assertNotIn("Errors hit on THIS turn", prompt_empty)
+
+    def test_just_hit_errors_dedupes_and_caps(self):
+        # Same error repeated 3 times collapses to one bullet; the cap
+        # prevents the section from drowning the rest of the prompt.
+        same = "Code must assign the final shape to a variable named 'result'"
+        prompt = build_repair_system_prompt(
+            recent_turn_errors=[same, same, same, "err b", "err c", "err d", "err e", "err f", "err g"],
+        )
+        self.assertEqual(prompt.count(same), 1)
+        # 9 inputs → dedupe to 7 distinct → cap at 5. The 6th and 7th
+        # distinct errors must NOT appear in the prompt at all.
+        self.assertIn("err b", prompt)
+        self.assertIn("err e", prompt)
+        self.assertNotIn("err f", prompt)
+        self.assertNotIn("err g", prompt)
+
+
+class TestRotationCheatsheet(unittest.TestCase):
+    """The rotation-axis bug is the #1 visual error in first-draft renders.
+    Both the generation and repair system prompts need a clear convention so
+    the LLM does not pick the wrong axis vector for 'tilt backward'."""
+
+    def test_generation_prompt_includes_rotation_conventions(self):
+        from backend.models.llm_service import build_system_prompt
+        prompt = build_system_prompt()
+        self.assertIn("Rotation Conventions", prompt)
+        # Axis-mapping triplet — without all three, the LLM can still misroute.
+        self.assertIn("(1,0,0)", prompt)
+        self.assertIn("(0,1,0)", prompt)
+        self.assertIn("(0,0,1)", prompt)
+        # The "exactly one nonzero component" sanity rule is the trip-wire.
+        self.assertIn("exactly one nonzero component", prompt)
+
+    def test_repair_prompt_includes_compact_rotation_conventions(self):
+        from backend.models.llm_service import build_repair_system_prompt
+        prompt = build_repair_system_prompt()
+        self.assertIn("Rotation Conventions", prompt)
+        self.assertIn("(1,0,0)", prompt)
+        self.assertIn("(0,1,0)", prompt)
+        self.assertIn("(0,0,1)", prompt)
+
 
 class TestPreservationInRepairPrompt(unittest.TestCase):
 

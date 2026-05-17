@@ -137,6 +137,61 @@ class TestTryPatchMissingResult(unittest.TestCase):
     def test_returns_none_for_empty(self):
         self.assertIsNone(try_patch_missing_result(""))
 
+    def test_refuses_when_source_has_no_cadquery_call(self):
+        # Source has `import cadquery as cq` and many statements, but they
+        # are all numeric assignments — the LLM emitted only the parameter
+        # block and truncated before any cq.Workplane(...) call. The
+        # observed failure mode from the iPhone-holder turn at
+        # 2026-05-17T17:54: aliasing `result = notch_d` (a float) just
+        # promotes the truncation to a "got float" error on the next
+        # iteration. The patcher must refuse.
+        params_only = (
+            "import cadquery as cq\n"
+            "import math\n"
+            "phone_w = 77.6\n"
+            "phone_h = 160.7\n"
+            "lat_clear = 2.3\n"
+            "base_w = phone_w + 2 * lat_clear + 20\n"
+            "notch_d = 12.0\n"
+        )
+        self.assertIsNone(try_patch_missing_result(params_only))
+
+    def test_refuses_when_last_var_is_primitive_literal(self):
+        # The source DOES build geometry, but the last top-level assignment
+        # binds a float. Aliasing `result = wall_thickness` would mask the
+        # real failure mode (the model forgot to assign the final solid).
+        # Sending the original error to the LLM repair branch is better.
+        code = (
+            "import cadquery as cq\n"
+            "base = cq.Workplane('XY').box(50, 30, 5)\n"
+            "filleted = base.edges('|Z').fillet(2)\n"
+            "wall_thickness = 1.6\n"
+        )
+        self.assertIsNone(try_patch_missing_result(code))
+
+    def test_refuses_when_last_var_is_negative_literal(self):
+        # `-5.0` is `UnaryOp(USub, Constant(5.0))` in the AST — still a
+        # primitive, must still be refused.
+        code = (
+            "import cadquery as cq\n"
+            "base = cq.Workplane('XY').box(50, 30, 5)\n"
+            "rotation_deg = -5.0\n"
+        )
+        self.assertIsNone(try_patch_missing_result(code))
+
+    def test_still_patches_when_last_var_is_a_cq_chain(self):
+        # The whole point of the patcher: a real CadQuery program that
+        # forgot the final `result = ...` line should still get aliased.
+        code = (
+            "import cadquery as cq\n"
+            "wall = 2.0\n"
+            "base = cq.Workplane('XY').box(50, 30, 5)\n"
+            "filleted = base.edges('|Z').fillet(2)\n"
+        )
+        patched = try_patch_missing_result(code)
+        self.assertIsNotNone(patched)
+        self.assertTrue(patched.rstrip().endswith("result = filleted"))
+
 
 class TestSanitizeTraceback(unittest.TestCase):
     """Strip multiprocessing-spawn bootstrap frames from execution tracebacks.

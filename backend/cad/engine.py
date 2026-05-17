@@ -192,17 +192,83 @@ def try_patch_missing_result(code: str) -> Optional[str]:
     if not has_cq_import or len(tree.body) < 3:
         return None
 
+    # The source must actually build geometry — at least one `cq.Workplane(...)`
+    # call or one `cq.Assembly(...)` constructor. Without that, aliasing the
+    # "last variable" produces results like `result = notch_d` (a float)
+    # when the LLM truncated mid-output and emitted only the parameter
+    # block. The downstream "'result' is not a CadQuery shape (got float)"
+    # error costs another full iteration; refusing here surfaces the real
+    # problem to the LLM repair branch on the next round.
+    if not _source_builds_cq_geometry(tree):
+        return None
+
     last_target: Optional[str] = None
+    last_value: Optional[ast.AST] = None
     for node in tree.body:
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     last_target = target.id
+                    last_value = node.value
     if not last_target or last_target == "result":
+        return None
+    # If the last variable is bound to a primitive literal (the most common
+    # truncation tail: `notch_d = 12.0`), refuse to alias it. A scalar
+    # `result` blows up the next iteration with a confusing
+    # "got float / int / str" message that costs an LLM repair to undo.
+    if last_value is not None and _is_primitive_literal(last_value):
         return None
     # Append the alias. A trailing newline keeps source.py tidy.
     suffix = "\n" if code.endswith("\n") else "\n\n"
     return f"{code}{suffix}result = {last_target}\n"
+
+
+def _source_builds_cq_geometry(tree: ast.Module) -> bool:
+    """Return True if `tree` contains at least one `cq.Workplane(...)` or
+    `cq.Assembly(...)` call. Used by `try_patch_missing_result` to refuse
+    aliasing a parameter-only stub to `result`."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+                if func.value.id == "cq" and func.attr in ("Workplane", "Assembly", "Sketch"):
+                    return True
+    return False
+
+
+def _is_primitive_literal(value: ast.AST) -> bool:
+    """Return True if `value` is a literal scalar (number, bool, str, None) or
+    a tuple/list of such literals — i.e. anything that cannot possibly be a
+    CadQuery shape."""
+    if isinstance(value, ast.Constant):
+        return isinstance(value.value, (int, float, bool, str, bytes, type(None)))
+    if isinstance(value, ast.UnaryOp) and isinstance(value.op, (ast.USub, ast.UAdd)):
+        return _is_primitive_literal(value.operand)
+    if isinstance(value, (ast.Tuple, ast.List, ast.Set)):
+        return all(_is_primitive_literal(elt) for elt in value.elts)
+    if isinstance(value, ast.BinOp):
+        # `phone_w + 2*lat_clear + 20` — an arithmetic expression over
+        # numeric variables. Conservatively treat any binary-op tree whose
+        # leaves are all Name or Constant scalars as a primitive.
+        return _is_primitive_arith(value)
+    return False
+
+
+def _is_primitive_arith(value: ast.AST) -> bool:
+    if isinstance(value, ast.BinOp):
+        return _is_primitive_arith(value.left) and _is_primitive_arith(value.right)
+    if isinstance(value, ast.UnaryOp):
+        return _is_primitive_arith(value.operand)
+    if isinstance(value, ast.Constant):
+        return isinstance(value.value, (int, float, bool))
+    if isinstance(value, ast.Name):
+        # A bare Name in an arithmetic context typically refers to a
+        # previously-bound scalar parameter. False negatives are fine
+        # (we'd just allow the alias); false positives only hurt when
+        # the user actually has `width = cq.Workplane(...)` — vanishingly
+        # rare. Conservative-true here is the safer bet for our use case.
+        return True
+    return False
 
 
 _REASONING_PROSE_PREFIXES = (

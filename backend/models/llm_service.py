@@ -40,6 +40,7 @@ from ..domain.models import (
     FeatureDecision,
     HardConstraints,
     PhysicalUse,
+    Rotation,
     SoftConstraints,
 )
 from ..knowledge import error_patterns as _error_patterns
@@ -93,6 +94,24 @@ Generate production-quality CadQuery Python code for the user's request.
 - Avoid `.rotate()` immediately after `.translate()` with overlapping pivots — recompute the pivot or reverse the order.
 - `.fillet(r)` can fail on edges shorter than `2*r`. For mixed sizes, fillet vertical edges only: `body.edges("|Z").fillet(r)`.
 - On union-and-cut assemblies with multiple bodies, calling `.edges().fillet(r)` on the **final result** can freeze the OCCT kernel. Prefer filleting each body individually **before** the union: `body1 = body1.edges("|Z").fillet(r)` then `result = body1.union(body2)`. Single-body designs may fillet the final result normally.
+
+## Rotation Conventions (CRITICAL — wrong axis is the #1 visual bug in first drafts)
+Coordinate frame is fixed across every design:
+- **Z is up** (print build direction).
+- **+Y points away from the user** (depth).
+- **+X is the user's right** (width).
+
+What each axis rotates around:
+- **Rotate around X axis** (`(1,0,0)`): tilts forward/backward. The top of the part moves in ±Y. A backrest that "tilts back" rotates around X with a NEGATIVE angle (top moves to +Y, away from the user resting their phone). Example: `.rotate((0,0,0), (1,0,0), -20)`.
+- **Rotate around Y axis** (`(0,1,0)`): tilts left/right. The top of the part moves in ±X.
+- **Rotate around Z axis** (`(0,0,1)`): spins / yaws around the vertical. Does NOT change tilt — only orientation in plan view.
+
+When the plan provides a structured `rotation:` line under a component, it includes a ready-to-paste `.rotate(...)` call — use it verbatim, do not re-derive the axis vector. If the plan says "around X axis" do not output `(0,1,0)`.
+
+Sanity-check rules before writing `.rotate(start, end, angle)`:
+1. The axis vector (end − start) must have **exactly one nonzero component**. Mixed vectors like `(1,1,0)` are almost always a bug.
+2. If you're rotating a tall wall (long in Z) to lean it backward, the nonzero component is `x` (rotation around X). If it's the `y` or `z` component, the wall tilts sideways or just spins — visually wrong.
+3. Apply `.rotate()` BEFORE the final `.translate(...)` that positions the part. Rotating after translation rotates around the world origin, not the part's local center.
 
 ## Engineering Quality Standards
 - **Watertight**: All geometry must be closed / manifold (no open shells unless intentional)
@@ -452,6 +471,7 @@ The CAD code below executed successfully, but the rendered model failed visual v
 def build_repair_system_prompt(
     hard_constraints: Optional[HardConstraints] = None,
     soft_constraints: Optional[SoftConstraints] = None,
+    recent_turn_errors: Optional[list[str]] = None,
 ) -> str:
     """Lean system prompt for the repair pass.
 
@@ -461,6 +481,13 @@ def build_repair_system_prompt(
     another copy of the example bank. Trimming the system prompt frees the
     token budget for the actual fix and reduces the temptation to substitute
     a canonical example for the user's design.
+
+    ``recent_turn_errors`` is the de-duped first-line text of failures that
+    already happened in this turn. The global "Learned Pitfalls" list is a
+    long-running aggregate; this is the live signal of what just blew up.
+    Putting it at the very top, framed as "do not repeat THIS turn", keeps
+    the model focused on the failure mode that has actual evidence behind
+    it instead of the dozens of generic warnings.
     """
     hc = hard_constraints or HardConstraints()
     sc = soft_constraints or SoftConstraints()
@@ -468,9 +495,23 @@ def build_repair_system_prompt(
         _error_patterns.get_active_pitfalls()
     )
     learned_section = f"\n{learned_pitfalls}\n" if learned_pitfalls else ""
+
+    just_hit_section = ""
+    if recent_turn_errors:
+        # Cap at 5 — more than that is just noise and pushes the actual fix
+        # advice off the model's working memory.
+        deduped = list(dict.fromkeys(recent_turn_errors))[:5]
+        if deduped:
+            bullets = "\n".join(f"- {err}" for err in deduped)
+            just_hit_section = (
+                "\n## Errors hit on THIS turn (highest priority — your fix MUST avoid all of these)\n"
+                "These already failed this turn. Repeating any of them is a regression — the next iteration will reject your output and another repair cycle is burned.\n"
+                f"{bullets}\n"
+            )
+
     return f"""\
 You are an expert mechanical CAD engineer repairing a CadQuery program.
-{learned_section}
+{just_hit_section}{learned_section}
 
 ## Output Rules (CRITICAL)
 - FIRST, emit a single `<diagnosis>...</diagnosis>` block (2-5 lines) explaining your
@@ -489,6 +530,13 @@ You are an expert mechanical CAD engineer repairing a CadQuery program.
 - Preserve every parameter, helper, sub-shape, and boolean operation from the failed code unless it is the direct cause of the error.
 - DO NOT shorten the program to make the error vanish. Shorter output than input is a regression.
 - If the same variable name was used before, keep using it — don't rename.
+
+## Rotation Conventions (only if your fix touches a `.rotate(...)` call)
+Coordinate frame: Z=up, +Y=away from user, +X=user's right.
+- Rotate around X (`(1,0,0)`) → tilt forward/backward (top moves in ±Y).
+- Rotate around Y (`(0,1,0)`) → tilt left/right (top moves in ±X).
+- Rotate around Z (`(0,0,1)`) → spin/yaw, does NOT tilt.
+Axis vector (end − start) must have exactly one nonzero component. If the design plan above contains a `rotation:` line for the affected component, copy its pre-computed `.rotate(...)` snippet verbatim instead of guessing.
 
 ## Hard Constraints (must still be satisfied)
 - Maximum part size: {hc.max_x_mm} × {hc.max_y_mm} × {hc.max_z_mm} mm
@@ -655,6 +703,7 @@ class LLMService:
         *,
         extra_preservation_warning: bool = False,
         prior_attempts: Optional[list[dict]] = None,
+        recent_turn_errors: Optional[list[str]] = None,
     ) -> str:
         """Generate repaired CadQuery code after a failure.
 
@@ -667,7 +716,9 @@ class LLMService:
         burns the budget without surfacing it) — the diagnosis lives in the
         visible content stream where downstream code can extract it.
         """
-        system_prompt = build_repair_system_prompt(hard_constraints, soft_constraints)
+        system_prompt = build_repair_system_prompt(
+            hard_constraints, soft_constraints, recent_turn_errors=recent_turn_errors
+        )
         repair_prompt = build_repair_prompt(
             original_code, error_message, iteration,
             failure_type=failure_type,
@@ -685,6 +736,7 @@ class LLMService:
         user_prompt: str,
         hard_constraints: Optional[HardConstraints] = None,
         soft_constraints: Optional[SoftConstraints] = None,
+        recent_turn_errors: Optional[list[str]] = None,
     ) -> str:
         """Run a vision-driven repair.
 
@@ -693,7 +745,9 @@ class LLMService:
         repair body (via ``build_vision_repair_prompt``) and we send it
         verbatim — no truncation, no execution-error guidance wrapper.
         """
-        system_prompt = build_repair_system_prompt(hard_constraints, soft_constraints)
+        system_prompt = build_repair_system_prompt(
+            hard_constraints, soft_constraints, recent_turn_errors=recent_turn_errors
+        )
         return await self.generate(user_prompt, system_prompt, max_tokens=7168)
 
     @staticmethod
@@ -761,6 +815,7 @@ class LLMService:
             "      </dimensions>\n"
             "      <position><x>0</x><y>0</y><z>0</z></position>\n"
             "      <orientation>axis=Z|free-form description</orientation>\n"
+            "      <rotation axis=\"X|Y|Z\" angle_deg=\"-20\" intent=\"tilt backward\"/>\n"
             "      <operation>base|union|cut|intersect|fillet|chamfer|shell|pattern</operation>\n"
             "      <spec_source>explicit|inferred|default</spec_source>\n"
             "    </component>\n"
@@ -808,6 +863,12 @@ class LLMService:
             "  a known archetype calls for lips, ribs, clearances, holes, slots, or cutouts AND the feature_decisions block says they are needed.\n"
             "- For multi-part assemblies, name parts so the names match the final cq.Assembly children.\n"
             "- `key_features` is a checklist used by the vision verifier — list every distinct visible feature.\n"
+            "- **Rotations:** If a component must be tilted/rotated (a backrest tilts back, a hinge arm spins, etc.), emit an explicit "
+            "`<rotation>` tag with `axis` ∈ {X, Y, Z}, signed `angle_deg`, and a one-line `intent`. Coordinate convention is fixed: "
+            "Z is up; +Y points away from the user (depth); +X is the user's right (width). "
+            "Rotating around X tilts forward/backward, around Y tilts left/right, around Z spins/yaws. "
+            "Pick ONE axis — compound rotations should be decomposed into successive single-axis steps. "
+            "If the part does not rotate, omit the `<rotation>` tag entirely; do NOT emit a zero-angle placeholder.\n"
         )
 
         user_parts = []
@@ -1101,6 +1162,76 @@ def _parse_bool_flag(value: str) -> bool:
     return False
 
 
+_AXIS_VECTORS = {
+    "X": (1, 0, 0),
+    "Y": (0, 1, 0),
+    "Z": (0, 0, 1),
+}
+
+
+def _parse_rotation_elem(elem) -> Optional[Rotation]:
+    """Parse a ``<rotation axis="X" angle_deg="-20" intent="tilt backward"/>``
+    element from the planner output.
+
+    Tolerates both the canonical attribute form and a tag-body form
+    (``<axis>X</axis><angle_deg>-20</angle_deg>``) the LLM sometimes
+    produces. Returns ``None`` when the element is empty or contradictory
+    (e.g. axis missing or angle missing). A zero-angle rotation is treated
+    as "no rotation" and returns ``None`` so downstream code doesn't emit
+    a pointless ``.rotate(...)`` line.
+    """
+    if elem is None:
+        return None
+    axis = (elem.get("axis") or elem.findtext("axis") or "").strip().upper()
+    angle_raw = elem.get("angle_deg") or elem.get("angle") or elem.findtext("angle_deg") or elem.findtext("angle")
+    intent = (elem.get("intent") or elem.findtext("intent") or "").strip()
+
+    if axis not in _AXIS_VECTORS:
+        return None
+    try:
+        angle = float(angle_raw)
+    except (TypeError, ValueError):
+        return None
+    # A zero-angle rotation is a no-op; the planner template says to omit
+    # the tag entirely in that case, but tolerate the placeholder anyway.
+    if abs(angle) < 1e-6:
+        return None
+
+    pivot_elem = elem.find("pivot") if hasattr(elem, "find") else None
+    pivot: Optional[list[float]] = None
+    if pivot_elem is not None:
+        try:
+            pivot = [
+                float(pivot_elem.findtext("x") or 0),
+                float(pivot_elem.findtext("y") or 0),
+                float(pivot_elem.findtext("z") or 0),
+            ]
+        except (TypeError, ValueError):
+            pivot = None
+    return Rotation(axis=axis, angle_deg=angle, pivot=pivot, intent=intent)
+
+
+def _format_rotation_for_prompt(rotation: Rotation) -> str:
+    """Render a Rotation as a ready-to-paste CadQuery snippet.
+
+    The whole point of the structured field is that the LLM never has to
+    re-derive ``axis -> (a, b, c)`` itself. We hand it the exact call:
+
+        rotation: around X axis, -20.0° (intent: tilt backward)
+          code: .rotate((0, 0, 0), (1, 0, 0), -20.0)
+    """
+    vec = _AXIS_VECTORS.get(rotation.axis.upper())
+    if vec is None:
+        # Defensive — the constructor and parser should have rejected this.
+        return ""
+    pivot = rotation.pivot or [0, 0, 0]
+    pivot_t = f"({pivot[0]:g}, {pivot[1]:g}, {pivot[2]:g})"
+    end_t = f"({pivot[0] + vec[0]:g}, {pivot[1] + vec[1]:g}, {pivot[2] + vec[2]:g})"
+    intent_t = f" (intent: {rotation.intent})" if rotation.intent else ""
+    snippet = f".rotate({pivot_t}, {end_t}, {rotation.angle_deg:g})"
+    return f"around {rotation.axis.upper()} axis, {rotation.angle_deg:g}°{intent_t} — code: `{snippet}`"
+
+
 def _parse_feature_decisions_block(content: str) -> list[FeatureDecision]:
     """Parse the inner XML of a <feature_decisions> block.
 
@@ -1233,6 +1364,9 @@ def parse_design_plan(raw_text: str) -> DesignPlan:
                     except Exception:
                         pass
 
+                rot_elem = comp.find("rotation")
+                rotation = _parse_rotation_elem(rot_elem) if rot_elem is not None else None
+
                 plan.components.append(DesignComponent(
                     name=c_name,
                     description=(comp.findtext("description") or "").strip(),
@@ -1240,6 +1374,7 @@ def parse_design_plan(raw_text: str) -> DesignPlan:
                     dimensions=dimensions,
                     position=position,
                     orientation=(comp.findtext("orientation") or "").strip(),
+                    rotation=rotation,
                     operation=(comp.findtext("operation") or "").strip(),
                     spec_source=(comp.findtext("spec_source") or "").strip().lower(),
                 ))
@@ -1368,6 +1503,15 @@ def plan_to_prompt_text(plan: DesignPlan) -> str:
             lines.append(
                 f"{i}. `{c.name}`{src_text} — {prim} ({dim_text}){pos_text}{op_text}: {c.description}"
             )
+            # Render the planner's structured rotation as a ready-to-paste
+            # .rotate(...) call. This is the whole point of B: the LLM is
+            # never asked to translate "tilt 20° backward" into an axis
+            # vector — that's pre-computed here. Indented bullet so it
+            # visually belongs to the component above.
+            if c.rotation is not None:
+                rot_line = _format_rotation_for_prompt(c.rotation)
+                if rot_line:
+                    lines.append(f"   - rotation: {rot_line}")
 
     if plan.connections:
         lines.append("**Connections (how the components join):**")

@@ -58,8 +58,14 @@ CARDS_MAX = 25
 PROMPT_INJECTION_LIMIT = 8
 
 # Minimum count of repairs in a turn before we bother asking the LLM to
-# summarize. A single-repair turn is rarely worth a generalized lesson.
-MIN_REPAIRS_FOR_SUMMARY = 1
+# summarize. Was 1; bumped to 2 because the actually-painful turns burn 3-8
+# repair iterations, while single-repair turns rarely surface a lesson
+# distinct from what the system prompt already carries — and the summarizer
+# LLM call costs ~30s of latency for low signal-to-noise output. Failed
+# turns are increasingly the source of useful lessons (see
+# `turn_succeeded` plumbing) so we want the threshold to gate on real
+# struggle, not occasional hiccups.
+MIN_REPAIRS_FOR_SUMMARY = 2
 
 # Process-wide lock so concurrent pipeline runs don't corrupt the JSON files.
 _lock = threading.Lock()
@@ -218,6 +224,66 @@ def record_failure(
     except Exception as exc:
         logger.warning("error_patterns: failed to record failure: %s", exc)
         return None
+
+
+def update_failure_outcome(
+    *,
+    turn_id: str,
+    iteration: int,
+    fix_kind: Optional[str] = None,
+    succeeded: Optional[bool] = None,
+) -> bool:
+    """Patch the most recent matching entry in ``log.jsonl`` to reflect what
+    actually happened to that failure (which repair strategy fired and whether
+    the next iteration's execution finally passed).
+
+    Without this, every persisted event stays frozen at the placeholder
+    ``fix_kind="pending"`` / ``succeeded=False`` it was first written with —
+    even after the orchestrator mutates the in-memory event. That makes the
+    log useless for any cross-turn analysis.
+
+    Matches on ``(turn_id, iteration)`` and updates the LAST occurrence (in
+    case the same turn re-entered with the same iteration number, which
+    shouldn't happen but is cheap to defend against). Returns True if a
+    row was patched, False otherwise. Never raises.
+    """
+    if not turn_id or fix_kind is None and succeeded is None:
+        return False
+    path = _log_path()
+    if not path.exists():
+        return False
+    try:
+        with _lock:
+            with path.open("r", encoding="utf-8") as f:
+                lines = f.readlines()
+            patched = False
+            # Walk from the end so we update the most recent matching entry.
+            for idx in range(len(lines) - 1, -1, -1):
+                raw = lines[idx].strip()
+                if not raw:
+                    continue
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if data.get("turn_id") != turn_id:
+                    continue
+                if int(data.get("iteration", -1)) != int(iteration):
+                    continue
+                if fix_kind is not None:
+                    data["fix_kind"] = fix_kind
+                if succeeded is not None:
+                    data["succeeded"] = bool(succeeded)
+                lines[idx] = json.dumps(data, ensure_ascii=False) + "\n"
+                patched = True
+                break
+            if patched:
+                with path.open("w", encoding="utf-8") as f:
+                    f.writelines(lines)
+            return patched
+    except Exception as exc:
+        logger.warning("error_patterns: update_failure_outcome failed: %s", exc)
+        return False
 
 
 def _maybe_rotate_log() -> None:
@@ -489,18 +555,31 @@ async def summarize_turn(
     turn_events: list[FailureEvent],
     *,
     include_recent_log: int = 20,
+    turn_succeeded: bool = True,
 ) -> list[PitfallCard]:
     """Run the LLM summarizer over a turn's events and merge new pitfalls.
 
     ``llm`` must expose ``generate(user_message, system_prompt, max_tokens=...)``.
     A ``LLMService`` instance from ``backend.models.llm_service`` works directly.
 
+    ``turn_succeeded`` tells the summarizer whether the turn eventually
+    produced a model. Failed turns still carry signal — when the agent
+    burns its entire budget on the same kind of error, *that* is the
+    lesson — but the rule wording should be framed differently so we
+    don't store "always do X" for an X that didn't actually work.
+
     Returns the new/updated cards (whether merged into existing ones or added).
     Errors are swallowed; this is a best-effort enrichment, not critical path.
     """
     if not turn_events:
         return []
-    repair_count = sum(1 for e in turn_events if e.fix_kind not in ("", "none"))
+    # Only events that progressed past the "pending" placeholder count
+    # as repairs the summarizer should reason about. A turn that recorded
+    # failures but never attached a fix_kind isn't a journey — it's a
+    # crash log.
+    repair_count = sum(
+        1 for e in turn_events if e.fix_kind not in ("", "none", "pending")
+    )
     if repair_count < MIN_REPAIRS_FOR_SUMMARY:
         return []
 
@@ -508,7 +587,19 @@ async def summarize_turn(
     if include_recent_log > 0:
         recent_log = read_log(limit=include_recent_log)
 
+    outcome_framing = (
+        "The turn eventually SUCCEEDED. Each lesson should describe how to "
+        "avoid the failure mode in the first place — phrasing like 'When X, "
+        "do Y' or 'Avoid Z because ...'."
+        if turn_succeeded
+        else "The turn FAILED — the agent exhausted its repair budget and "
+        "never produced a usable model. The lesson is what NOT to do, or what "
+        "structural change avoids the dead-end. Phrase rules as a forbidden "
+        "pattern or an early-exit signal, not as an instruction that 'works'."
+    )
+
     user_msg = (
+        f"{outcome_framing}\n\n"
         "Recent failure events from the current turn (in order):\n"
         f"{_render_events_for_summary(turn_events)}\n\n"
         "Additional context — recent failures from prior turns (most recent first):\n"
@@ -582,6 +673,7 @@ def schedule_summarization(
     turn_events: list[FailureEvent],
     *,
     include_recent_log: int = 20,
+    turn_succeeded: bool = True,
 ) -> Optional[asyncio.Task]:
     """Fire-and-forget summarization so the orchestrator never waits for it.
 
@@ -594,7 +686,12 @@ def schedule_summarization(
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
-    coro = summarize_turn(llm, turn_events, include_recent_log=include_recent_log)
+    coro = summarize_turn(
+        llm,
+        turn_events,
+        include_recent_log=include_recent_log,
+        turn_succeeded=turn_succeeded,
+    )
     if loop is None:
         try:
             asyncio.run(coro)
