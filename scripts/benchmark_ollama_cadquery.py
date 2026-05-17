@@ -299,6 +299,10 @@ def _deterministic_score(result: AttemptResult) -> float:
             "execution_error": 15.0,
             "geometry_invalid": 25.0,
             "constraint_violation": 30.0,
+            "cad_worker_timeout": 10.0,
+            "cad_worker_crash": 10.0,
+            "cad_worker_error": 10.0,
+            "cad_worker_bad_result": 10.0,
         }.get(str(failure_type), 0.0)
 
     score = 70.0
@@ -360,6 +364,118 @@ def _write_attempt_artifacts(
     return artifacts
 
 
+def _worker_process_code_main() -> int:
+    """Child-process CAD execution/rendering.
+
+    CadQuery/OCC can occasionally terminate the interpreter from native code
+    when handed pathological generated geometry. Running this stage in a child
+    keeps the long benchmark alive and lets the parent score the attempt as a
+    CAD worker crash instead of losing all accumulated progress.
+    """
+    code_path = Path(sys.argv[2])
+    output_dir = Path(sys.argv[3])
+    model_name = sys.argv[4] if len(sys.argv) > 4 else "benchmark"
+    result_path = output_dir / "_worker_result.json"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        code = code_path.read_text(encoding="utf-8", errors="replace")
+        process = process_cadquery_code(
+            code,
+            output_dir,
+            model_name=model_name,
+            constraints=HardConstraints(),
+        )
+        shape = process.get("_shape")
+        if process.get("success") and shape is not None:
+            render_result = RenderService().render_shape(
+                shape,
+                output_dir,
+                model_name=model_name,
+                include_sections=False,
+            )
+            process["render_success"] = render_result.success
+            process["render_message"] = render_result.message
+            process["render_paths"] = render_result.renders
+            if not render_result.success:
+                process["warnings"] = list(process.get("warnings") or []) + [
+                    f"Rendering failed: {render_result.message}"
+                ]
+        result_path.write_text(
+            json.dumps(_sanitize_for_json(process), indent=2),
+            encoding="utf-8",
+        )
+        return 0
+    except Exception as exc:
+        result_path.write_text(
+            json.dumps(
+                {
+                    "success": False,
+                    "failure_type": "cad_worker_error",
+                    "message": f"CAD worker error: {exc}",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return 0
+
+
+def _process_code_subprocess(
+    code: str,
+    output_dir: Path,
+    model_name: str,
+    timeout_s: float,
+) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    code_path = output_dir / "_candidate_code.py"
+    result_path = output_dir / "_worker_result.json"
+    code_path.write_text(code, encoding="utf-8", errors="replace")
+
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--_worker-process-code",
+                str(code_path),
+                str(output_dir),
+                model_name,
+            ],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "failure_type": "cad_worker_timeout",
+            "message": f"CAD worker timed out after {timeout_s:.0f}s",
+        }
+
+    if result_path.exists():
+        try:
+            return json.loads(result_path.read_text(encoding="utf-8", errors="replace"))
+        except Exception as exc:
+            return {
+                "success": False,
+                "failure_type": "cad_worker_bad_result",
+                "message": f"CAD worker wrote unreadable result: {exc}",
+            }
+
+    return {
+        "success": False,
+        "failure_type": "cad_worker_crash",
+        "message": (
+            f"CAD worker exited with code {completed.returncode}. "
+            f"stdout={completed.stdout[-500:]!r} stderr={completed.stderr[-500:]!r}"
+        ),
+    }
+
+
 async def _run_generation(
     *,
     model: str,
@@ -379,11 +495,11 @@ async def _run_generation(
         timeout=timeout_s,
     )
     code = _prepare_code(raw)
-    process = process_cadquery_code(
+    process = _process_code_subprocess(
         code,
         output_dir,
         model_name="benchmark",
-        constraints=hard_constraints,
+        timeout_s=timeout_s,
     )
     repair_count = 0
 
@@ -403,11 +519,11 @@ async def _run_generation(
         )
         raw = raw + "\n\n--- repair ---\n\n" + repaired_raw
         code = _prepare_code(repaired_raw)
-        process = process_cadquery_code(
+        process = _process_code_subprocess(
             code,
             output_dir / f"repair_{repair_count}",
             model_name="benchmark",
-            constraints=hard_constraints,
+            timeout_s=timeout_s,
         )
 
     return AttemptResult(
@@ -434,8 +550,21 @@ async def _run_vision_judges(
         return [], None, 0.0
 
     started = time.perf_counter()
+    render_paths = result.process.get("render_paths")
+    if isinstance(render_paths, dict) and render_paths:
+        evaluations: list[dict[str, Any]] = [
+            {
+                "stage": "render",
+                "success": bool(result.process.get("render_success", True)),
+                "message": result.process.get("render_message", "Rendered by CAD worker"),
+                "renders": render_paths,
+            }
+        ]
+    else:
+        evaluations = []
+
     shape = result.process.get("_shape")
-    if shape is None:
+    if not render_paths and shape is None:
         return [
             {
                 "stage": "render",
@@ -444,24 +573,26 @@ async def _run_vision_judges(
             }
         ], None, time.perf_counter() - started
 
-    render_result = RenderService().render_shape(shape, run_dir, model_name=case.id, include_sections=False)
-    if not render_result.success:
-        return [
+    if not render_paths:
+        render_result = RenderService().render_shape(shape, run_dir, model_name=case.id, include_sections=False)
+        if not render_result.success:
+            return [
+                {
+                    "stage": "render",
+                    "success": False,
+                    "message": render_result.message,
+                }
+            ], None, time.perf_counter() - started
+        render_paths = render_result.renders
+        evaluations.append(
             {
                 "stage": "render",
-                "success": False,
+                "success": True,
                 "message": render_result.message,
+                "renders": render_result.renders,
             }
-        ], None, time.perf_counter() - started
+        )
 
-    evaluations: list[dict[str, Any]] = [
-        {
-            "stage": "render",
-            "success": True,
-            "message": render_result.message,
-            "renders": render_result.renders,
-        }
-    ]
     scores: list[float] = []
 
     for vision_model in vision_models:
@@ -469,7 +600,7 @@ async def _run_vision_judges(
         try:
             critic = VisionCritic(model=vision_model, timeout=timeout_s)
             critique = await critic.critique(
-                render_result.renders,
+                render_paths,
                 case.prompt,
                 geometry_stats=result.process.get("geometry_stats"),
                 plan=case.plan,
@@ -569,6 +700,48 @@ def _print_summary(summary: list[dict[str, Any]]) -> None:
             f"{row['avg_score']:.1f} | "
             f"{total}"
         )
+
+
+def _write_report(
+    *,
+    out_dir: Path,
+    run_id: str,
+    models: list[str],
+    repeats: int,
+    repairs: int,
+    skip_vision: bool,
+    vision_models: list[str],
+    generation_context: str,
+    selected_cases: list[BenchmarkCase],
+    rows: list[dict[str, Any]],
+    partial: bool,
+) -> Path:
+    summary = _summarize(rows)
+    report = {
+        "run_id": run_id,
+        "partial": partial,
+        "models": models,
+        "repeats": repeats,
+        "repairs": repairs,
+        "vision_enabled": not skip_vision,
+        "vision_models": [] if skip_vision else vision_models,
+        "generation_context": generation_context,
+        "score_formula": "0.45 * deterministic_score + 0.55 * (vision_avg_score * 100), or deterministic_score if vision is skipped/unavailable",
+        "cases": [
+            {
+                "id": case.id,
+                "difficulty": case.difficulty,
+                "prompt": case.prompt,
+                "plan": case.plan.model_dump(),
+            }
+            for case in selected_cases
+        ],
+        "summary": summary,
+        "runs": _sanitize_for_json(rows),
+    }
+    report_path = out_dir / ("results.partial.json" if partial else "results.json")
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    return report_path
 
 
 async def amain() -> None:
@@ -696,6 +869,19 @@ async def amain() -> None:
                             "output_dir": str(run_dir) if args.keep_temp else "",
                         }
                         rows.append(row)
+                        _write_report(
+                            out_dir=out_dir,
+                            run_id=run_id,
+                            models=models,
+                            repeats=args.repeats,
+                            repairs=args.repairs,
+                            skip_vision=args.skip_vision,
+                            vision_models=args.vision_models,
+                            generation_context=args.generation_context,
+                            selected_cases=selected_cases,
+                            rows=rows,
+                            partial=True,
+                        )
 
                         status = "ok" if result.ok else f"fail:{row['failure_type']}"
                         vision_text = "vision=skip"
@@ -729,32 +915,35 @@ async def amain() -> None:
                                 "message": str(exc),
                             }
                         )
+                        _write_report(
+                            out_dir=out_dir,
+                            run_id=run_id,
+                            models=models,
+                            repeats=args.repeats,
+                            repairs=args.repairs,
+                            skip_vision=args.skip_vision,
+                            vision_models=args.vision_models,
+                            generation_context=args.generation_context,
+                            selected_cases=selected_cases,
+                            rows=rows,
+                            partial=True,
+                        )
                         print(f"error: {exc}")
 
+        report_path = _write_report(
+            out_dir=out_dir,
+            run_id=run_id,
+            models=models,
+            repeats=args.repeats,
+            repairs=args.repairs,
+            skip_vision=args.skip_vision,
+            vision_models=args.vision_models,
+            generation_context=args.generation_context,
+            selected_cases=selected_cases,
+            rows=rows,
+            partial=False,
+        )
         summary = _summarize(rows)
-        report = {
-            "run_id": run_id,
-            "models": models,
-            "repeats": args.repeats,
-            "repairs": args.repairs,
-            "vision_enabled": not args.skip_vision,
-            "vision_models": [] if args.skip_vision else args.vision_models,
-            "generation_context": args.generation_context,
-            "score_formula": "0.45 * deterministic_score + 0.55 * (vision_avg_score * 100), or deterministic_score if vision is skipped/unavailable",
-            "cases": [
-                {
-                    "id": case.id,
-                    "difficulty": case.difficulty,
-                    "prompt": case.prompt,
-                    "plan": case.plan.model_dump(),
-                }
-                for case in selected_cases
-            ],
-            "summary": summary,
-            "runs": _sanitize_for_json(rows),
-        }
-        report_path = out_dir / "results.json"
-        report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
         _print_summary(summary)
         print(f"\nWrote {report_path}")
@@ -766,6 +955,8 @@ async def amain() -> None:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "--_worker-process-code":
+        raise SystemExit(_worker_process_code_main())
     asyncio.run(amain())
 
 
