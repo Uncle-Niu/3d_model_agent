@@ -101,17 +101,43 @@ Coordinate frame is fixed across every design:
 - **+Y points away from the user** (depth).
 - **+X is the user's right** (width).
 
-What each axis rotates around:
-- **Rotate around X axis** (`(1,0,0)`): tilts forward/backward. The top of the part moves in ±Y. A backrest that "tilts back" rotates around X with a NEGATIVE angle (top moves to +Y, away from the user resting their phone). Example: `.rotate((0,0,0), (1,0,0), -20)`.
-- **Rotate around Y axis** (`(0,1,0)`): tilts left/right. The top of the part moves in ±X.
-- **Rotate around Z axis** (`(0,0,1)`): spins / yaws around the vertical. Does NOT change tilt — only orientation in plan view.
+### CadQuery `.rotate(p1, p2, angle)` takes TWO POINTS on the axis line
+This is the #1 source of silently-wrong rotations. CadQuery does NOT take
+`(pivot, axis_direction, angle)` like some other libraries. It takes two POINTS
+`p1` and `p2` that lie on the rotation axis line. The axis direction is implicitly
+`p2 - p1`. If `p2 - p1` is not parallel to a pure X/Y/Z axis, the part spins
+around an OBLIQUE line and ends up visually wrong even though the code runs.
 
-When the plan provides a structured `rotation:` line under a component, it includes a ready-to-paste `.rotate(...)` call — use it verbatim, do not re-derive the axis vector. If the plan says "around X axis" do not output `(0,1,0)`.
+To rotate around axis A through a pivot point P:
+- `p1 = P`
+- `p2 = P + (1 unit along A)`
+- so e.g. to rotate around X through `(0,0,0)`: `.rotate((0,0,0), (1,0,0), angle)`
+- and to rotate around X through `(0,0,5)`: `.rotate((0,0,5), (1,0,5), angle)`
 
-Sanity-check rules before writing `.rotate(start, end, angle)`:
-1. The axis vector (end − start) must have **exactly one nonzero component**. Mixed vectors like `(1,1,0)` are almost always a bug.
-2. If you're rotating a tall wall (long in Z) to lean it backward, the nonzero component is `x` (rotation around X). If it's the `y` or `z` component, the wall tilts sideways or just spins — visually wrong.
-3. Apply `.rotate()` BEFORE the final `.translate(...)` that positions the part. Rotating after translation rotates around the world origin, not the part's local center.
+DO NOT do this (real failure mode from a prior run):
+```python
+# WRONG — interprets (1,0,0) as the axis DIRECTION; actual axis is the line
+# from (0,0,-60) to (1,0,0), which has direction (1,0,60), an OBLIQUE axis.
+.rotate((0, 0, -backrest_height/2), (1, 0, 0), -15)
+```
+DO this instead:
+```python
+# RIGHT — both points have the same Y and Z, so the line is parallel to X.
+.rotate((0, 0, 0), (1, 0, 0), -15)
+```
+
+### What each axis rotates around
+- **Rotate around X axis** (line parallel to X): tilts forward/backward. The top of the part moves in ±Y. A backrest that "tilts back" rotates around X with a NEGATIVE angle (top moves to +Y, away from the user). Example: `.rotate((0,0,0), (1,0,0), -20)`.
+- **Rotate around Y axis** (line parallel to Y): tilts left/right. The top of the part moves in ±X. Example: `.rotate((0,0,0), (0,1,0), 15)`.
+- **Rotate around Z axis** (line parallel to Z): spins / yaws around the vertical. Does NOT change tilt. Example: `.rotate((0,0,0), (0,0,1), 90)`.
+
+### When the plan locks a rotation, paste it verbatim
+When the plan provides a structured `rotation:` line under a component, it includes a ready-to-paste `.rotate(...)` call. Use it VERBATIM — do not re-derive the axis vector, do not flip the sign, do not change the pivot. The lint pass will reject any `.rotate(...)` whose `(p2 - p1)` is not axis-aligned and force another repair cycle.
+
+### Sanity-check before writing `.rotate(p1, p2, angle)`
+1. `(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z)` must have **exactly one nonzero component**. Pencil this out for any non-origin pivot.
+2. Apply `.rotate()` BEFORE the final `.translate(...)` that positions the part. Rotating after translation rotates around the world origin, not the part's local center.
+3. If you're rotating a tall wall (long in Z) to lean it backward, the nonzero component of the direction vector is `x` (rotation around the X-direction line). If it's `y` or `z`, the wall tilts sideways or just spins — visually wrong.
 
 ## Engineering Quality Standards
 - **Watertight**: All geometry must be closed / manifold (no open shells unless intentional)
@@ -289,6 +315,29 @@ The geometry exceeds one or more hard constraints:
 - Increase wall thickness to at least 1.5mm
 - Avoid shell operations that produce < 1.5mm walls
 - Thin ribs/fins need to be at least 1.5mm wide"""
+
+    elif failure_type == "static_lint":
+        # Pre-execution lint flagged a problem the AST can prove is wrong —
+        # most commonly a misused `.rotate(p1, p2, angle)` call where
+        # (p2 - p1) is not axis-aligned. The error text already contains the
+        # offending line(s) and the suggested canonical snippet; the LLM's
+        # job is to splice that snippet in, not to "rewrite the rotation".
+        guidance = """\
+## Fix Required: Static-Lint Failure (no execution needed)
+The bug is in the source itself — the geometry engine was never invoked.
+Read the lint message above carefully: it names the failing line and (usually)
+provides a canonical replacement snippet you can paste verbatim.
+
+**CadQuery `.rotate(p1, p2, angle)` is the most common source of this lint.**
+It takes TWO POINTS that lie on the rotation axis line — NOT a pivot plus an
+axis-direction vector. To rotate around the X axis through a pivot `(px,py,pz)`:
+- p1 = `(px, py, pz)`
+- p2 = `(px + 1, py, pz)`  (advance by ONE along the desired axis)
+- angle in degrees (signed, right-hand rule)
+
+If the lint message includes `suggested fix: .rotate(...)`, that snippet is
+correct for the design plan — paste it in place of the broken `.rotate(...)`
+call on the cited line. Do NOT add or remove any other code."""
 
     else:
         # Generic execution error
@@ -559,11 +608,14 @@ You are an expert mechanical CAD engineer repairing a CadQuery program.
 - If the same variable name was used before, keep using it — don't rename.
 
 ## Rotation Conventions (only if your fix touches a `.rotate(...)` call)
-Coordinate frame: Z=up, +Y=away from user, +X=user's right.
-- Rotate around X (`(1,0,0)`) → tilt forward/backward (top moves in ±Y).
-- Rotate around Y (`(0,1,0)`) → tilt left/right (top moves in ±X).
-- Rotate around Z (`(0,0,1)`) → spin/yaw, does NOT tilt.
-Axis vector (end − start) must have exactly one nonzero component. If the design plan above contains a `rotation:` line for the affected component, copy its pre-computed `.rotate(...)` snippet verbatim instead of guessing.
+CadQuery `.rotate(p1, p2, angle)` takes TWO POINTS on the axis line — NOT (pivot, direction).
+- Rotate around X: p1 and p2 must share Y and Z, only X differs. e.g. `.rotate((0,0,0), (1,0,0), -20)`.
+- Rotate around Y: p1 and p2 must share X and Z, only Y differs. e.g. `.rotate((0,0,0), (0,1,0), 15)`.
+- Rotate around Z: p1 and p2 must share X and Y, only Z differs. e.g. `.rotate((0,0,0), (0,0,1), 90)`.
+
+Common bug — `.rotate((0, 0, -h/2), (1, 0, 0), a)`: this looks like "rotate around X with pivot below" but the axis line goes from (0,0,-h/2) to (1,0,0), direction (1, 0, h/2). That is an OBLIQUE axis, not X. Fix by making p2 equal to p1 plus a unit vector along the desired axis: `.rotate((0, 0, -h/2), (1, 0, -h/2), a)`.
+
+Axis-vector check: `(p2 - p1)` must have exactly one nonzero component. If the design plan contains a `rotation:` line for the affected component, copy its pre-computed `.rotate(...)` snippet verbatim instead of guessing.
 
 ## Hard Constraints (must still be satisfied)
 - Maximum part size: {hc.max_x_mm} × {hc.max_y_mm} × {hc.max_z_mm} mm

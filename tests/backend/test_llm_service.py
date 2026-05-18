@@ -122,6 +122,27 @@ class TestBuildRepairPrompt(unittest.TestCase):
         )
         self.assertIn("Execution Error", prompt)
 
+    def test_static_lint_guidance(self):
+        """A static_lint failure should yield prompt text that explains the
+        TWO-POINTS rule for .rotate() and tells the LLM to paste any
+        ``suggested fix`` snippet verbatim — the lint already did the work."""
+        lint_error = (
+            "Static lint detected source-level bugs before execution:\n"
+            "line 19: .rotate(p1, p2, angle) takes TWO POINTS on the rotation axis line; "
+            "here (p2 - p1) = (1, 0, 60), which is NOT axis-aligned, so the part rotates "
+            "around an oblique axis instead of pure X/Y/Z.\n"
+            "  suggested fix: .rotate((0, 0, -60), (1, 0, -60), -15)"
+        )
+        prompt = build_repair_prompt(
+            self.SAMPLE_CODE, lint_error, 1, failure_type="static_lint"
+        )
+        self.assertIn("Static-Lint Failure", prompt)
+        self.assertIn("TWO POINTS", prompt)
+        self.assertIn("suggested fix", prompt)
+        # The full lint message — including the suggestion — must reach the LLM.
+        self.assertIn("(1, 0, 60)", prompt)
+        self.assertIn(".rotate((0, 0, -60), (1, 0, -60), -15)", prompt)
+
     def test_geometry_stats_injected(self):
         stats = {"bounding_box": "50 × 30 × 10 mm", "volume": "15000 mm³"}
         prompt = build_repair_prompt(

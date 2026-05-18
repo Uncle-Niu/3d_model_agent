@@ -25,6 +25,7 @@ class FailureType(str, enum.Enum):
     CONSTRAINT_VIOLATION = "constraint_violation"
     CRITIQUE_FAILED = "critique_failed"
     TIMEOUT = "timeout"
+    STATIC_LINT = "static_lint"
 
 
 class RepairStage(str, enum.Enum):

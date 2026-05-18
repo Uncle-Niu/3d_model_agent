@@ -86,6 +86,7 @@ def _error_signature(error_message: str) -> str:
 
 from ..cad.engine import process_cadquery_code
 from ..cad.example_bank import build_example_bank_prompt_context, retrieve_example_snippets
+from ..cad.static_lint import lint_cadquery_source
 from ..cad.recipes import (
     build_combined_recipe_context,
     retrieve_recipe_cards,
@@ -1440,6 +1441,109 @@ class AgentOrchestrator:
                     continue
                 consecutive_empty = 0
 
+                # ── Step B0: Static lint (pre-execution AST checks) ───────────
+                # Fast, deterministic check for source-level bugs the AST can
+                # prove are wrong before we pay the cost of running the geometry
+                # engine, the renderer, and the vision critic. The canonical
+                # case is `.rotate(p1, p2, angle)` misuse where (p2 - p1) is not
+                # axis-aligned — a part that "looks" right in code but spins
+                # around an oblique axis at execution time. When the plan locks
+                # a rotation, the lint auto-corrects by snapping to the plan's
+                # axis; otherwise it raises a `static_lint` failure that feeds
+                # the existing repair loop.
+                try:
+                    lint_report = lint_cadquery_source(last_code, plan=plan)
+                except Exception as _lint_exc:
+                    # Linting must never crash the pipeline. Fall back to the
+                    # unlinted source.
+                    await self._emit_debug("static_lint_error", str(_lint_exc))
+                    lint_report = None
+
+                if lint_report is not None:
+                    if lint_report.autofix_summary:
+                        await self._emit_status(
+                            "validating",
+                            f"Static lint auto-corrected {len(lint_report.autofix_summary)} "
+                            f"issue(s) before execution.",
+                            details=(
+                                "Detected source-level bugs the AST can prove are wrong "
+                                "(e.g. an oblique-axis `.rotate(...)` that disagrees with the plan) "
+                                "and rewrote them to the canonical form. The corrected source "
+                                "is what runs next."
+                            ),
+                            data={
+                                "iteration": iteration,
+                                "rationale": "Deterministic pre-execution lint catches LLM rotation/argument bugs.",
+                                "outcome": "Auto-corrected and continuing to execution.",
+                                "fixes": lint_report.autofix_summary,
+                            },
+                        )
+                        last_code = lint_report.rewritten_source
+
+                    if lint_report.has_blocking:
+                        # The lint found something it cannot safely auto-fix.
+                        # Route it through the same repair branch as an
+                        # execution error — saves the full execute/render/vision
+                        # cycle on a bug we can already describe.
+                        blocking = "\n".join(lint_report.blocking_messages)
+                        last_error = (
+                            "Static lint detected source-level bugs before execution:\n"
+                            f"{blocking}"
+                        )
+                        last_failure_type = "static_lint"
+                        last_geometry_stats = {}
+                        last_critique = None
+
+                        repair_attempt_history.append({
+                            "iteration": iteration,
+                            "error_first_line": _error_signature(last_error),
+                            "failing_source_line": _extract_failing_source_line(last_error, last_code),
+                        })
+                        if len(repair_attempt_history) > 5:
+                            del repair_attempt_history[:-5]
+
+                        event = _error_patterns.record_failure(
+                            failure_type=last_failure_type,
+                            error_text=last_error,
+                            fix_kind="pending",
+                            succeeded=False,
+                            iteration=iteration,
+                            turn_id=error_turn_id,
+                            model=self.llm.model,
+                        )
+                        if event is not None:
+                            turn_error_events.append(event)
+
+                        metadata = ModelMetadata(
+                            model_id=model_id,
+                            parent_model_id=base_model_id,
+                            prompt=user_message,
+                            cad_source=last_code,
+                            failure_type=FailureType.STATIC_LINT,
+                            failure_message=last_error,
+                            iteration=iteration,
+                            citations=citations,
+                            is_final=False,
+                            thread_id=thread_id,
+                            turn_index=turn_index,
+                        )
+                        self.storage.save_model_metadata(project_id, metadata)
+                        current_model_id = model_id
+
+                        await self._emit_status(
+                            "failed",
+                            f"Static lint failed: {lint_report.blocking_messages[0][:140]}",
+                            details=None,
+                            data={
+                                "iteration": iteration,
+                                "model_id": model_id,
+                                "failure_type": last_failure_type,
+                                "error_excerpt": last_error[:600],
+                                "outcome": "Will retry with a code-repair pass (no execution attempted).",
+                            },
+                        )
+                        continue
+
                 # ── Step B: Execute CadQuery ──────────────────────────────────
                 await self._emit_status("executing", "Running the geometry engine…",
                                       details=None,
@@ -2129,14 +2233,34 @@ class AgentOrchestrator:
                 "raw_response_preview": (critique_result.raw_response or "")[:1500],
             })
             if not critique_result.success:
+                # Vision parse failure used to be a quiet info-level message
+                # ("returned no usable feedback — continuing.") that gave no
+                # hint the verifier had effectively been skipped for this
+                # iteration. Surface it as a visible warning with the raw
+                # response preview so the user knows the deterministic
+                # plan-conformance check is the only remaining gate. We still
+                # return None — that preserves the existing routing where
+                # plan-conformance decides repair-vs-ship instead of the vision
+                # repair branch burning its budget on noise it can't act on.
                 await self._emit_status(
                     "critiquing",
-                    "Vision verifier returned no usable feedback — continuing.",
-                    details=None,
+                    "⚠️ Vision verifier returned no parseable JSON — plan-conformance "
+                    "is now the only acceptance gate for this iteration.",
+                    details=(
+                        "The vision model produced prose or malformed JSON that the "
+                        "parser couldn't recover. Vision-driven repair is skipped (an "
+                        "LLM without a signal to act on just thrashes); deterministic "
+                        "plan-conformance still runs and can trigger repair on bbox or "
+                        "rotation mismatches. To diagnose: see "
+                        "scratch/vision_raw_response.txt or switch VISION_MODEL to one "
+                        "with better JSON discipline."
+                    ),
                     data={
                         "iteration": iteration,
+                        "rationale": "A silent vision skip would let visual bugs ship if plan-conformance also passes; the warning makes the gap visible.",
                         "outcome": critique_result.message or "Verifier output could not be parsed.",
-                        "skipped": ["vision repair"],
+                        "skipped": ["vision-driven repair"],
+                        "raw_response_preview": (critique_result.raw_response or "")[:600],
                     },
                 )
                 return None
