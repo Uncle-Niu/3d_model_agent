@@ -7,11 +7,17 @@ Unit tests for the LLM service:
 
 import unittest
 
-from backend.domain.models import HardConstraints, SoftConstraints
+from backend.domain.models import (
+    DesignComponent,
+    HardConstraints,
+    Rotation,
+    SoftConstraints,
+)
 from backend.models.llm_service import (
     build_repair_prompt,
     build_repair_system_prompt,
     build_system_prompt,
+    build_vision_repair_prompt,
     detect_repair_deletion,
     extract_code_from_response,
     parse_design_plan,
@@ -461,6 +467,95 @@ class TestParseDesignPlan(unittest.TestCase):
 
         self.assertEqual(plan.summary, "Phone stand with a cable slot")
         self.assertEqual(plan.key_features, ["angled back support", "front lip"])
+
+
+class TestBuildVisionRepairPrompt(unittest.TestCase):
+    """Vision-repair prompt content.
+
+    The motivating regression: a backrest's rotation sign got flipped from
+    ``-15`` to ``+15`` between vision-repair iterations because the repair
+    prompt didn't surface the planner's resolved rotation. The repair LLM had
+    to re-derive the axis vector and chose wrong. The fix surfaces every
+    plan rotation as a paste-ready ``.rotate(...)`` snippet — the same shape
+    the generation prompt already uses.
+    """
+
+    SAMPLE_CODE = "import cadquery as cq\nresult = cq.Workplane('XY').box(10, 10, 10)"
+    SAMPLE_ISSUES = [
+        {
+            "severity": "error",
+            "issue_type": "geometry_error",
+            "description": "Backrest is floating above the base plate.",
+            "location_hint": "isometric view",
+        }
+    ]
+
+    def _build(self, **overrides):
+        kwargs = dict(
+            code=self.SAMPLE_CODE,
+            intent="iPhone holder",
+            iteration=2,
+            issues=self.SAMPLE_ISSUES,
+            repair_instructions="Union the backrest to the base.",
+            matches_intent=False,
+            overall_score=0.2,
+            confidence=0.95,
+        )
+        kwargs.update(overrides)
+        return build_vision_repair_prompt(**kwargs)
+
+    def test_omits_rotations_block_when_no_components(self):
+        prompt = self._build()
+        self.assertNotIn("Locked plan rotations", prompt)
+
+    def test_omits_rotations_block_when_no_component_has_rotation(self):
+        components = [
+            DesignComponent(name="base", description="base", primitive="box"),
+            DesignComponent(name="lip", description="front lip", primitive="box"),
+        ]
+        prompt = self._build(plan_components=components)
+        self.assertNotIn("Locked plan rotations", prompt)
+
+    def test_emits_rotation_snippet_for_tilted_component(self):
+        components = [
+            DesignComponent(name="base", description="base", primitive="box"),
+            DesignComponent(
+                name="backrest",
+                description="tilted panel",
+                primitive="box",
+                rotation=Rotation(axis="X", angle_deg=-15.0, intent="tilt backward"),
+            ),
+        ]
+        prompt = self._build(plan_components=components)
+        # The paste-ready snippet matches the generation-side convention:
+        # axis=X → (1,0,0), angle preserved with sign.
+        self.assertIn("Locked plan rotations", prompt)
+        self.assertIn("`backrest`", prompt)
+        self.assertIn(".rotate((0, 0, 0), (1, 0, 0), -15)", prompt)
+        # The sign-preservation guard is what closes the gap, so the prompt
+        # has to say "do not flip the sign" explicitly.
+        self.assertIn("flip the sign", prompt)
+
+    def test_preserves_existing_blocks(self):
+        # Adding the rotations block must not displace the key-features or
+        # issues blocks; those are what the repair LLM keys off.
+        components = [
+            DesignComponent(
+                name="backrest",
+                description="",
+                primitive="box",
+                rotation=Rotation(axis="X", angle_deg=-15.0),
+            ),
+        ]
+        prompt = self._build(
+            plan_components=components,
+            key_features=["180x100x10 mm flat base plate"],
+            plan_summary="iPhone desk cradle",
+        )
+        self.assertIn("Key features that must appear", prompt)
+        self.assertIn("Design plan (ground truth)", prompt)
+        self.assertIn("Issues to address", prompt)
+        self.assertIn("Locked plan rotations", prompt)
 
 
 if __name__ == "__main__":

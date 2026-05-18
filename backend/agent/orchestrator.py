@@ -1072,6 +1072,18 @@ class AgentOrchestrator:
         last_failure_type: Optional[str] = None
         last_geometry_stats: Dict = {}
         repair_notes: List[str] = []
+        # Best-so-far across the repair loop. A repair attempt that scores
+        # WORSE than an earlier iteration is a regression — the next pass
+        # should rebase on the prior best rather than compound the worse code,
+        # and when the budget runs out we should ship the best, not the last.
+        # Only updated when a real vision critique was produced (None vs 1.0
+        # default would otherwise mask "vision was unavailable" as a perfect
+        # score).
+        best_code: str = ""
+        best_vision_score: Optional[float] = None
+        best_model_id: Optional[str] = None
+        best_critique: Optional[CritiqueReport] = None
+        VISION_REGRESSION_MARGIN = 0.05
         # Per-turn history of failed execution attempts. Each entry captures
         # the failing source line (extracted from the traceback) and the
         # first significant line of the error. Passed into the next repair
@@ -1178,6 +1190,7 @@ class AgentOrchestrator:
                         confidence=last_critique.confidence,
                         plan_summary=plan.summary or "",
                         key_features=list(plan.key_features) if plan.key_features else None,
+                        plan_components=list(plan.components) if plan.components else None,
                     )
                     await self._emit_status("repairing",
                         f"Repairing for vision feedback (vision attempt {vision_repairs_used}/{self.MAX_VISION_REPAIR_ITERATIONS}) · `{model_id}`",
@@ -1721,17 +1734,105 @@ class AgentOrchestrator:
                     vision_score < self.VISION_SCORE_THRESHOLD or has_errors or intent_mismatch
                 )
 
+                # Track best-so-far across the repair loop. We only count
+                # iterations where a real vision critique was produced — the
+                # `vision_score = 1.0 if no critique` fallback above would
+                # otherwise let a vision-unavailable iteration masquerade as
+                # the best.
+                score_regressed = False
+                if critique is not None:
+                    if best_vision_score is None or vision_score > best_vision_score:
+                        best_code = last_code
+                        best_vision_score = vision_score
+                        best_model_id = model_id
+                        best_critique = critique
+                    elif vision_score < best_vision_score - VISION_REGRESSION_MARGIN:
+                        score_regressed = True
+                        await self._emit_status(
+                            "validating",
+                            f"Vision score regressed to {vision_score:.2f} (best {best_vision_score:.2f} "
+                            f"at `{best_model_id}`). Next repair will rebase on the prior best.",
+                            details=(
+                                "A repair attempt scored measurably worse than an earlier "
+                                "iteration. Continuing forward from worse code compounds the "
+                                "regression, so the next repair pass starts from the best "
+                                "baseline instead."
+                            ),
+                            data={
+                                "iteration": iteration,
+                                "rationale": "Avoids letting a worse iteration anchor the rest of the repair loop.",
+                                "best_model_id": best_model_id,
+                                "best_score": best_vision_score,
+                                "current_score": vision_score,
+                                "regression_margin": VISION_REGRESSION_MARGIN,
+                            },
+                        )
+                        repair_notes.append(
+                            f"Iteration {iteration} regressed (score {vision_score:.2f} < "
+                            f"best {best_vision_score:.2f} at `{best_model_id}`); rebased "
+                            f"next repair on the prior best."
+                        )
+
                 if needs_repair and vision_repairs_used < self.MAX_VISION_REPAIR_ITERATIONS:
-                    last_critique = critique
+                    # On regression: rebase the next repair on the best
+                    # baseline, attacking its remaining issues — instead of
+                    # building on the worse code we just produced.
+                    if score_regressed and best_code and best_critique is not None:
+                        last_code = best_code
+                        last_critique = best_critique
+                    else:
+                        last_critique = critique
                     await self._emit_debug("vision_repair_trigger",
                         f"Vision score {vision_score:.2f} below threshold — triggering "
                         f"repair ({vision_repairs_used}/{self.MAX_VISION_REPAIR_ITERATIONS} "
                         f"vision attempts used)")
                     continue
                 if needs_repair:
-                    # Vision budget exhausted — accept this iteration as the
-                    # final output rather than ship-nothing. Log it so the
-                    # user can see why we stopped repairing.
+                    # Vision budget exhausted. Prefer the best-scoring earlier
+                    # iteration when it's measurably better than the current
+                    # one (or when the current iteration has no real score,
+                    # which happens when vision was unavailable at the tail).
+                    current_score_known = critique is not None
+                    best_is_better = (
+                        best_model_id is not None
+                        and best_model_id != model_id
+                        and best_vision_score is not None
+                        and (
+                            (not current_score_known)
+                            or vision_score < best_vision_score - VISION_REGRESSION_MARGIN
+                        )
+                    )
+                    if best_is_better:
+                        await self._emit_debug(
+                            "shipping_best_baseline",
+                            f"Budget exhausted; shipping earlier `{best_model_id}` "
+                            f"(score {best_vision_score:.2f}) instead of `{model_id}` "
+                            f"(score {vision_score:.2f}).",
+                        )
+                        repair_notes.append(
+                            f"Vision budget exhausted; shipped earlier `{best_model_id}` "
+                            f"(score {best_vision_score:.2f}) instead of the latest attempt "
+                            f"(score {vision_score:.2f}) because it scored higher."
+                        )
+                        best_meta = self.storage.get_model_metadata(project_id, best_model_id)
+                        if best_meta is not None:
+                            best_meta.is_final = True
+                            self.storage.save_model_metadata(project_id, best_meta)
+                            response_text = self._build_final_response(
+                                best_model_id, iteration, exec_result, best_critique,
+                                best_vision_score, repair_notes,
+                            )
+                            self.storage.update_last_chat_thread_message(
+                                project_id, thread_id,
+                                ChatMessage(
+                                    role="assistant",
+                                    content=response_text,
+                                    model_id=best_model_id,
+                                    steps=self.current_steps,
+                                ),
+                            )
+                            self._schedule_summarization_safely(turn_error_events, turn_succeeded=True)
+                            return best_model_id
                     await self._emit_debug(
                         "vision_budget_exhausted",
                         f"Vision score {vision_score:.2f} still below threshold but "

@@ -186,6 +186,29 @@ def check_plan_conformance(
             )
             score = min(score, 0.4)
 
+    # ------------------------------------------------------------------
+    # 3. Disconnected-sub-shape check
+    # ------------------------------------------------------------------
+    # When the plan explicitly connects its components via `union`, the intent
+    # is a single fused part. Any result with >1 solid means at least one
+    # sub-shape didn't actually intersect the body it was supposed to join —
+    # the classic "floating backrest above the base plate" failure mode. We
+    # catch this independently of the bbox check: a tilted panel can sit in
+    # the right bounding box while being completely detached.
+    union_connections = sum(
+        1 for c in (plan.connections or [])
+        if (c.kind or "").strip().lower() == "union"
+    )
+    if union_connections >= 1 and measured_solids >= 2:
+        reasons.append(
+            f"Rendered model contains {measured_solids} disconnected solids; the plan "
+            f"calls for them to be fused via {union_connections} union connection(s). "
+            f"At least one component is floating instead of being joined to the body — "
+            f"verify each component's position so its bounding box actually overlaps "
+            f"the part it should union with."
+        )
+        score = min(score, 0.3)
+
     passed = len(reasons) == 0
     return ConformanceReport(
         passed=passed,

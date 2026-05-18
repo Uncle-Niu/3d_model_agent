@@ -390,6 +390,7 @@ def build_vision_repair_prompt(
     confidence: float,
     plan_summary: str = "",
     key_features: Optional[list[str]] = None,
+    plan_components: Optional[list["DesignComponent"]] = None,
 ) -> str:
     """Build the user prompt for a vision-driven repair.
 
@@ -404,6 +405,14 @@ def build_vision_repair_prompt(
     ``build_repair_prompt``'s ``error_message[:2000]`` slice, which silently
     chopped off the issues list and the repair instructions — leaving the LLM
     to "fix" the model with no idea what was actually wrong.
+
+    ``plan_components`` is optional but strongly recommended: when present,
+    every component that has a structured ``rotation`` is surfaced as a
+    paste-ready ``.rotate(...)`` snippet. The generation prompt already does
+    this so the first draft gets the axis vector right; the repair prompt did
+    NOT, which is how the sign of a backrest tilt got flipped between
+    iterations in a real run (the LLM rebuilt the rotation from scratch and
+    chose the wrong sign). Surfacing the locked rotation here closes that gap.
     """
     issues_text = "\n".join(
         f"- [{(it.get('severity') or 'info').upper()}] "
@@ -431,12 +440,30 @@ def build_vision_repair_prompt(
         bullets = "\n".join(f"- {f}" for f in key_features)
         features_block = f"\n## Key features that must appear in the result\n{bullets}\n"
 
+    rotations_block = ""
+    if plan_components:
+        rot_lines: list[str] = []
+        for c in plan_components:
+            if c.rotation is None:
+                continue
+            snippet = _format_rotation_for_prompt(c.rotation)
+            if snippet:
+                rot_lines.append(f"- `{c.name}`: {snippet}")
+        if rot_lines:
+            rotations_block = (
+                "\n## Locked plan rotations (PASTE VERBATIM if you touch any of these)\n"
+                "These rotation calls were resolved by the planner. Do NOT re-derive the "
+                "axis vector. Do NOT flip the sign of `angle_deg`. If your fix touches a "
+                "component listed below, copy its `.rotate(...)` call exactly as written:\n"
+                + "\n".join(rot_lines) + "\n"
+            )
+
     return f"""\
 The CAD code below executed successfully, but the rendered model failed visual verification on attempt {iteration}. This is NOT a Python error — the code runs, but the geometry is wrong. Modify the geometry to make every listed issue go away.
 
 ## User intent
 {intent}
-{plan_block}{features_block}
+{plan_block}{features_block}{rotations_block}
 ## Current code (the program ran without error)
 ```python
 {code}
