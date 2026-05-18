@@ -69,6 +69,12 @@ class GeometryAnalysis:
         """Convert to a flat dict for injection into vision/repair prompts."""
         d: dict = {}
         if self.bbox_x_mm is not None:
+            # Keep both machine-readable and human-readable bbox forms. The
+            # deterministic plan-conformance gate consumes the numeric fields;
+            # the vision prompt uses the formatted string.
+            d["bbox_x_mm"] = self.bbox_x_mm
+            d["bbox_y_mm"] = self.bbox_y_mm
+            d["bbox_z_mm"] = self.bbox_z_mm
             d["bounding_box"] = f"{self.bbox_x_mm:.1f} × {self.bbox_y_mm:.1f} × {self.bbox_z_mm:.1f} mm"
         if self.volume_mm3 is not None:
             d["volume"] = f"{self.volume_mm3:.1f} mm³ ({self.volume_mm3 / 1000:.2f} cm³)"

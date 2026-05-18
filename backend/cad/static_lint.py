@@ -260,6 +260,20 @@ def _format_canonical_rotate(
     return f".rotate(({_fmt(px)}, {_fmt(py)}, {_fmt(pz)}), ({_fmt(qx)}, {_fmt(qy)}, {_fmt(qz)}), {_fmt(angle_deg)})"
 
 
+def _call_chain_contains_method(node: ast.AST, method_name: str) -> bool:
+    """Return True if a fluent receiver chain contains ``.<method_name>(...)``."""
+    current: Optional[ast.AST] = node
+    while isinstance(current, ast.Call):
+        func = current.func
+        if isinstance(func, ast.Attribute):
+            if func.attr == method_name:
+                return True
+            current = func.value
+            continue
+        break
+    return False
+
+
 def _check_rotate_call(
     call: ast.Call,
     parent_stmt: Optional[ast.AST],
@@ -287,6 +301,57 @@ def _check_rotate_call(
         return None
     direction = (p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2])
     actual_axis = _classify_axis(direction)
+    var_name = _assignment_target_name(parent_stmt)
+    plan_rot = _find_matching_plan_rotation(var_name, plan_rotations)
+    if actual_axis is not None and plan_rot is not None:
+        expected_axis = plan_rot.axis.upper()
+        expected_angle = plan_rot.angle_deg
+        mismatches: list[str] = []
+        if actual_axis != expected_axis:
+            mismatches.append(
+                f"axis is {actual_axis} but the plan locks {expected_axis}"
+            )
+        if abs(angle - expected_angle) > 0.25:
+            mismatches.append(
+                f"angle is {angle:g} degrees but the plan locks {expected_angle:g} degrees"
+            )
+        if plan_rot.pivot is not None:
+            expected_pivot = tuple(float(v) for v in plan_rot.pivot)
+            if any(abs(a - b) > 1e-6 for a, b in zip(p1, expected_pivot)):
+                mismatches.append(
+                    f"pivot is ({p1[0]:g}, {p1[1]:g}, {p1[2]:g}) but the plan locks "
+                    f"({expected_pivot[0]:g}, {expected_pivot[1]:g}, {expected_pivot[2]:g})"
+                )
+        if _call_chain_contains_method(call.func.value, "translate") and plan_rot.pivot is None:
+            mismatches.append(
+                "the component is translated before rotation; for plan-locked local tilts, "
+                "rotate the component first, then apply the final translate so it does not "
+                "orbit around a world-space axis"
+            )
+        if mismatches:
+            suggestion = _format_canonical_rotate(
+                tuple(plan_rot.pivot) if plan_rot.pivot else p1,
+                expected_axis,
+                expected_angle,
+            )
+            msg = (
+                f"Axis-aligned `.rotate(...)` for `{var_name or 'unknown component'}` "
+                f"does not match the structured design-plan rotation: "
+                f"{'; '.join(mismatches)}. Copy the plan's rotation snippet verbatim "
+                f"and place it before the final `.translate(...)` unless the plan declares "
+                f"an explicit world-space pivot."
+            )
+            return (
+                LintFinding(
+                    line=getattr(call, "lineno", 0) or 0,
+                    code="rotate_plan_mismatch",
+                    severity="error",
+                    message=msg,
+                    suggested_fix=suggestion,
+                    autofix_applied=False,
+                ),
+                None,
+            )
     if actual_axis is not None:
         # Already axis-aligned — nothing to flag.
         return None

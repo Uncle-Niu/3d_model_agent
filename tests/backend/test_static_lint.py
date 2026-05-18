@@ -96,6 +96,77 @@ class TestRotateObliqueAxis(unittest.TestCase):
         self.assertEqual(report.findings, [])
         self.assertEqual(report.rewritten_source, source)
 
+    def test_plan_locked_rotation_wrong_angle_blocks_even_when_axis_aligned(self):
+        """A pure X-axis rotate can still be wrong if it flips or changes the
+        plan's signed angle. This should be caught before rendering."""
+        source = (
+            "import cadquery as cq\n"
+            "\n"
+            "backrest = (cq.Workplane('XY').box(120, 8, 120)\n"
+            "            .rotate((0, 0, 0), (1, 0, 0), 15))\n"
+            "result = backrest\n"
+        )
+        report = lint_cadquery_source(source, plan=_plan_with_backrest_rotation())
+        self.assertEqual(len(report.findings), 1)
+        finding = report.findings[0]
+        self.assertEqual(finding.code, "rotate_plan_mismatch")
+        self.assertTrue(report.has_blocking)
+        self.assertIn("angle is 15", finding.message)
+        self.assertIn("plan locks -15", finding.message)
+
+    def test_plan_locked_rotation_after_translate_blocks(self):
+        """Regression for the floating iPhone backrest: the axis and angle
+        were clean, but translating before rotating orbited the slab away
+        from the base instead of tilting a local panel into place."""
+        source = (
+            "import cadquery as cq\n"
+            "\n"
+            "backrest = (\n"
+            "    cq.Workplane('XY')\n"
+            "    .box(85, 110, 10)\n"
+            "    .translate((0, 0, 63))\n"
+            "    .rotate((0, 0, 8), (1, 0, 8), -15)\n"
+            ")\n"
+            "result = backrest\n"
+        )
+        report = lint_cadquery_source(source, plan=_plan_with_backrest_rotation())
+        self.assertEqual(len(report.findings), 1)
+        finding = report.findings[0]
+        self.assertEqual(finding.code, "rotate_plan_mismatch")
+        self.assertTrue(report.has_blocking)
+        self.assertIn("translated before rotation", finding.message)
+
+    def test_explicit_world_pivot_allows_translate_before_rotate(self):
+        """When the plan declares a pivot, rotating a pre-positioned part
+        around that world-space hinge can be intentional."""
+        plan = DesignPlan(
+            summary="hinged panel",
+            components=[
+                DesignComponent(
+                    name="backrest",
+                    description="tilted back panel",
+                    primitive="box",
+                    operation="union",
+                    rotation=Rotation(
+                        axis="X",
+                        angle_deg=-15.0,
+                        pivot=[0.0, 0.0, 8.0],
+                        intent="hinge around base top",
+                    ),
+                ),
+            ],
+        )
+        source = (
+            "import cadquery as cq\n"
+            "\n"
+            "backrest = (cq.Workplane('XY').box(85, 110, 10)\n"
+            "            .translate((0, 0, 63))\n"
+            "            .rotate((0, 0, 8), (1, 0, 8), -15))\n"
+            "result = backrest\n"
+        )
+        report = lint_cadquery_source(source, plan=plan)
+        self.assertEqual(report.findings, [])
+
     def test_dynamic_arguments_are_skipped(self):
         """When p1/p2 cannot be statically evaluated we must NOT flag — false
         positives here would burn LLM repair cycles on perfectly legitimate

@@ -90,6 +90,10 @@ class TestComputeGeometryAnalysis(unittest.TestCase):
         d = analysis.to_stats_dict()
         # Always-present keys
         self.assertIn("bounding_box", d)
+        self.assertIn("bbox_x_mm", d)
+        self.assertIn("bbox_y_mm", d)
+        self.assertIn("bbox_z_mm", d)
+        self.assertAlmostEqual(d["bbox_x_mm"], analysis.bbox_x_mm, places=3)
         self.assertIn("solid_count", d)
         self.assertIn("face_count", d)
         self.assertIn("is_closed_shell", d)

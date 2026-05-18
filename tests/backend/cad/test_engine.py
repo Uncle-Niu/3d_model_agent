@@ -488,6 +488,9 @@ class TestCadQueryPipeline(unittest.TestCase):
             self.assertIn("stl", result["files"])
             self.assertIn("glb", result["files"])
             self.assertTrue(Path(result["files"]["step"]).exists())
+            self.assertIn("bbox_x_mm", result["geometry_stats"])
+            self.assertIn("bbox_y_mm", result["geometry_stats"])
+            self.assertIn("bbox_z_mm", result["geometry_stats"])
 
     def test_file_size_constraint_violation(self):
         import tempfile
