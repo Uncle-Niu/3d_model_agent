@@ -27,6 +27,14 @@ class CadRecipe:
     cadquery_patterns: tuple[str, ...] = ()
     validation_rules: tuple[str, ...] = ()
     feature_keywords: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    # Words in the USER prompt (not the plan text) that gate recipe-wide
+    # requirements. The matcher already retrieves a recipe when ANY tag
+    # appears, but a broad tag like "holder" should not be enough to force
+    # every recipe-required feature on the plan. Recipes set this to the
+    # narrower set of words that actually justify their hard requirements:
+    # e.g. tray_or_organizer wants "tray/bin/drawer/organizer" before it
+    # insists on a cavity. Empty tuple = always gate (legacy behavior).
+    prompt_required_keywords: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -156,7 +164,12 @@ RECIPES: tuple[CadRecipe, ...] = (
     CadRecipe(
         recipe_id="tray_or_organizer",
         title="Tray / organizer / bin",
-        tags=("tray", "organizer", "holder", "bin", "drawer", "gridfinity", "compartment"),
+        tags=("tray", "organizer", "bin", "drawer", "gridfinity", "compartment", "container"),
+        # Cavity-required only fires when the prompt actually names a
+        # container-shape. The bare word "holder" is too broad — "phone
+        # holder for movies" is a stand, not a tray, and forcing a cavity
+        # produces a horizontal pocket instead of a tilted backrest.
+        prompt_required_keywords=("tray", "organizer", "bin", "drawer", "compartment", "container", "gridfinity", "cup", "cubby"),
         source_refs=(
             "cadquery-contrib examples: tray.py, hexagonal_drawers",
             "awesome-cadquery: cq-gridfinity boxes and drawer spacers",
@@ -185,7 +198,12 @@ RECIPES: tuple[CadRecipe, ...] = (
     CadRecipe(
         recipe_id="bracket_or_mount",
         title="Bracket / mount / support",
-        tags=("bracket", "mount", "holder", "support", "clip", "fixture"),
+        tags=("bracket", "mount", "support", "clip", "fixture"),
+        # Fastener-cuts and "mounting holes are required" only fire when the
+        # prompt actually implies attaching to something. A free-standing
+        # holder/stand has no parent surface — adding fastener holes to it is
+        # a worse failure than omitting them.
+        prompt_required_keywords=("bracket", "mount", "wall", "ceiling", "screw", "bolt", "fastener", "attach", "fix", "m3", "m4", "m5", "m6", "din"),
         source_refs=(
             "cadquery-contrib examples: 3D_Printer_Extruder_Support, Panel_with_Various_Holes",
             "build123d examples: pillow block, din rail, pegboard hook",
@@ -218,6 +236,10 @@ RECIPES: tuple[CadRecipe, ...] = (
         recipe_id="enclosure",
         title="Electronics enclosure / case",
         tags=("enclosure", "case", "cover", "lid", "electronics", "remote"),
+        # Enclosure-cavity-required only fires when the prompt actually
+        # implies enclosing something. "Case" alone is enough; a generic
+        # "holder" is not.
+        prompt_required_keywords=("enclosure", "case", "cover", "lid", "shell", "housing", "box", "chassis"),
         source_refs=(
             "cadquery-contrib examples: Parametric_Enclosure, Remote_Enclosure",
             "build123d examples: circuit board with holes",
@@ -435,17 +457,53 @@ def _feature_is_opted_out(feature: str, keywords: tuple[str, ...], opt_outs: set
     return any(any(p in word for p in opt_outs) for word in haystack)
 
 
-def validate_plan_against_recipes(plan: DesignPlan, cards: list[CadRecipe]) -> PlanQualityReport:
+def _prompt_satisfies_recipe(card: CadRecipe, user_message: str) -> bool:
+    """True if the user's prompt actually justifies enforcing this recipe's
+    hard requirements.
+
+    A recipe is *retrieved* on any tag match (so its prompt-context still
+    reaches the planner) but is only *gated against* the plan when the
+    prompt contains one of its narrower ``prompt_required_keywords``. This
+    avoids the historic failure where a generic word like "holder" matched
+    the tray recipe and forced the planner to add a cavity to what was
+    clearly a display stand.
+
+    Recipes without any ``prompt_required_keywords`` retain the legacy
+    always-gate behavior.
+    """
+    if not card.prompt_required_keywords:
+        return True
+    msg = (user_message or "").lower()
+    if not msg:
+        return True
+    msg_tokens = _tokens(user_message)
+    for kw in card.prompt_required_keywords:
+        kw_lc = kw.lower()
+        if kw_lc in msg_tokens or kw_lc in msg:
+            return True
+    return False
+
+
+def validate_plan_against_recipes(
+    plan: DesignPlan,
+    cards: list[CadRecipe],
+    user_message: str = "",
+) -> PlanQualityReport:
     """Check that the plan is detailed enough before code generation.
 
     Respects ``plan.feature_decisions``: if the planner explicitly marked a
     feature family as not needed (e.g. no mounting holes on a phone stand
     that simply sits flat on a desk), the corresponding required-feature
     check is suppressed and the plan is not gated on it.
-    """
-    if not cards:
-        return PlanQualityReport(is_sufficient=True)
 
+    Also respects ``card.prompt_required_keywords``: a recipe's hard
+    requirements only apply when the user prompt contains a word that
+    justifies them. This prevents broad tag matches (e.g. "holder" hitting
+    the tray recipe) from forcing irrelevant features onto stand-like
+    designs. ``user_message`` is the original user request — pass it
+    through so the gating decision can see the true intent rather than only
+    the planner-text echo.
+    """
     plan_text = _combined_plan_text(plan).lower()
     component_count = len(plan.components)
     key_feature_count = len(plan.key_features)
@@ -457,6 +515,13 @@ def validate_plan_against_recipes(plan: DesignPlan, cards: list[CadRecipe]) -> P
     # inspiration, but enforcing all of them can overconstrain broad words like
     # "holder" into unrelated requirements.
     for card in cards[:1]:
+        # Skip gating entirely when the prompt does not justify it. The
+        # recipe context still reaches the planner via the retrieved cards,
+        # so the planner can choose to include cavity/fastener features if
+        # they fit — but the plan won't be REJECTED for omitting them.
+        if not _prompt_satisfies_recipe(card, user_message):
+            continue
+
         for feature in card.required_features:
             keywords = card.feature_keywords.get(feature, ())
             if _feature_is_opted_out(feature, keywords, opt_outs):
@@ -475,8 +540,36 @@ def validate_plan_against_recipes(plan: DesignPlan, cards: list[CadRecipe]) -> P
             if not (has_keyword and has_cut_component):
                 missing_negative.append(feature)
 
-    if component_count < 3 and cards[0].recipe_id in {"bracket_or_mount", "enclosure"}:
-        missing.append("at least three named components/sub-shapes with dimensions")
+    if cards:
+        primary = cards[0]
+        if (
+            component_count < 3
+            and primary.recipe_id in {"bracket_or_mount", "enclosure"}
+            and _prompt_satisfies_recipe(primary, user_message)
+        ):
+            missing.append("at least three named components/sub-shapes with dimensions")
+
+    # Generic prose-vs-rotation consistency check. If a component description
+    # mentions a tilt/angle in prose but no structured <rotation> tag was
+    # emitted, the code generator will silently produce a vertical/horizontal
+    # part — the prose has no effect on geometry. This check applies to every
+    # product category, not just stands.
+    tilt_words = ("angle", "angled", "tilt", "tilted", "lean", "leaning",
+                   "recline", "reclined", "slant", "slanted", "pitched")
+    prose_tilt_without_rotation: list[str] = []
+    for component in plan.components:
+        desc = (component.description or "").lower()
+        name = (component.name or "")
+        if component.rotation is not None:
+            continue
+        if any(w in desc for w in tilt_words):
+            prose_tilt_without_rotation.append(name or "(unnamed)")
+    if prose_tilt_without_rotation:
+        missing.append(
+            "structured <rotation> tag for components whose description says they are "
+            f"angled/tilted/leaning: {', '.join(prose_tilt_without_rotation)}. "
+            "Prose-only tilt descriptions are ignored by the code generator."
+        )
 
     # Preserve order while removing duplicates.
     missing = list(dict.fromkeys(missing))

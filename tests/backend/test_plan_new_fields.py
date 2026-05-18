@@ -296,11 +296,59 @@ class TestRecipeGateHonorsFeatureDecisions(unittest.TestCase):
                 ),
             ],
         )
-        report = validate_plan_against_recipes(plan, [_bracket_recipe()])
+        # Pass an explicit bracket-prompt so the new prompt-gate keeps the
+        # fastener requirement active (otherwise the absence of a bracket
+        # keyword in user_message would short-circuit it and we'd miss the
+        # point of this test).
+        report = validate_plan_against_recipes(
+            plan,
+            [_bracket_recipe()],
+            user_message="wall mount bracket",
+        )
         joined = " ".join(report.missing_features) + " " + " ".join(report.missing_negative_space)
         self.assertNotIn("mounting holes", joined.lower())
         # The fastener-related negative-space feature should also be suppressed.
         self.assertNotIn("through holes", joined.lower())
+
+
+class TestExtendedPhysicalUseFields(unittest.TestCase):
+    """The planner template grew ``containment_strategy`` and ``pose_intent``
+    fields so the planner explicitly names how the held object is retained
+    against gravity and which components carry a structured tilt. Parser and
+    prompt-rendering must surface them so the downstream code generator and
+    the vision verifier can act on them. These tests pin those round-trips.
+    """
+
+    def test_parse_extended_physical_use_fields(self):
+        raw = """
+        <physical_use>
+          <orientation>rests on a desk</orientation>
+          <containment_strategy>front lip + side guides</containment_strategy>
+          <pose_intent>backrest tilts back 25 degrees around X axis</pose_intent>
+        </physical_use>
+        <design_plan>
+          <summary>stand</summary>
+        </design_plan>
+        """
+        plan = parse_design_plan(raw)
+        self.assertIsNotNone(plan.physical_use)
+        self.assertEqual(plan.physical_use.containment_strategy, "front lip + side guides")
+        self.assertIn("backrest", plan.physical_use.pose_intent)
+
+    def test_extended_physical_use_appears_in_prompt(self):
+        plan = DesignPlan(
+            summary="phone stand",
+            components=[DesignComponent(name="b", description="base", primitive="box")],
+            physical_use=PhysicalUse(
+                orientation="rests on a desk",
+                containment_strategy="front lip catches the phone bottom edge",
+                pose_intent="backrest leans back 25° around the X axis",
+            ),
+        )
+        text = plan_to_prompt_text(plan)
+        self.assertIn("Containment", text)
+        self.assertIn("Pose intent", text)
+        self.assertIn("front lip catches", text)
 
 
 if __name__ == "__main__":

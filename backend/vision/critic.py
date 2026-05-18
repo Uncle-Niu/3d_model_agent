@@ -78,12 +78,24 @@ GROUND TRUTH — every entry must be checked individually.
 4. NEW — Physical-use sanity check: would this part actually work in real life?
    - Stability: will it tip over? Is the base wider than the top is tall for tall parts?
    - Proportions: are the visible features sized sensibly relative to the whole part?
-   - Contact patch: when sitting on a surface, is there a flat region that touches?
+   - Contact patch: when sitting on a surface, is there a single CONTINUOUS flat region
+     at the lowest Z that spans most of the footprint? If any geometry protrudes BELOW
+     that region (e.g. a backrest whose bottom is below the base plate), the part will
+     not sit flat — that is a `weak_contact_patch` error.
    - Load path: do load-bearing sections look strong enough, or worryingly thin?
    - Ergonomics: if a human interacts with it, does the interaction surface look usable?
+   - Containment under gravity: when the part holds another object, look for the
+     anti-slip feature the plan promises (lip, clip, friction pad, snap, magnet,
+     pocket). A held object on a tilted surface with no retention is a
+     `missing_feature` error — gravity will pull it off.
    The "Real-world use" section of the plan (if provided) describes the intended
    physical behavior — verify the rendered geometry matches it.
-5. Only mark `matches_intent=true` if the result looks like the plan AND no required
+5. NEW — Tilt verification: if the plan locks a `<rotation>` on any component
+   (e.g. "backrest tilts -45° around X"), inspect the right/iso views and confirm
+   the component is actually tilted by approximately that angle. A backrest the
+   plan says leans -45° but appears vertical (90°) or horizontal (0°) is a
+   `wrong_shape` error — the rotation was not applied in the generated code.
+6. Only mark `matches_intent=true` if the result looks like the plan AND no required
    feature is missing AND no major stability/proportion concern is visible.
 
 ## Output (STRICT)
@@ -153,13 +165,47 @@ def _build_vision_user_prompt(
         if plan.overall_dimensions_mm:
             x, y, z = plan.overall_dimensions_mm
             parts.append(f"**Target size:** {x:.1f} × {y:.1f} × {z:.1f} mm")
+        # Surface the physical-use intent so the critic can verify gravity /
+        # contact / tilt / anti-slip behavior — not just feature presence.
+        pu = getattr(plan, "physical_use", None)
+        if pu and any([
+            pu.orientation, pu.contact_surfaces, pu.applied_forces,
+            pu.containment_strategy, pu.pose_intent, pu.use_cycle,
+        ]):
+            parts.append("**Real-world use (verify the geometry actually behaves this way):**")
+            if pu.orientation:
+                parts.append(f"- Orientation: {pu.orientation}")
+            if pu.contact_surfaces:
+                parts.append(f"- Contact surfaces: {pu.contact_surfaces}")
+            if pu.applied_forces:
+                parts.append(f"- Applied forces: {pu.applied_forces}")
+            if pu.containment_strategy:
+                parts.append(f"- Containment / anti-slip: {pu.containment_strategy}")
+            if pu.pose_intent:
+                parts.append(f"- Pose intent: {pu.pose_intent}")
         if plan.components:
             parts.append("**Expected components:**")
             for c in plan.components:
                 dims = ", ".join(f"{k}={v}" for k, v in c.dimensions.items())
                 pos = f" at {c.position}" if c.position else ""
                 op = f" [{c.operation}]" if c.operation else ""
-                parts.append(f"- `{c.name}`{op}: {c.primitive} ({dims}){pos} — {c.description}")
+                rot = ""
+                if c.rotation is not None:
+                    rot = f" [tilt: {c.rotation.axis} axis, {c.rotation.angle_deg:g}°]"
+                parts.append(f"- `{c.name}`{op}{rot}: {c.primitive} ({dims}){pos} — {c.description}")
+        # Explicitly enumerate every locked rotation so the critic doesn't
+        # have to scan all the component bullets to verify tilt-vs-render.
+        locked_rotations = [c for c in (plan.components or []) if c.rotation is not None]
+        if locked_rotations:
+            parts.append("**Locked rotations — verify these are visible in the render:**")
+            for c in locked_rotations:
+                parts.append(
+                    f"- `{c.name}` should be tilted around the {c.rotation.axis} axis "
+                    f"by {c.rotation.angle_deg:g}°"
+                    + (f" ({c.rotation.intent})" if c.rotation.intent else "")
+                    + ". If the rendered component appears axis-aligned (0° or 90°) "
+                    "instead of tilted, this is a `wrong_shape` error."
+                )
         if plan.key_features:
             parts.append("**Key features checklist — verify EACH explicitly:**")
             for f in plan.key_features:

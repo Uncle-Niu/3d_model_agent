@@ -161,6 +161,13 @@ class PhysicalUse(BaseModel):
     Captured so the planner explicitly considers gravity, contact, applied
     forces, and how the object is actually used — the most common cause of
     naive output is jumping straight to geometry without this step.
+
+    Newer fields (``containment_strategy``, ``pose_intent``) are optional
+    additions — plans that pre-date them still parse fine. They exist
+    because the original physical_use block left the planner free to say
+    "the phone sits at a comfortable viewing angle" without ever naming
+    the angle, the retention feature that resists gravity, or which
+    component actually carries the tilt as a structured rotation.
     """
     orientation: str = ""
     contact_surfaces: str = ""
@@ -168,6 +175,16 @@ class PhysicalUse(BaseModel):
     use_cycle: str = ""
     ergonomic_notes: str = ""
     mating_object: str = ""
+    # How the held / mating / supported object is kept in place under the
+    # applied forces (front lip, snap clip, friction pad, magnet, screw,
+    # gravity into a pocket, etc.). "It just rests there" is only valid
+    # when contact is horizontal and there is no lateral force component.
+    containment_strategy: str = ""
+    # If any component should be tilted/leaned/reclined, named here with
+    # angle + axis. The corresponding component MUST also emit a
+    # structured <rotation> tag — prose-only pose descriptions have no
+    # effect on the generated geometry.
+    pose_intent: str = ""
 
 
 class DesignPlan(BaseModel):

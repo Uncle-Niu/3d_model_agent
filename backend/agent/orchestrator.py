@@ -937,7 +937,7 @@ class AgentOrchestrator:
             },
         )
 
-        quality_report = validate_plan_against_recipes(plan, recipe_cards)
+        quality_report = validate_plan_against_recipes(plan, recipe_cards, user_message=user_message)
         if not quality_report.is_sufficient:
             rejected_plan_text = plan_to_prompt_text(plan) or plan.raw_text
             plan_repair_feedback = (
@@ -992,7 +992,7 @@ class AgentOrchestrator:
                     soft_constraints=config.soft_constraints,
                     on_chunk=_plan_chunk,
                 )
-                quality_report = validate_plan_against_recipes(plan, recipe_cards)
+                quality_report = validate_plan_against_recipes(plan, recipe_cards, user_message=user_message)
             except LLMBackendUnavailable as e:
                 await self._handle_backend_unavailable(e, stage="plan_repair")
                 raise

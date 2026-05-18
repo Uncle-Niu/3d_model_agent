@@ -35,6 +35,21 @@ _NON_SOLID_OPS = {"fillet", "chamfer", "shell"}
 # right count if the generator kept them separate".
 SOLID_COUNT_MIN_FRACTION = 0.5
 
+# A part meant to sit on a surface should carry most of its mass low. The
+# center of mass should be in the lower half of bbox_z; anything above this
+# fraction is top-heavy and likely to tip in real use. Tuned so a plate with
+# a moderate vertical feature (typical of stands) still passes, but a vertical
+# wall whose base is small or whose body extends below the floor will fail.
+TOP_HEAVY_COM_Z_FRACTION = 0.62
+# Words in physical_use.orientation that indicate the part is supposed to
+# rest on a horizontal surface. Only then does the top-heavy check apply —
+# a wall-mount bracket has its own load path and the CoM check is meaningless.
+_RESTS_ON_SURFACE_WORDS = (
+    "desk", "table", "floor", "ground", "shelf", "counter", "benchtop", "bench",
+    "rest", "rests", "sit", "sits", "stand", "stands", "stand on", "set on",
+    "place on", "placed on",
+)
+
 
 @dataclass
 class ConformanceReport:
@@ -208,6 +223,50 @@ def check_plan_conformance(
             f"the part it should union with."
         )
         score = min(score, 0.3)
+
+    # ------------------------------------------------------------------
+    # 4. Top-heavy / floor-alignment check (only when the plan says the part
+    #    rests on a horizontal surface)
+    # ------------------------------------------------------------------
+    # Generic across product categories: applies to anything the planner
+    # described as sitting on a desk/table/shelf. Catches the real failure
+    # where the LLM centers a backrest at z=0 so half of it extends below
+    # the base plate, leaving no flat contact patch — independent of bbox
+    # match. Skipped silently for wall-mount, hanging, or hand-held parts.
+    pu = plan.physical_use
+    orientation_text = (getattr(pu, "orientation", "") or "").lower() if pu else ""
+    contact_text = (getattr(pu, "contact_surfaces", "") or "").lower() if pu else ""
+    rests_on_surface = any(
+        w in orientation_text or w in contact_text
+        for w in _RESTS_ON_SURFACE_WORDS
+    )
+    com_z = geometry_stats.get("center_of_mass_z")
+    z_min = geometry_stats.get("bbox_z_min_mm")
+    z_max = geometry_stats.get("bbox_z_max_mm")
+    if (
+        rests_on_surface
+        and com_z is not None
+        and z_min is not None
+        and z_max is not None
+        and z_max > z_min
+    ):
+        # CoM as a fraction of bbox_z, measured from the part's actual
+        # bottom face. Works for parts placed at z=0, parts centered at
+        # z=0, and parts translated arbitrarily — we just measure relative
+        # to bbox_z_min. >TOP_HEAVY_COM_Z_FRACTION means the mass is too
+        # high to be a stable desk part.
+        com_fraction = (com_z - z_min) / (z_max - z_min)
+        if com_fraction > TOP_HEAVY_COM_Z_FRACTION:
+            reasons.append(
+                f"Plan describes a part that rests on a horizontal surface, but "
+                f"the rendered center of mass sits {com_fraction*100:.0f}% up the "
+                f"part's height (above the {TOP_HEAVY_COM_Z_FRACTION*100:.0f}% "
+                f"top-heavy threshold). The part will tip or has tall geometry "
+                f"sitting above a too-small base. Ensure the bottom of EVERY "
+                f"component is aligned to the same floor Z and the footprint is "
+                f"wider than the part is tall."
+            )
+            score = min(score, 0.4)
 
     passed = len(reasons) == 0
     return ConformanceReport(

@@ -147,6 +147,11 @@ When the plan provides a structured `rotation:` line under a component, it inclu
 - **Print orientation**: Design assuming the model prints flat on the XY build plate (Z = up)
 - **No thin pins**: Standalone pins/posts < 2mm diameter will break — make them thicker
 - **Boolean correctness**: After cut/union operations verify the result is a solid
+- **Floor alignment (CRITICAL for any part that sits on a surface)**: `cq.Workplane("XY").box(W, D, H)` is centered at the ORIGIN, so it extends from `-H/2` to `+H/2` in Z — *half of it is below z=0*. When a design sits on a desk/table, the bottom of EVERY solid must share the same floor Z; nothing protrudes below. Two safe patterns:
+  - Place the base at the floor: `base = cq.Workplane("XY").box(W, D, base_t).translate((0, 0, base_t/2))` (bottom now at z=0).
+  - Stack other parts on top: `wall = cq.Workplane("XY").box(W, t, H).translate((0, y_offset, base_t + H/2))` (bottom of wall at z=base_t, sitting on the base).
+  Skipping the translate is the #1 cause of "backrest sticks down through the desk" failures.
+- **Tilt placement**: When a component has a plan `.rotate(...)`, apply the rotation BEFORE the final `.translate(...)` that lifts it onto the base. Rotating after translating spins the whole part around the world origin and can push geometry below the floor again. Order: build at origin → rotate → translate up.
 
 ## Hard Constraints (validation will fail if violated)
 - Maximum part size: {hard_constraints.max_x_mm} × {hard_constraints.max_y_mm} × {hard_constraints.max_z_mm} mm
@@ -622,6 +627,9 @@ Axis-vector check: `(p2 - p1)` must have exactly one nonzero component. If the d
 - Minimum wall thickness: {hc.min_wall_thickness_mm} mm
 - Material: {sc.material}; max overhang {sc.overhang_angle_max}°
 
+## Floor-alignment reminder (only if your fix touches part placement)
+`cq.Workplane("XY").box(W, D, H)` is centered at the origin — bottom at -H/2, top at +H/2. For any part that sits on a desk/table, translate every solid up by half its height (or onto the base) so the bottom is at z=0. If you are moving a component, make sure the rotation is applied BEFORE the lift translate.
+
 {get_api_reference()}
 """
 
@@ -864,9 +872,11 @@ class LLMService:
             "4. Finally, output a single `<design_plan>` XML block with this exact schema. DO NOT output JSON:\n"
             "```xml\n"
             "<physical_use>\n"
-            "  <orientation>How the part sits in normal use — which face is the bottom under gravity?</orientation>\n"
-            "  <contact_surfaces>What the part touches in use (table, wall, hand, the object it holds)</contact_surfaces>\n"
-            "  <applied_forces>Where loads come from and roughly how big (e.g. 200g phone pulling forward on the holder lip)</applied_forces>\n"
+            "  <orientation>How the part sits in normal use — which face is the bottom under gravity? If it rests on a desk/table/floor, say so explicitly here.</orientation>\n"
+            "  <contact_surfaces>What the part touches in use (table, wall, hand, the object it holds). For a part that sits on a surface, name the flat contact face and its approximate footprint in mm — every other component MUST stay above that face's Z height.</contact_surfaces>\n"
+            "  <applied_forces>Where loads come from and roughly how big (e.g. 200g phone pulling forward on the holder lip). Decompose into the dominant directions (down, forward/back, sideways) so you can decide which features resist them.</applied_forces>\n"
+            "  <containment_strategy>How the held / mating / supported object is kept in place under those forces. Name the actual feature: front lip, side guides, snap clip, friction pad, magnet, screws, gravity into a pocket, etc. \"It just rests there\" is only acceptable when the contact face is horizontal and there is no forward/sideways force component.</containment_strategy>\n"
+            "  <pose_intent>If any component is meant to be tilted, leaned, reclined, or otherwise rotated away from axis-aligned — name the component AND state the angle in degrees from horizontal or vertical AND the axis it tilts around. This is the ONLY place prose-style angle descriptions count; the actual code generator reads the structured &lt;rotation&gt; tags on each component, so whatever you say here you MUST also emit as a &lt;rotation&gt; tag on the relevant component below. Leave empty if nothing tilts.</pose_intent>\n"
             "  <use_cycle>How a user interacts with it (place once, insert/remove repeatedly, screw down, etc.)</use_cycle>\n"
             "  <ergonomic_notes>Any human-scale considerations: graspable, finger clearance, visibility</ergonomic_notes>\n"
             "  <mating_object>If holding/mounting/joining something, describe its key dimensions and clearances</mating_object>\n"
@@ -948,6 +958,11 @@ class LLMService:
             "Rotating around X tilts forward/backward, around Y tilts left/right, around Z spins/yaws. "
             "Pick ONE axis — compound rotations should be decomposed into successive single-axis steps. "
             "If the part does not rotate, omit the `<rotation>` tag entirely; do NOT emit a zero-angle placeholder.\n"
+            "- **Prose-vs-structure parity (CRITICAL):** Words like \"angled\", \"tilted\", \"leaning\", \"reclined\", \"slanted\" in a "
+            "component description have NO effect on the generated geometry. The code generator only reads structured `<rotation>` tags. "
+            "If a component's description names a tilt, you MUST also emit a `<rotation>` tag on that same component. The plan quality "
+            "gate rejects any plan that describes a tilt in prose without the corresponding structured tag.\n"
+            "- **Surface-resting designs:** If the part is meant to sit on a desk/table/floor (state this in `<physical_use>` / `<orientation>`), the bottom of EVERY component must share the same floor Z. Nothing should protrude below the base. List the base/footprint component first and translate every other component to z ≥ base_top. A backrest centered at z=0 will extend below the floor — explicitly translate it up.\n"
         )
 
         user_parts = []
@@ -1217,9 +1232,12 @@ def _parse_physical_use_block(content: str) -> Optional[PhysicalUse]:
         use_cycle=_grab("use_cycle"),
         ergonomic_notes=_grab("ergonomic_notes"),
         mating_object=_grab("mating_object"),
+        containment_strategy=_grab("containment_strategy"),
+        pose_intent=_grab("pose_intent"),
     )
     if not any([pu.orientation, pu.contact_surfaces, pu.applied_forces,
-                pu.use_cycle, pu.ergonomic_notes, pu.mating_object]):
+                pu.use_cycle, pu.ergonomic_notes, pu.mating_object,
+                pu.containment_strategy, pu.pose_intent]):
         return None
     return pu
 
@@ -1537,7 +1555,8 @@ def plan_to_prompt_text(plan: DesignPlan) -> str:
 
     pu = plan.physical_use
     if pu and any([pu.orientation, pu.contact_surfaces, pu.applied_forces,
-                   pu.use_cycle, pu.ergonomic_notes, pu.mating_object]):
+                   pu.use_cycle, pu.ergonomic_notes, pu.mating_object,
+                   pu.containment_strategy, pu.pose_intent]):
         lines.append("**Real-world use (design must satisfy these):**")
         if pu.orientation:
             lines.append(f"- Orientation under gravity: {pu.orientation}")
@@ -1545,6 +1564,10 @@ def plan_to_prompt_text(plan: DesignPlan) -> str:
             lines.append(f"- Contact surfaces: {pu.contact_surfaces}")
         if pu.applied_forces:
             lines.append(f"- Applied forces: {pu.applied_forces}")
+        if pu.containment_strategy:
+            lines.append(f"- Containment / anti-slip strategy: {pu.containment_strategy}")
+        if pu.pose_intent:
+            lines.append(f"- Pose intent (tilt/lean): {pu.pose_intent}")
         if pu.use_cycle:
             lines.append(f"- Use cycle: {pu.use_cycle}")
         if pu.ergonomic_notes:

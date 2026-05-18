@@ -32,10 +32,17 @@ from ..domain.models import (
 class GeometryAnalysis:
     """Measurements extracted from a CadQuery shape."""
 
-    # Bounding box
+    # Bounding box (extents)
     bbox_x_mm: Optional[float] = None
     bbox_y_mm: Optional[float] = None
     bbox_z_mm: Optional[float] = None
+    # Absolute bbox min/max in the model's own coordinate frame. Needed so
+    # downstream stability checks can decide whether geometry sits on the
+    # floor (z_min ≈ 0) or extends below it. ``bbox_*_mm`` only describes
+    # extent, which can't distinguish "tall on top of base" from "tall
+    # centered around z=0" — only the absolute z_min does.
+    bbox_z_min_mm: Optional[float] = None
+    bbox_z_max_mm: Optional[float] = None
 
     # Volume & area
     volume_mm3: Optional[float] = None
@@ -90,6 +97,16 @@ class GeometryAnalysis:
         d["tiny_face_count"] = self.tiny_face_count
         d["sharp_corner_count"] = self.sharp_corner_count
         d["thin_pin_count"] = self.thin_pin_count
+        if self.bbox_z_min_mm is not None:
+            d["bbox_z_min_mm"] = self.bbox_z_min_mm
+        if self.bbox_z_max_mm is not None:
+            d["bbox_z_max_mm"] = self.bbox_z_max_mm
+        if self.center_of_mass_x is not None:
+            d["center_of_mass_x"] = self.center_of_mass_x
+        if self.center_of_mass_y is not None:
+            d["center_of_mass_y"] = self.center_of_mass_y
+        if self.center_of_mass_z is not None:
+            d["center_of_mass_z"] = self.center_of_mass_z
         return d
 
 
@@ -376,6 +393,8 @@ def compute_geometry_analysis(shape: cq.Workplane) -> GeometryAnalysis:
         analysis.bbox_x_mm = round(bb.xmax - bb.xmin, 3)
         analysis.bbox_y_mm = round(bb.ymax - bb.ymin, 3)
         analysis.bbox_z_mm = round(bb.zmax - bb.zmin, 3)
+        analysis.bbox_z_min_mm = round(bb.zmin, 3)
+        analysis.bbox_z_max_mm = round(bb.zmax, 3)
     except Exception:
         pass
 
