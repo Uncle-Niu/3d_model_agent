@@ -1,3 +1,0 @@
-[ws] connecting: ws://localhost:8000/ws/20260519-030549-60765f05?thread_id=20260519-030554-047ae4f5
-[ws] sent chat_message (55 chars)
-[   527s] REPAIR captured: kind=execution iter=2 prior_block=False fillet_hint=True structural=False

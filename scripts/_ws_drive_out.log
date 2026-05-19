@@ -1,3 +1,0 @@
-[ws] connecting: ws://localhost:8000/ws/20260517-052822-cbf57006?thread_id=20260517-052825-dd5c1122
-[ws] sent chat_message (64 chars)
-[ws] disconnected after 376s: no close frame received or sent

@@ -18,6 +18,10 @@ frontend/dist/
 data/
 scratch/
 
+# Local agent files and logs
+.claude/
+*.log
+
 # Environment
 .env
 

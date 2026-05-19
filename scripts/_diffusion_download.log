@@ -1,19 +1,0 @@
-
-=== sdxl_base_1.0 (stabilityai/stable-diffusion-xl-base-1.0) ===
-    purpose: Text->image reference renders. Good general quality, well-supported by diffusers.
-    target:  D:\workspace\3d_model_agent\data\diffusion_models\sdxl_base_1.0
-Fetching 21 files:   0%|          | 0/21 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
-Fetching 21 files:   5%|4         | 1/21 [00:00<00:06,  3.14it/s]Fetching 21 files:  19%|#9        | 4/21 [00:37<02:53, 10.19s/it]Fetching 21 files:  29%|##8       | 6/21 [01:25<04:03, 16.24s/it]Fetching 21 files:  76%|#######6  | 16/21 [01:38<00:24,  4.87s/it]Fetching 21 files: 100%|##########| 21/21 [01:38<00:00,  4.67s/it]
-    OK in 98s
-
-=== sdxl_turbo (stabilityai/sdxl-turbo) ===
-    purpose: Same architecture as SDXL but converges in 1-4 steps. Use during planning when latency matters more than fidelity.
-    target:  D:\workspace\3d_model_agent\data\diffusion_models\sdxl_turbo
-Fetching 20 files:   0%|          | 0/20 [00:00<?, ?it/s]Fetching 20 files:   5%|5         | 1/20 [00:00<00:03,  5.49it/s]Fetching 20 files:  15%|#5        | 3/20 [00:00<00:01, 10.40it/s]Fetching 20 files:  15%|#5        | 3/20 [00:11<00:01, 10.40it/s]Fetching 20 files:  20%|##        | 4/20 [00:48<04:27, 16.73s/it]Fetching 20 files:  30%|###       | 6/20 [00:51<02:08,  9.16s/it]Fetching 20 files:  80%|########  | 16/20 [01:38<00:22,  5.67s/it]Fetching 20 files: 100%|##########| 20/20 [01:38<00:00,  4.92s/it]
-    OK in 99s
-
-=== stable_zero123 (stabilityai/stable-zero123) ===
-    purpose: Single-image -> novel-view renderer. Feed it one front view, get back front/side/top/iso of the same object. Use for multi-angle reference images.
-    target:  D:\workspace\3d_model_agent\data\diffusion_models\stable_zero123
-Fetching 2 files:   0%|          | 0/2 [00:00<?, ?it/s]Fetching 2 files:  50%|#####     | 1/2 [03:41<03:41, 221.11s/it]Fetching 2 files: 100%|##########| 2/2 [03:41<00:00, 110.56s/it]
-    OK in 221s
