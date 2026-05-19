@@ -1,0 +1,10 @@
+{
+  "repair_attempt": {
+    "iteration": 2,
+    "kind": "execution",
+    "has_prior_block": false,
+    "has_fillet_hint": true,
+    "has_structural_demand": false,
+    "user_prompt_len": 3868
+  }
+}
