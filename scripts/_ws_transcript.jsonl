@@ -11070,3 +11070,339 @@
 {"type": "reasoning_chunk", "channel": "planning", "content": " 6"}
 {"type": "reasoning_chunk", "channel": "planning", "content": ")."}
 {"type": "reasoning_chunk", "channel": "planning", "content": " Slo"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "pe"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " connects"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " ("}
+{"type": "reasoning_chunk", "channel": "planning", "content": "Y"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "="}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ","}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Z"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "="}
+{"type": "reasoning_chunk", "channel": "planning", "content": "1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ")"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " to"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " ("}
+{"type": "reasoning_chunk", "channel": "planning", "content": "Y"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "="}
+{"type": "reasoning_chunk", "channel": "planning", "content": "2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ","}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Z"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "="}
+{"type": "reasoning_chunk", "channel": "planning", "content": "6"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ")."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Angle"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " ="}
+{"type": "reasoning_chunk", "channel": "planning", "content": " atan"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "(("}
+{"type": "reasoning_chunk", "channel": "planning", "content": "1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "-"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "6"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ")/"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ")"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " ="}
+{"type": "reasoning_chunk", "channel": "planning", "content": " atan"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "("}
+{"type": "reasoning_chunk", "channel": "planning", "content": "1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "4"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "/"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ")"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " ="}
+{"type": "reasoning_chunk", "channel": "planning", "content": " atan"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "("}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "7"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ")"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " \u2248"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "9"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": "6"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "6"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "\u00b0."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Close"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " enough"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " to"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 3"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "\u00b0."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " I"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "'ll"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " adjust"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " back"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " height"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " to"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " to"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " get"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " exactly"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 3"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "\u00b0."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " ("}
+{"type": "reasoning_chunk", "channel": "planning", "content": "1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "-"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "6"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ")/"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " ="}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "7"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "7"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " ->"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "9"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": "9"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "9"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "\u00b0."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Perfect"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": "\n   -"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Gus"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "sets"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ":"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Connect"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " back"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "plate"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " ("}
+{"type": "reasoning_chunk", "channel": "planning", "content": "Y"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "="}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ")"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " to"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " tray"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " base"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Tri"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "angular"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " profile"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " in"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Y"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "Z"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " plane"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Base"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " at"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Y"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "="}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ","}
+{"type": "reasoning_chunk", "channel": "planning", "content": " height"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Tip"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " at"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Y"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "="}
+{"type": "reasoning_chunk", "channel": "planning", "content": "4"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " ("}
+{"type": "reasoning_chunk", "channel": "planning", "content": "4"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "mm"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " deep"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "),"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " height"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Thickness"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "mm"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " ("}
+{"type": "reasoning_chunk", "channel": "planning", "content": "X"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " direction"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ")."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Positioned"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " at"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " X"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "="}
+{"type": "reasoning_chunk", "channel": "planning", "content": "\u00b1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": "\n   -"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " C"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "avity"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " cut"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ":"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " R"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "ecess"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "ed"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " area"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " on"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " top"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " surface"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Depth"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 3"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "mm"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Dimensions"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "8"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "x"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "8"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Center"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "ed"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": "\n   -"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Front"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " lip"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ":"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " At"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Y"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "="}
+{"type": "reasoning_chunk", "channel": "planning", "content": "2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Height"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "mm"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " above"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " tray"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " surface"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Tray"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " surface"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " at"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Y"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "="}
+{"type": "reasoning_chunk", "channel": "planning", "content": "2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " is"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Z"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "="}
+{"type": "reasoning_chunk", "channel": "planning", "content": "6"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " So"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " lip"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " goes"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " from"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Z"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "="}
+{"type": "reasoning_chunk", "channel": "planning", "content": "6"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " to"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Z"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "="}
+{"type": "reasoning_chunk", "channel": "planning", "content": "1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "8"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Thickness"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 6"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "mm"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " ("}
+{"type": "reasoning_chunk", "channel": "planning", "content": "Y"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ":"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " to"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ")."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Width"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 3"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": "\n   -"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Side"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " walls"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ":"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " At"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " X"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "="}
+{"type": "reasoning_chunk", "channel": "planning", "content": "\u00b1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "8"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " ("}
+{"type": "reasoning_chunk", "channel": "planning", "content": "since"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " tray"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " is"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 3"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "2"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " wide"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ","}
+{"type": "reasoning_chunk", "channel": "planning", "content": " walls"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " are"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 6"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "mm"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " thick"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ","}
+{"type": "reasoning_chunk", "channel": "planning", "content": " so"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " inner"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " edge"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " at"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " \u00b1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "5"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ")."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Height"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " 1"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "0"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "mm"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " above"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " tray"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " surface"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Tray"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " surface"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " slope"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " means"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " wall"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " top"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " follows"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " slope"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " I"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "'ll"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " model"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " them"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " as"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " boxes"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " that"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " follow"}
