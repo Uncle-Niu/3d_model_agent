@@ -1074,10 +1074,12 @@ class LLMService:
         planning_timeout_s = float(os.getenv("LLM_PLAN_TIMEOUT_S", "360"))
         # Generous budget for the visible-content channel — the structured plan
         # is emitted FIRST so even a heavily truncated response now lands the
-        # important content, but a complete plan for a 6-component assembly
-        # plus physical_use/feature_decisions can still run ~5-7k content
-        # tokens. Env-overridable for very large designs.
-        plan_max_tokens = int(os.getenv("LLM_PLAN_MAX_TOKENS", "12288"))
+        # important content. Observed usage on a 10-component VESA-tray plan
+        # was ~2.6k content tokens + ~4.7k reasoning tokens; the 32k default
+        # gives ~4x headroom for large assemblies whose reasoning channel runs
+        # 10k+ tokens. Env-overridable so deployments can lower (for cheaper
+        # backends) or raise (for very complex multi-part designs).
+        plan_max_tokens = int(os.getenv("LLM_PLAN_MAX_TOKENS", "32768"))
 
         async def _stream_plan_once() -> None:
             nonlocal full_content, full_reasoning
