@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -29,7 +30,8 @@ SUMMARY = Path(__file__).parent / "_ws_summary.txt"
 
 
 async def drive(project_id: str, thread_id: str, prompt: str, *, timeout_s: float = 3600) -> int:
-    url = f"ws://localhost:8000/ws/{project_id}?thread_id={thread_id}"
+    ws_base = os.environ.get("BACKEND_WS_BASE", "ws://localhost:8000").rstrip("/")
+    url = f"{ws_base}/ws/{project_id}?thread_id={thread_id}"
     print(f"[ws] connecting: {url}", flush=True)
     start = time.time()
 
@@ -126,5 +128,5 @@ if __name__ == "__main__":
     if len(sys.argv) < 4:
         print("Usage: ws_drive_turn.py PROJECT_ID THREAD_ID 'prompt'")
         sys.exit(2)
-    rc = asyncio.run(drive(sys.argv[1], sys.argv[2], sys.argv[3]))
+    rc = asyncio.run(drive(sys.argv[1], sys.argv[2], " ".join(sys.argv[3:])))
     sys.exit(rc)

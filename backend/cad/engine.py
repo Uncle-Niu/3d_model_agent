@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import traceback
 from pathlib import Path
 from typing import Any, Optional
@@ -223,6 +224,346 @@ def try_patch_missing_result(code: str) -> Optional[str]:
     return f"{code}{suffix}result = {last_target}\n"
 
 
+def looks_like_parameter_only_stub(code: str) -> bool:
+    """Return True when source looks like a truncated parameter block.
+
+    These snippets are syntactically valid Python, but contain no CadQuery
+    geometry construction. Sending them to a "minimal repair" prompt usually
+    yields another stub, so the orchestrator should ask for full regeneration.
+    """
+    if not code or not code.strip():
+        return False
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+
+    has_result = any(
+        isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "result" for target in node.targets)
+        for node in ast.walk(tree)
+    )
+    if has_result or _source_builds_cq_geometry(tree):
+        return False
+
+    assignments = [node for node in tree.body if isinstance(node, ast.Assign)]
+    if len(assignments) < 3:
+        return False
+
+    nontrivial_statements = [
+        node for node in tree.body
+        if not isinstance(node, (ast.Assign, ast.Import, ast.ImportFrom))
+    ]
+    return not nontrivial_statements
+
+
+def try_auto_scale_for_fit(
+    code: str,
+    geometry_stats: dict,
+    max_x_mm: float,
+    max_y_mm: float,
+    max_z_mm: float,
+    *,
+    safety_factor: float = 0.97,
+    min_factor: float = 0.85,
+) -> Optional[str]:
+    """Mechanical repair for the most common post-execution failure: a model
+    that executed successfully but whose bounding box exceeds the print
+    volume — usually because a rotation expanded the AABB beyond what the
+    planner anticipated.
+
+    Strategy: compute the uniform scale needed to bring the largest
+    overflowing axis under the print-volume cap (with a safety margin), then
+    append a single ``result = cq.Workplane('XY').newObject([result.val().scale(f)])``
+    line to the source. Re-executing the patched program produces a
+    proportionally smaller geometry that preserves every feature and
+    relationship the LLM already designed — exactly the fix the repair LLMs
+    keep failing to make manually because their mental model of how rotation
+    interacts with the AABB is wrong.
+
+    Returns the patched source on success, or ``None`` when uniform scaling
+    isn't appropriate:
+    - no `bbox_*_mm` stats available (can't compute factor)
+    - geometry already fits (no overflowing axis)
+    - required factor below ``min_factor`` (likely a runaway plan, not just a
+      barely-overflowing one — escalate to LLM)
+    - source has no `result =` assignment yet (let other repairs run first)
+    - source defines `result` as an ``cq.Assembly(...)`` whose children
+      cannot be uniformly scaled by this snippet (we'd silently swap the
+      assembly for a single solid).
+    """
+    if "Auto-scale to fit print volume" in code or (
+        ".scale(" in code and "print volume" in code
+    ):
+        return None
+
+    bbox_x = float(geometry_stats.get("bbox_x_mm") or 0.0)
+    bbox_y = float(geometry_stats.get("bbox_y_mm") or 0.0)
+    bbox_z = float(geometry_stats.get("bbox_z_mm") or 0.0)
+    if bbox_x <= 0 and bbox_y <= 0 and bbox_z <= 0:
+        return None
+
+    factors: list[float] = []
+    if bbox_x > max_x_mm:
+        factors.append(max_x_mm / bbox_x)
+    if bbox_y > max_y_mm:
+        factors.append(max_y_mm / bbox_y)
+    if bbox_z > max_z_mm:
+        factors.append(max_z_mm / bbox_z)
+    if not factors:
+        return None
+
+    factor = min(factors) * safety_factor
+    if factor < min_factor or factor >= 1.0:
+        return None
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+
+    has_result_assign = False
+    result_is_assembly_call = False
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = [t for t in node.targets if isinstance(t, ast.Name) and t.id == "result"]
+        if not targets:
+            continue
+        has_result_assign = True
+        # Refuse to scale an Assembly: `cq.Assembly(...)` doesn't expose the
+        # same `.val().scale(...)` chain as a Workplane, and swapping it for
+        # a flattened solid would silently lose the per-part structure the
+        # downstream pipeline depends on. Walk the call chain — the
+        # assembly constructor may be the root of `.add(...).add(...)`.
+        for sub in ast.walk(node.value):
+            if not isinstance(sub, ast.Call):
+                continue
+            func = sub.func
+            if (
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "cq"
+                and func.attr == "Assembly"
+            ):
+                result_is_assembly_call = True
+                break
+
+    if not has_result_assign or result_is_assembly_call:
+        return None
+
+    suffix = "\n" if code.endswith("\n") else "\n\n"
+    bbox_summary = f"{bbox_x:g}x{bbox_y:g}x{bbox_z:g}"
+    cap_summary = f"{max_x_mm:g}x{max_y_mm:g}x{max_z_mm:g}"
+    return (
+        f"{code}{suffix}"
+        f"# Auto-scale to fit print volume: {bbox_summary}mm -> "
+        f"factor {factor:.4f} (cap {cap_summary}mm).\n"
+        f"result = cq.Workplane('XY').newObject([result.val().scale({factor:.4f})])\n"
+    )
+
+
+def try_remove_failing_fillet(code: str, error_message: str) -> Optional[str]:
+    """Comment out a single fillet line when OCCT reports a fillet failure.
+
+    Fillets are quality improvements, not primary geometry. If OCCT fails with
+    a known ChFi3d/fillet construction error and the traceback points to a
+    simple assignment line containing `.fillet(...)`, keep the existing shape
+    variable unchanged by commenting out that one line.
+    """
+    if not code or not error_message:
+        return None
+    low = error_message.lower()
+    if (
+        "fillet" not in low
+        and "chfi3d" not in low
+        and "brep_api" not in low
+        and "command not done" not in low
+        and "stdfail_notdone" not in low
+    ):
+        return None
+    m = re.search(r'File "<string>", line (\d+)', error_message)
+    if not m:
+        return None
+    try:
+        lineno = int(m.group(1))
+    except ValueError:
+        return None
+    lines = code.splitlines()
+    if not (1 <= lineno <= len(lines)):
+        return None
+    line = lines[lineno - 1]
+    if ".fillet(" not in line:
+        return None
+    stripped = line.strip()
+    indent = line[: len(line) - len(line.lstrip())]
+    if "=" in stripped:
+        lhs = stripped.split("=", 1)[0].strip()
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", lhs):
+            return None
+        lines[lineno - 1] = (
+            f"{indent}# Removed failed fillet; keeping `{lhs}` unchanged. Original: {stripped}"
+        )
+    elif stripped.startswith("."):
+        lines[lineno - 1] = (
+            f"{indent}# Removed failed fillet chain line. Original: {stripped}"
+        )
+    else:
+        return None
+    patched = "\n".join(lines) + ("\n" if code.endswith("\n") else "")
+    try:
+        ast.parse(patched)
+    except SyntaxError:
+        return None
+    return patched
+
+
+def try_patch_standalone_workplane_hole(code: str, error_message: str) -> Optional[str]:
+    """Replace a cutter built via ``cq.Workplane(...).hole(...)`` with solids.
+
+    ``.hole()`` must be chained from an existing solid. LLMs often build a
+    standalone cutter variable like ``holes = cq.Workplane("XZ").pushPoints(...)
+    .hole(d)`` and then subtract it from a plate. That fails with "Cannot find a
+    solid on the stack". For that narrow pattern, generate actual cylindrical
+    cutter solids at the same points and keep the downstream ``target.cut(holes)``
+    line unchanged.
+    """
+    if not code or not error_message:
+        return None
+    low = error_message.lower()
+    if "cannot find a solid" not in low or ".hole" not in code:
+        return None
+    m = re.search(r'File "<string>", line (\d+)', error_message)
+    if not m:
+        return None
+    try:
+        failing_lineno = int(m.group(1))
+        tree = ast.parse(code)
+    except (ValueError, SyntaxError):
+        return None
+
+    target_node: Optional[ast.Assign] = None
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not (getattr(node, "lineno", 0) <= failing_lineno <= getattr(node, "end_lineno", 0)):
+            continue
+        if any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "hole"
+            for call in ast.walk(node.value)
+        ):
+            target_node = node
+            break
+    if target_node is None or not target_node.targets:
+        return None
+    target = target_node.targets[0]
+    if not isinstance(target, ast.Name):
+        return None
+    cutter_name = target.id
+    block = ast.get_source_segment(code, target_node) or ""
+
+    plane = "XY"
+    for call in ast.walk(target_node.value):
+        if not (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "cq"
+            and call.func.attr == "Workplane"
+            and call.args
+            and isinstance(call.args[0], ast.Constant)
+        ):
+            continue
+        if call.args[0].value in {"XY", "XZ", "YZ"}:
+            plane = str(call.args[0].value)
+            break
+
+    hole_arg = None
+    points = [(0, 0)]
+    translate_expr = "(0, 0, 0)"
+    for call in ast.walk(target_node.value):
+        if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
+            continue
+        if call.func.attr == "hole" and call.args:
+            hole_arg = ast.get_source_segment(code, call.args[0])
+        elif call.func.attr == "pushPoints" and call.args:
+            try:
+                literal_points = ast.literal_eval(call.args[0])
+            except Exception:
+                literal_points = None
+            if (
+                isinstance(literal_points, list)
+                and literal_points
+                and all(isinstance(pt, tuple) and len(pt) == 2 for pt in literal_points)
+            ):
+                points = literal_points
+        elif call.func.attr == "translate" and call.args:
+            source = ast.get_source_segment(code, call.args[0])
+            if source:
+                translate_expr = source
+    if not hole_arg:
+        return None
+
+    axis_names = {
+        "XY": ("hole_x", "hole_y"),
+        "XZ": ("hole_x", "hole_z"),
+        "YZ": ("hole_y", "hole_z"),
+    }[plane]
+    indent = " " * getattr(target_node, "col_offset", 0)
+    inner = indent + "    "
+    replacement = [
+        f"{indent}{cutter_name} = None",
+        f"{indent}for {axis_names[0]}, {axis_names[1]} in {points!r}:",
+        f"{inner}_hole_cutter = (",
+        f"{inner}    cq.Workplane({plane!r})",
+        f"{inner}    .center({axis_names[0]}, {axis_names[1]})",
+        f"{inner}    .circle(({hole_arg}) / 2.0)",
+        f"{inner}    .extrude(max(float({hole_arg}) * 4.0, 20.0), both=True)",
+        f"{inner}    .translate({translate_expr})",
+        f"{inner})",
+        f"{inner}{cutter_name} = _hole_cutter if {cutter_name} is None else {cutter_name}.union(_hole_cutter)",
+    ]
+    lines = code.splitlines()
+    start = target_node.lineno - 1
+    end = target_node.end_lineno
+    patched_lines = lines[:start] + replacement + lines[end:]
+    patched = "\n".join(patched_lines) + ("\n" if code.endswith("\n") else "")
+    try:
+        ast.parse(patched)
+    except SyntaxError:
+        return None
+    if block and cutter_name not in patched:
+        return None
+    return patched
+
+
+def try_patch_workplane_bounding_box(code: str, error_message: str) -> Optional[str]:
+    """Fix common CadQuery BoundingBox attribute mistakes from LLM output."""
+    if not code or not error_message:
+        return None
+    low = error_message.lower()
+    if "boundingbox" not in low and "zmin" not in low and "zmax" not in low:
+        return None
+    patched = code
+    patched = re.sub(
+        r"\b([A-Za-z_][A-Za-z0-9_]*)\.BoundingBox\(\)",
+        r"\1.val().BoundingBox()",
+        patched,
+    )
+    patched = patched.replace(".zMin", ".zmin").replace(".zMax", ".zmax")
+    patched = patched.replace(".xMin", ".xmin").replace(".xMax", ".xmax")
+    patched = patched.replace(".yMin", ".ymin").replace(".yMax", ".ymax")
+    if patched == code:
+        return None
+    try:
+        ast.parse(patched)
+    except SyntaxError:
+        return None
+    return patched
+
+
 def _source_builds_cq_geometry(tree: ast.Module) -> bool:
     """Return True if `tree` contains at least one `cq.Workplane(...)` or
     `cq.Assembly(...)` call. Used by `try_patch_missing_result` to refuse
@@ -279,7 +620,7 @@ _REASONING_PROSE_PREFIXES = (
     "so,", "but ", "but,", "however", "however,",
     "therefore", "therefore,", "given the", "given that",
     "first,", "second,", "next,", "finally,", "now,",
-    "okay,", "ok,", "alright,",
+    "okay,", "ok,", "alright,", "code block",
 )
 
 
@@ -295,6 +636,37 @@ def _looks_like_reasoning_prose(line: str) -> bool:
     # Real Python comments start with `#`. Leave those alone.
     if stripped.startswith("#"):
         return False
+    # Thinking models often format their reasoning as markdown bullets inside
+    # the fenced python block. Classify the bullet text, not the leading "-".
+    if stripped.startswith(("-", "*")):
+        stripped = stripped[1:].strip()
+        if not stripped:
+            return True
+        if stripped.startswith("`") or stripped.lower().startswith(
+            (
+                "vesa ",
+                "hole ",
+                "tray ",
+                "left ",
+                "right ",
+                "front ",
+                "side ",
+                "gusset",
+                "fillet",
+                "code ",
+                "assign ",
+                "use ",
+                "check ",
+            )
+        ):
+            return True
+        if not re.match(
+            r"^(?:import\s+|from\s+|def\s+|class\s+|if\s+|elif\s+|else\s*:|"
+            r"for\s+|while\s+|try\s*:|except\s+|with\s+|return\b|raise\s+|"
+            r"[A-Za-z_][A-Za-z0-9_]*\s*=|result\s*=|[A-Za-z_][A-Za-z0-9_]*\s*\.)",
+            stripped,
+        ):
+            return True
     # Lines that include common reasoning openers.
     low = stripped.lower()
     for prefix in _REASONING_PROSE_PREFIXES:
@@ -406,7 +778,9 @@ def strip_reasoning_leakage(code: str) -> Optional[str]:
         candidate = "\n".join(cleaned)
         try:
             ast.parse(candidate)
-            return candidate + ("\n" if not candidate.endswith("\n") else "")
+            if candidate.strip():
+                return candidate + ("\n" if not candidate.endswith("\n") else "")
+            return "\n"
         except SyntaxError:
             pass
 

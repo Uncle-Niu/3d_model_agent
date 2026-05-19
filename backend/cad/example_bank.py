@@ -258,9 +258,9 @@ def retrieve_example_snippets(
 
 def build_example_bank_prompt_context(
     user_message: str,
-    max_snippets: int = 5,
+    max_snippets: int = 2,
     cadquery_only: bool = False,
-    max_chars: int = 7000,
+    max_chars: int = 2200,
 ) -> str:
     """Format retrieved example snippets for LLM prompts."""
     snippets = retrieve_example_snippets(

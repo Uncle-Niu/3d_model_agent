@@ -7,6 +7,7 @@ Supports OpenAI-compatible APIs (Ollama, vLLM, OpenAI, etc.).
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import os
 import re
@@ -538,8 +539,9 @@ The CAD code below executed successfully, but the rendered model failed visual v
 1. **Modify in place, do not just append.** If a feature is wrong (e.g. "the lip is solid, it needs a notch"), find the component's definition near the top of the code and REPLACE it with a version that includes the feature. Subtracting a cavity from the final `result` is almost never the right answer — appending a `.cut()` after the final union is the failure mode of the previous attempt.
 2. **Cuts must intersect material.** Any new `cq.Workplane(...).box(...).translate(...)` used as a cutter must geometrically overlap the part you intend to cut. Compute the target component's X/Y/Z extents from the parameters above and verify the cutter's extents overlap on ALL three axes. A `.cut(cavity)` against empty space silently returns the unchanged solid.
 3. **Prefer feature-on-target over global ops.** To add a notch to `lip`, build `lip = lip.cut(notch)` immediately after `lip` is defined — not at the end. To fillet external edges, chain `.edges(...).fillet(r)` onto each component (or onto the union, AFTER all components are joined).
-4. **You ARE allowed to restructure.** Keeping variable names is good; preserving wrong geometry is not. If the current `lip = box(...)` cannot have a notch, replace it with a more elaborate definition that does.
-5. **Address EVERY issue.** Partial repairs come back for another round; a full pass costs the user less time even if it touches more code.
+4. **Unions need physical contact.** A `.union()` is not glue: bodies that are separated in space remain disconnected solids. If the issue mentions disconnected/floating solids, move the component so it intersects or shares a face with its parent, or add a real connector/gusset that bridges the gap. For a one-piece print, the final result should normally be one fused solid.
+5. **You ARE allowed to restructure.** Keeping variable names is good; preserving wrong geometry is not. If the current `lip = box(...)` cannot have a notch, replace it with a more elaborate definition that does.
+6. **Address EVERY issue.** Partial repairs come back for another round; a full pass costs the user less time even if it touches more code.
 
 ## Output rules
 - Output a single ```python``` block with the complete, corrected program. No prose, no diff.
@@ -553,6 +555,7 @@ def build_repair_system_prompt(
     hard_constraints: Optional[HardConstraints] = None,
     soft_constraints: Optional[SoftConstraints] = None,
     recent_turn_errors: Optional[list[str]] = None,
+    geometry_repair: bool = False,
 ) -> str:
     """Lean system prompt for the repair pass.
 
@@ -590,6 +593,24 @@ def build_repair_system_prompt(
                 f"{bullets}\n"
             )
 
+    if geometry_repair:
+        repair_rules = """\
+## Geometry Repair Rules (CRITICAL)
+- The code already ran; the rendered shape is wrong. Fix the geometry, not a Python exception.
+- If the verifier says the model is the wrong shape or missing core features, a full component-level rebuild is allowed and preferred over preserving a bad slab/block.
+- Preserve useful parameters and component names where possible, but do not preserve wrong component definitions just because they existed before.
+- Every required visible feature must be implemented as real geometry that intersects/joins the relevant body. A final cosmetic cut or disconnected `.union()` is not enough.
+- Keep the final model as one fused printable solid unless the design plan explicitly calls for separate loose parts.
+"""
+    else:
+        repair_rules = """\
+## Repair Rules (CRITICAL)
+- Apply the MINIMUM change needed to fix the reported error.
+- Preserve every parameter, helper, sub-shape, and boolean operation from the failed code unless it is the direct cause of the error.
+- DO NOT shorten the program to make the error vanish. Shorter output than input is a regression.
+- If the same variable name was used before, keep using it â€” don't rename.
+"""
+
     return f"""\
 You are an expert mechanical CAD engineer repairing a CadQuery program.
 {just_hit_section}{learned_section}
@@ -606,11 +627,7 @@ You are an expert mechanical CAD engineer repairing a CadQuery program.
 - Use metric units (millimeters)
 - Do NOT import anything other than `cadquery as cq` and `math`
 
-## Repair Rules (CRITICAL)
-- Apply the MINIMUM change needed to fix the reported error.
-- Preserve every parameter, helper, sub-shape, and boolean operation from the failed code unless it is the direct cause of the error.
-- DO NOT shorten the program to make the error vanish. Shorter output than input is a regression.
-- If the same variable name was used before, keep using it — don't rename.
+{repair_rules}
 
 ## Rotation Conventions (only if your fix touches a `.rotate(...)` call)
 CadQuery `.rotate(p1, p2, angle)` takes TWO POINTS on the axis line — NOT (pivot, direction).
@@ -804,7 +821,10 @@ class LLMService:
         visible content stream where downstream code can extract it.
         """
         system_prompt = build_repair_system_prompt(
-            hard_constraints, soft_constraints, recent_turn_errors=recent_turn_errors
+            hard_constraints,
+            soft_constraints,
+            recent_turn_errors=recent_turn_errors,
+            geometry_repair=True,
         )
         repair_prompt = build_repair_prompt(
             original_code, error_message, iteration,
@@ -1017,6 +1037,7 @@ class LLMService:
             soft_constraints=soft_constraints,
         )
 
+        user_msg = self._suffix_no_think(user_msg)
         messages = [{"role": "system", "content": system_prompt}]
         if chat_history:
             messages.extend(chat_history)
@@ -1028,13 +1049,17 @@ class LLMService:
         # in the reasoning stream (some Qwen3 servers do that).
         full_content = ""
         full_reasoning = ""
-        try:
+        planning_timeout_s = float(os.getenv("LLM_PLAN_TIMEOUT_S", "360"))
+
+        async def _stream_plan_once() -> None:
+            nonlocal full_content, full_reasoning
             stream = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 temperature=0.3,
-                max_tokens=8192,
+                max_tokens=6144,
                 stream=True,
+                timeout=planning_timeout_s,
             )
             async for chunk in stream:
                 delta = chunk.choices[0].delta
@@ -1048,6 +1073,13 @@ class LLMService:
                     full_content += content
                     if on_chunk:
                         await on_chunk(content)
+        try:
+            await asyncio.wait_for(_stream_plan_once(), timeout=planning_timeout_s)
+        except asyncio.TimeoutError as exc:
+            raise LLMBackendUnavailable(
+                f"LLM backend timed out during plan streaming after {planning_timeout_s:.0f}s",
+                cause=exc,
+            ) from exc
         except (APIConnectionError, APITimeoutError, APIStatusError) as exc:
             # Backend dropped, timed out, or returned a 5xx mid-stream — almost
             # always a crashed/OOM Ollama. Don't retry against the dead endpoint;
@@ -1066,7 +1098,8 @@ class LLMService:
                     model=self.model,
                     messages=messages,
                     temperature=0.3,
-                    max_tokens=8192,
+                    max_tokens=6144,
+                    timeout=planning_timeout_s,
                 )
             except (APIConnectionError, APITimeoutError, APIStatusError) as fallback_exc:
                 raise LLMBackendUnavailable(
@@ -1124,23 +1157,76 @@ class LLMService:
     ) -> DesignPlan:
         """Regenerate a plan after the deterministic recipe gate rejects it."""
         rejected_text = plan_to_prompt_text(rejected_plan) or rejected_plan.raw_text
-        feedback = (
+        hc = hard_constraints or HardConstraints()
+        sc = soft_constraints or SoftConstraints()
+        system_prompt = (
+            "You repair CAD design plans. Output XML only: one <physical_use>, "
+            "one <feature_decisions>, and one complete <design_plan>. No prose, "
+            "no markdown, no JSON. Every component must have dimensions, position, "
+            "operation, and spec_source. If a component is tilted, add a structured "
+            "<rotation axis=\"X|Y|Z\" angle_deg=\"...\" intent=\"...\"/> tag."
+        )
+        user_prompt = self._suffix_no_think(
+            "Rewrite the rejected CAD plan from scratch so it satisfies the gate.\n\n"
+            f"Request: {user_message}\n\n"
+            f"Print constraints: max {hc.max_x_mm} x {hc.max_y_mm} x {hc.max_z_mm} mm, "
+            f"min wall {hc.min_wall_thickness_mm} mm, material {sc.material}, "
+            f"max overhang {sc.overhang_angle_max} deg.\n\n"
+            "Quality gate feedback to fix:\n"
             f"{quality_feedback}\n\n"
-            "Rejected plan summary for reference:\n"
-            f"{rejected_text[:3000]}"
+            "Required XML shape:\n"
+            "<physical_use>...</physical_use>\n"
+            "<feature_decisions>\n"
+            "  <decision feature=\"fasteners_or_mounting_holes\" needed=\"true|false\">...</decision>\n"
+            "  <decision feature=\"internal_cavity_or_shell\" needed=\"true|false\">...</decision>\n"
+            "  <decision feature=\"retention_geometry\" needed=\"true|false\">...</decision>\n"
+            "  <decision feature=\"load_bearing_reinforcement\" needed=\"true|false\">...</decision>\n"
+            "  <decision feature=\"clearance_or_port_cutouts\" needed=\"true|false\">...</decision>\n"
+            "  <decision feature=\"moving_or_mating_interface\" needed=\"true|false\">...</decision>\n"
+            "</feature_decisions>\n"
+            "<design_plan>\n"
+            "  <summary>...</summary>\n"
+            "  <overall_dimensions_mm><x>...</x><y>...</y><z>...</z></overall_dimensions_mm>\n"
+            "  <components>\n"
+            "    <component><name>...</name><description>...</description><primitive>box</primitive>"
+            "<dimensions><length>...</length><width>...</width><height>...</height></dimensions>"
+            "<position><x>...</x><y>...</y><z>...</z></position><orientation>...</orientation>"
+            "<operation>base|union|cut|fillet|chamfer|shell</operation><spec_source>explicit|inferred|default</spec_source></component>\n"
+            "  </components>\n"
+            "  <connections>...</connections><key_features>...</key_features>"
+            "<assumptions>...</assumptions><risks>...</risks><parameters>...</parameters>\n"
+            "</design_plan>\n\n"
+            "Use printable dimensions that fit the volume. For this kind of laptop tray, "
+            "prefer a compact single-piece design around 230-250 mm wide, 170-220 mm deep, "
+            "with tray walls/lip, an open usable tray cavity/shell, VESA back plate, M4/VESA holes, "
+            "and ribs/gussets. Do not output a plain slab.\n\n"
+            "Rejected plan summary (truncated):\n"
+            f"{rejected_text[:800]}"
         )
-        return await self.plan_design(
-            user_message=user_message,
-            chat_history=chat_history,
-            current_source=current_source,
-            current_model_id=current_model_id,
-            research_context=research_context,
-            recipe_context=recipe_context,
-            plan_feedback=feedback,
-            hard_constraints=hard_constraints,
-            soft_constraints=soft_constraints,
-            on_chunk=on_chunk,
-        )
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.2,
+                max_tokens=4096,
+                timeout=float(os.getenv("LLM_PLAN_TIMEOUT_S", "360")),
+            )
+        except (APIConnectionError, APITimeoutError, APIStatusError) as exc:
+            raise LLMBackendUnavailable(
+                f"LLM backend failed during compact plan repair: {type(exc).__name__}: {exc}",
+                cause=exc,
+            ) from exc
+        content = resp.choices[0].message.content or ""
+        reasoning = getattr(resp.choices[0].message, "reasoning", None) or getattr(resp.choices[0].message, "reasoning_content", None) or ""
+        combined = (content + "\n" + reasoning).strip()
+        if on_chunk and combined:
+            await on_chunk(combined)
+        plan = parse_design_plan(combined)
+        plan.raw_text = combined
+        return plan
 
     async def decide_research(self, user_message: str, chat_history: Optional[list[dict]] = None) -> tuple[Optional[str], str]:
         """
@@ -1652,6 +1738,9 @@ def _normalize_extracted_code(code: str) -> str:
     except SyntaxError:
         pass
 
+    if _looks_like_non_code_prose_blob(code):
+        return ""
+
     lines = code.strip().splitlines()
     if len(lines) < 2 or lines[0].startswith((" ", "\t")):
         return code.strip()
@@ -1678,12 +1767,87 @@ def _normalize_extracted_code(code: str) -> str:
     return candidate
 
 
+_PYTHON_STATEMENT_RE = re.compile(
+    r"^\s*(?:"
+    r"import\s+|from\s+|def\s+|class\s+|if\s+|elif\s+|else\s*:|for\s+|"
+    r"while\s+|try\s*:|except\s+|with\s+|return\b|raise\s+|"
+    r"[A-Za-z_][A-Za-z0-9_]*\s*=|result\s*=|[A-Za-z_][A-Za-z0-9_]*\s*\."
+    r")"
+)
+
+
+def _looks_like_non_code_prose_blob(code: str) -> bool:
+    """Return True when a fenced ``python`` block is actually markdown prose.
+
+    Some thinking models produce an opener like `````python code block.`` and
+    then continue with bullet-point reasoning. The old extractor accepted that
+    whole blob as source, which sent repair loops chasing an "unterminated
+    string" in prose instead of asking for real code. Keep genuinely broken
+    Python repairable, but reject blobs dominated by bullets/sentences and
+    containing too few plausible Python statements.
+    """
+    lines = [ln.strip() for ln in code.strip().splitlines() if ln.strip()]
+    if not lines:
+        return False
+
+    statement_lines = 0
+    prose_lines = 0
+    for line in lines:
+        if _PYTHON_STATEMENT_RE.match(line) or line.startswith(("#", ")", "]", "}")):
+            statement_lines += 1
+            continue
+        if (
+            line.startswith(("-", "*", ">"))
+            or "`" in line
+            or line.lower().startswith(
+                (
+                    "code block",
+                    "here",
+                    "wait",
+                    "actually",
+                    "let's",
+                    "let me",
+                    "the error",
+                    "the issue",
+                    "fix:",
+                    "root cause:",
+                )
+            )
+        ):
+            prose_lines += 1
+
+    if statement_lines >= 2:
+        return False
+    return prose_lines >= max(3, len(lines) // 2)
+
+
 def extract_code_from_response(response: str) -> str:
     """Extract Python code from an LLM response that may contain markdown.
 
     A leading ``<diagnosis>...</diagnosis>`` block (emitted by the repair
     prompt) is stripped first so that, in the rare case the model omits the
     triple-backtick fence, the diagnosis prose doesn't leak into the code.
+
+    Recovers from two failure modes seen in real chat logs:
+
+    1. *Unterminated ```python fence* — the model started a code block at
+       the end of a long reasoning preamble, then `max_tokens` truncated the
+       output before the closing fence. The existing ``re.findall`` requires
+       a closing fence and yields nothing, so the fallback path used to
+       return the entire response (prose + half-a-program) as "code". The
+       downstream syntax validator then rejected the prose; the next iteration
+       inherited the prose-as-source and burned LLM repair calls on it.
+       Fix: when no terminated block exists, recover everything after the
+       opener as the candidate code.
+
+    2. *Prose-prefixed response with no fences at all* — a thinking model
+       sometimes streams its full chain-of-thought into the content channel
+       and forgets to fence the final python. The blob is dominated by
+       English sentences (``"The error is..."``, ``"Let's reduce ..."``) but
+       contains ``var = number`` lines that the AST happily counts as
+       statements. Returning that blob produces a syntax error AND poisons
+       the next repair pass with a 200-line file of LLM monologue. Reject
+       the blob outright so the orchestrator's format-retry path runs.
     """
     if not response:
         return ""
@@ -1696,12 +1860,38 @@ def extract_code_from_response(response: str) -> str:
         flags=re.DOTALL | re.IGNORECASE,
     )
 
-    # Look for ```python ... ``` blocks
-    if "```python" in response:
-        parts = response.split("```python")
-        if len(parts) > 1:
-            code_block = parts[1].split("```")[0]
-            return _normalize_extracted_code(code_block)
+    # Look for ```python ... ``` blocks. Prefer a block that actually looks
+    # like CadQuery/Python source; skip "```python code block." prose dumps.
+    python_blocks = re.findall(
+        r"```\s*python[^\n]*\n(.*?)```",
+        response,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    for block in python_blocks:
+        code = _normalize_extracted_code(block)
+        if code:
+            return code
+    if python_blocks:
+        return ""
+
+    # Unterminated ```python fence — recover the tail. Common when
+    # max_tokens cuts the response mid-block.
+    unterminated = re.search(
+        r"```\s*python\b[^\n]*\n",
+        response,
+        flags=re.IGNORECASE,
+    )
+    if unterminated is not None:
+        tail = response[unterminated.end():]
+        # Drop anything after a defensive closing fence.
+        if "```" in tail:
+            tail = tail.split("```", 1)[0]
+        recovered = _normalize_extracted_code(tail)
+        if recovered:
+            return recovered
+        # The opener was real but the tail is empty / pure prose. Refuse to
+        # fall back to the entire response (which would carry the preamble).
+        return ""
 
     # Look for ``` ... ``` blocks
     if "```" in response:
@@ -1713,8 +1903,86 @@ def extract_code_from_response(response: str) -> str:
                 code = code[7:]
             return _normalize_extracted_code(code)
 
+    # No fences anywhere. Refuse responses that begin with reasoning prose —
+    # otherwise the LLM's chain-of-thought ends up persisted as ``source.py``.
+    if _looks_like_reasoning_preamble(response):
+        return ""
+
     # Assume the entire response is code
     return _normalize_extracted_code(response)
+
+
+_REASONING_PREAMBLE_OPENERS = (
+    "the error", "the issue", "the problem", "the goal",
+    "let me", "let's", "i'll", "i will", "i'm",
+    "wait,", "wait.", "actually,", "actually.", "now,", "now.",
+    "okay,", "ok,", "alright,",
+    "first,", "second,", "next,", "finally,", "in summary,",
+    "to fix", "to solve", "to address", "to revise",
+    "here", "looking at",
+    "based on", "given the", "given that",
+    "the cadquery code", "the code",
+    "root cause", "diagnosis:", "fix:", "summary:",
+    "step 1", "step one",
+    "my plan", "plan:",
+)
+
+
+def _looks_like_reasoning_preamble(blob: str) -> bool:
+    """Return True when ``blob`` opens with English reasoning that no
+    Python source would plausibly start with.
+
+    Looks at the first handful of non-empty, non-comment, non-import lines.
+    If most of them read like prose (start with a reasoning opener, or are
+    complete English sentences) and none of them are Python statements,
+    treat the whole blob as a model monologue and reject it.
+    """
+    head: list[str] = []
+    for raw in blob.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        # Import lines or `# ...` comments are strong signals of real code.
+        if stripped.startswith(("import ", "from ", "#")):
+            return False
+        head.append(stripped)
+        if len(head) >= 8:
+            break
+
+    if not head:
+        return False
+
+    prose = 0
+    statements = 0
+    for ln in head:
+        low = ln.lower()
+        if any(low.startswith(p) for p in _REASONING_PREAMBLE_OPENERS):
+            prose += 1
+            continue
+        if "`" in ln:
+            # Inline-code backticks (``var``) only appear in markdown
+            # narration — Python source has none.
+            prose += 1
+            continue
+        if _PYTHON_STATEMENT_RE.match(ln):
+            statements += 1
+            continue
+        # Plain English sentence: capitalized open, ends with terminator,
+        # no Python operators.
+        if (
+            ln[:1].isupper()
+            and ln[-1:] in ".?!"
+            and "=" not in ln
+            and "(" not in ln
+            and ":" not in ln
+        ):
+            prose += 1
+
+    # If real Python statements appear in the head, this is messy code, not
+    # a monologue — let downstream paths handle it.
+    if statements >= 1:
+        return False
+    return prose >= max(2, len(head) // 2)
 
 
 def _meaningful_lines(code: str) -> list[str]:

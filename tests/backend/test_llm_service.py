@@ -219,6 +219,72 @@ class TestExtractCodeFromResponse(unittest.TestCase):
         import ast
         ast.parse(code)
 
+    def test_python_fence_with_prose_blob_is_rejected(self):
+        # Regression for the laptop-tray VESA failure: the model opened a
+        # python fence, then filled it with markdown planning bullets. Treating
+        # that as source sent the repair loop chasing syntax errors in prose.
+        response = (
+            "```python code block.\n"
+            "- Assign final shape to `result`.\n"
+            "- Use `cq.Assembly()` if multi-part.\n"
+            "- Let's carefully follow the dimensions and orientation.\n"
+            "- VESA plate: 100x100 mm, thickness 4 mm.\n"
+            "- `base = cq.Workplane(\"XY\").box(100, 100, 4)`\n"
+            "```"
+        )
+        self.assertEqual(extract_code_from_response(response), "")
+
+    def test_unterminated_python_fence_recovers_tail_code(self):
+        # Real-world failure: max_tokens truncated the response mid-block
+        # so the closing ``` never arrived. Previously the extractor fell
+        # through to "assume the whole response is code" and persisted the
+        # long reasoning preamble as source.py.
+        response = (
+            "The error is that the geometry is too big. Let me think.\n"
+            "Reduce tray_w to 200, tray_d to 80.\n"
+            "Let's compute the new tray_y: 50 + 35 + 40 = 125.\n"
+            "Okay, here's the corrected program:\n\n"
+            "```python\n"
+            "import cadquery as cq\n"
+            "base = cq.Workplane('XY').box(50, 50, 5)\n"
+            "result = base"  # truncated mid-line
+        )
+        code = extract_code_from_response(response)
+        # The recovered code must start with the real first python line,
+        # NOT the LLM's reasoning prose.
+        self.assertTrue(code.startswith("import cadquery"))
+        self.assertNotIn("The error is that", code)
+        self.assertNotIn("Let me think", code)
+
+    def test_pure_reasoning_response_yields_empty(self):
+        # No fences. The LLM streamed only its diagnosis. The old fallback
+        # path returned this verbatim as source.py — a 200-line monologue
+        # that then failed the syntax validator and burned repair budget.
+        response = (
+            "The error is that the geometry exceeds the print volume "
+            "limit of 256.0mm in X and Y dimensions.\n"
+            "Current dimensions: X=270.0mm, Y=301.1mm, Z=97.0mm.\n"
+            "The tray width `tray_w` is 270, which directly causes X=270.\n"
+            "Let's adjust `tray_w` from 270 to 240.\n"
+            "Let's adjust `arm_h` from 60 to 50.\n"
+            "Now we need to scale by 0.85 to fit.\n"
+        )
+        self.assertEqual(extract_code_from_response(response), "")
+
+    def test_unfenced_real_code_still_passes_through(self):
+        # Defensive: a fence-less response that IS valid Python must still
+        # be accepted. The reasoning-preamble check only rejects English
+        # narration, not parameter-style assignments at the top of a file.
+        response = (
+            "import cadquery as cq\n"
+            "wall_thickness = 1.6\n"
+            "base = cq.Workplane('XY').box(50, 30, 5)\n"
+            "result = base\n"
+        )
+        code = extract_code_from_response(response)
+        self.assertIn("import cadquery", code)
+        self.assertIn("result = base", code)
+
 
 class TestDetectRepairDeletion(unittest.TestCase):
     """Anti-deletion guard for repair LLM output.
@@ -308,6 +374,12 @@ class TestBuildRepairSystemPrompt(unittest.TestCase):
         repair = build_repair_system_prompt()
         self.assertIn("MINIMUM", repair)
         self.assertIn("Preserve", repair)
+
+    def test_geometry_repair_prompt_allows_rebuilds(self):
+        repair = build_repair_system_prompt(geometry_repair=True)
+        self.assertIn("Geometry Repair Rules", repair)
+        self.assertIn("full component-level rebuild", repair)
+        self.assertNotIn("Apply the MINIMUM change", repair)
 
     def test_includes_just_hit_errors_when_provided(self):
         # The "errors hit THIS turn" block must appear with the supplied

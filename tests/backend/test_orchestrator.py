@@ -70,6 +70,7 @@ class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
         self.mock_llm.model = DEFAULT_LLM_MODEL
         self.mock_llm.decide_research.return_value = None
         self.mock_llm.plan_design.return_value = DesignPlan(summary="Test plan", key_features=["a feature"])
+        self.mock_llm.repair_design_plan.return_value = DesignPlan(summary="Test plan", key_features=["a feature"])
 
         async def mock_generate_stream(*args, **kwargs):
             chunks = ["```python\n", "result = cq.Workplane().box(10,10,10)\n", "```"]
@@ -162,6 +163,28 @@ class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
         # Check that it ran at least twice
         self.assertGreaterEqual(mock_exec.call_count, 2)
         self.assertEqual(call_counts["critique"], mock_exec.call_count)
+
+    @patch("backend.agent.orchestrator.AgentOrchestrator.check_vision_connectivity", new_callable=AsyncMock)
+    @patch("backend.agent.orchestrator.process_cadquery_code")
+    @patch("backend.agent.orchestrator.AgentOrchestrator._run_render", new_callable=AsyncMock)
+    @patch("backend.agent.orchestrator.AgentOrchestrator._run_vision_critique", new_callable=AsyncMock)
+    async def test_vision_budget_exhaustion_fails_instead_of_shipping_bad_model(self, mock_critique, mock_render, mock_exec, mock_vision):
+        orchestrator = AgentOrchestrator(storage=self.mock_storage, llm=self.mock_llm)
+        orchestrator.MAX_VISION_REPAIR_ITERATIONS = 0
+        mock_vision.return_value = (True, "ok")
+        mock_exec.return_value = {"success": True, "message": "Ok", "files": ["glb"], "_shape": MagicMock(), "geometry_stats": {}}
+        mock_render.return_value = {"iso": "path/to/iso.png"}
+        mock_critique.return_value = CritiqueReport(
+            overall_printability=0.3,
+            matches_intent=False,
+            issues=[GeometryIssue(issue_type="plan_mismatch", severity="error", description="disconnected solids")],
+        )
+
+        model_id = await orchestrator.run_pipeline("p1", "t1", "make a box")
+
+        self.assertIsNone(model_id)
+        _, _, chat_message = self.mock_storage.update_last_chat_thread_message.call_args.args
+        self.assertIn("Could not produce a model that passes", chat_message.content)
 
     @patch("backend.agent.orchestrator.AgentOrchestrator.check_ollama_connectivity", new_callable=AsyncMock)
     async def test_connectivity_check_failure(self, mock_conn):

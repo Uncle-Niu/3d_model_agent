@@ -5,8 +5,13 @@ Unit tests for CadQuery execution engine security and functionality.
 import unittest
 from backend.cad.engine import (
     execute_cadquery_code,
+    looks_like_parameter_only_stub,
     sanitize_traceback,
     strip_reasoning_leakage,
+    try_auto_scale_for_fit,
+    try_patch_standalone_workplane_hole,
+    try_patch_workplane_bounding_box,
+    try_remove_failing_fillet,
     try_patch_missing_result,
     validate_cadquery_code,
 )
@@ -89,6 +94,32 @@ class TestStripReasoningLeakage(unittest.TestCase):
         ast.parse(cleaned)
         self.assertIn("result =", cleaned)
         self.assertNotIn("back_wall.translate((0, -5", cleaned)
+
+    def test_strips_markdown_bullet_reasoning(self):
+        leaked = (
+            "import cadquery as cq\n"
+            "- Let's carefully follow the dimensions and orientation.\n"
+            "- VESA plate: 100x100 mm, thickness 4 mm.\n"
+            "- `bad = cq.Workplane('XY').hole(3)`\n"
+            "base = cq.Workplane('XY').box(10, 10, 10)\n"
+            "result = base\n"
+        )
+        cleaned = strip_reasoning_leakage(leaked)
+        self.assertIsNotNone(cleaned)
+        self.assertNotIn("Let's carefully", cleaned)
+        self.assertNotIn("VESA plate", cleaned)
+        self.assertIn("result = base", cleaned)
+        import ast
+        ast.parse(cleaned)
+
+    def test_all_markdown_reasoning_becomes_empty_patch(self):
+        prose = (
+            "code block.\n"
+            "- Assign final shape to `result`.\n"
+            "- Let's carefully follow the dimensions and orientation.\n"
+            "- VESA plate: 100x100 mm, thickness 4 mm.\n"
+        )
+        self.assertEqual(strip_reasoning_leakage(prose), "\n")
 
     def test_returns_none_when_unrecoverable(self):
         # Pure garbage with no parseable prefix.
@@ -191,6 +222,253 @@ class TestTryPatchMissingResult(unittest.TestCase):
         patched = try_patch_missing_result(code)
         self.assertIsNotNone(patched)
         self.assertTrue(patched.rstrip().endswith("result = filleted"))
+
+
+class TestLooksLikeParameterOnlyStub(unittest.TestCase):
+    def test_detects_parameter_block_without_geometry(self):
+        code = (
+            "tray_width = 300.0\n"
+            "tray_depth = 200.0\n"
+            "tray_thickness = 4.0\n"
+            "vesa_hole_spacing = 75.0\n"
+        )
+        self.assertTrue(looks_like_parameter_only_stub(code))
+
+    def test_ignores_real_cadquery_program_missing_result(self):
+        code = (
+            "import cadquery as cq\n"
+            "tray_width = 120.0\n"
+            "body = cq.Workplane('XY').box(tray_width, 80, 5)\n"
+        )
+        self.assertFalse(looks_like_parameter_only_stub(code))
+
+    def test_ignores_existing_result_assignment(self):
+        code = (
+            "import cadquery as cq\n"
+            "result = cq.Workplane('XY').box(10, 10, 5)\n"
+        )
+        self.assertFalse(looks_like_parameter_only_stub(code))
+
+
+class TestAutoScaleForFit(unittest.TestCase):
+    """Mechanical scale-down when geometry overflows the print volume.
+
+    Real failure mode (laptop-tray VESA mount log): the LLM kept producing
+    designs whose AABB ballooned past 256mm after a -30° rotation, then
+    repeatedly failed to scale them down by tweaking individual parameters.
+    A single `result.val().scale(f)` line fixes the entire family of
+    failures deterministically.
+    """
+
+    BASE_CODE = (
+        "import cadquery as cq\n"
+        "vesa = cq.Workplane('XY').box(100, 100, 5)\n"
+        "tray = cq.Workplane('XY').box(270, 130, 3).translate((0, 175, 56.5))\n"
+        "result = vesa.union(tray)\n"
+    )
+
+    def test_appends_scale_when_oversize(self):
+        stats = {"bbox_x_mm": 260.0, "bbox_y_mm": 270.0, "bbox_z_mm": 97.0}
+        patched = try_auto_scale_for_fit(
+            self.BASE_CODE, stats,
+            max_x_mm=256.0, max_y_mm=256.0, max_z_mm=256.0,
+        )
+        self.assertIsNotNone(patched)
+        self.assertIn("result.val().scale(", patched)
+        # Factor = (256 / 270) * 0.97 ~= 0.9197
+        self.assertIn("0.91", patched)
+
+    def test_returns_none_when_geometry_already_fits(self):
+        stats = {"bbox_x_mm": 100.0, "bbox_y_mm": 100.0, "bbox_z_mm": 5.0}
+        self.assertIsNone(try_auto_scale_for_fit(
+            self.BASE_CODE, stats,
+            max_x_mm=256.0, max_y_mm=256.0, max_z_mm=256.0,
+        ))
+
+    def test_returns_none_when_source_already_has_auto_scale_patch(self):
+        already_scaled = (
+            self.BASE_CODE
+            + "\n# Auto-scale to fit print volume: 270x301x97mm -> factor 0.8247 (cap 256x256x256mm).\n"
+            + "result = cq.Workplane('XY').newObject([result.val().scale(0.8247)])\n"
+        )
+        stats = {"bbox_x_mm": 270.0, "bbox_y_mm": 301.1, "bbox_z_mm": 97.0}
+        self.assertIsNone(try_auto_scale_for_fit(
+            already_scaled, stats,
+            max_x_mm=256.0, max_y_mm=256.0, max_z_mm=256.0,
+        ))
+
+    def test_returns_none_for_runaway_oversize(self):
+        # Large overflow -> factor < 0.85. Likely a bad plan; escalate to LLM.
+        stats = {"bbox_x_mm": 2500.0, "bbox_y_mm": 100.0, "bbox_z_mm": 5.0}
+        self.assertIsNone(try_auto_scale_for_fit(
+            self.BASE_CODE, stats,
+            max_x_mm=256.0, max_y_mm=256.0, max_z_mm=256.0,
+        ))
+
+    def test_returns_none_for_large_shrink_that_would_change_intent(self):
+        stats = {"bbox_x_mm": 352.0, "bbox_y_mm": 164.0, "bbox_z_mm": 161.0}
+        self.assertIsNone(try_auto_scale_for_fit(
+            self.BASE_CODE, stats,
+            max_x_mm=256.0, max_y_mm=256.0, max_z_mm=256.0,
+        ))
+
+    def test_returns_none_without_bbox_stats(self):
+        self.assertIsNone(try_auto_scale_for_fit(
+            self.BASE_CODE, {},
+            max_x_mm=256.0, max_y_mm=256.0, max_z_mm=256.0,
+        ))
+
+    def test_returns_none_when_no_result_assignment(self):
+        no_result = (
+            "import cadquery as cq\n"
+            "vesa = cq.Workplane('XY').box(100, 100, 5)\n"
+        )
+        stats = {"bbox_x_mm": 300.0, "bbox_y_mm": 300.0, "bbox_z_mm": 100.0}
+        self.assertIsNone(try_auto_scale_for_fit(
+            no_result, stats,
+            max_x_mm=256.0, max_y_mm=256.0, max_z_mm=256.0,
+        ))
+
+    def test_returns_none_when_result_is_assembly(self):
+        # Assemblies aren't safely uniform-scalable via the
+        # `result.val().scale(...)` pattern — escalate to LLM repair.
+        assembly_code = (
+            "import cadquery as cq\n"
+            "vesa = cq.Workplane('XY').box(100, 100, 5)\n"
+            "result = cq.Assembly().add(vesa, name='base')\n"
+        )
+        stats = {"bbox_x_mm": 300.0, "bbox_y_mm": 300.0, "bbox_z_mm": 100.0}
+        self.assertIsNone(try_auto_scale_for_fit(
+            assembly_code, stats,
+            max_x_mm=256.0, max_y_mm=256.0, max_z_mm=256.0,
+        ))
+
+    def test_patched_code_executes_and_fits(self):
+        # The whole point: the patched source actually runs and stays under
+        # the cap, end-to-end, in the real CadQuery engine. Use stats that
+        # match what the geometry actually produces (-50..240 in Y because
+        # the tray is translated, plus -135..135 in X).
+        from backend.cad.engine import execute_cadquery_code
+        stats = {"bbox_x_mm": 270.0, "bbox_y_mm": 290.0, "bbox_z_mm": 58.0}
+        patched = try_auto_scale_for_fit(
+            self.BASE_CODE, stats,
+            max_x_mm=256.0, max_y_mm=256.0, max_z_mm=256.0,
+        )
+        self.assertIsNotNone(patched)
+        ok, shape, _msg = execute_cadquery_code(patched)
+        self.assertTrue(ok)
+        bb = shape.val().BoundingBox()
+        self.assertLess(bb.xmax - bb.xmin, 256.0)
+        self.assertLess(bb.ymax - bb.ymin, 256.0)
+        self.assertLess(bb.zmax - bb.zmin, 256.0)
+
+
+class TestTryRemoveFailingFillet(unittest.TestCase):
+    def test_comments_out_traceback_fillet_assignment(self):
+        code = (
+            "import cadquery as cq\n"
+            "tray = cq.Workplane('XY').box(10, 10, 2)\n"
+            "tray = tray.edges('|Z').fillet(3)\n"
+            "result = tray\n"
+        )
+        err = (
+            'Traceback\n  File "<string>", line 3, in <module>\n'
+            "OCP.OCP.Standard.Standard_ConstructionError: ChFi3d_Builder:only 2 faces"
+        )
+        patched = try_remove_failing_fillet(code, err)
+        self.assertIsNotNone(patched)
+        self.assertIn("Removed failed fillet", patched)
+        self.assertIn("result = tray", patched)
+        ok, shape, _msg = execute_cadquery_code(patched)
+        self.assertTrue(ok)
+        self.assertIsNotNone(shape)
+
+    def test_returns_none_when_error_is_not_fillet(self):
+        code = "import cadquery as cq\nresult = cq.Workplane('XY').box(1, 1, 1)\n"
+        err = 'Traceback\n  File "<string>", line 2, in <module>\nValueError: nope'
+        self.assertIsNone(try_remove_failing_fillet(code, err))
+
+    def test_comments_out_traceback_fillet_chain_line(self):
+        code = (
+            "import cadquery as cq\n"
+            "tray = (\n"
+            "    cq.Workplane('XY')\n"
+            "    .box(10, 10, 2)\n"
+            "    .edges('|Z').fillet(5)\n"
+            ")\n"
+            "result = tray\n"
+        )
+        err = (
+            'Traceback\n  File "<string>", line 5, in <module>\n'
+            "OCP.OCP.StdFail.StdFail_NotDone: BRep_API: command not done"
+        )
+        patched = try_remove_failing_fillet(code, err)
+        self.assertIsNotNone(patched)
+        self.assertIn("Removed failed fillet chain line", patched)
+        ok, shape, _msg = execute_cadquery_code(patched)
+        self.assertTrue(ok)
+        self.assertIsNotNone(shape)
+
+
+class TestTryPatchStandaloneWorkplaneHole(unittest.TestCase):
+    def test_replaces_fresh_workplane_hole_cutter_with_cylinders(self):
+        code = (
+            "import cadquery as cq\n"
+            "vesa_thickness = 5\n"
+            "vesa_plate = (\n"
+            "    cq.Workplane('XZ')\n"
+            "    .box(120, vesa_thickness, 120)\n"
+            "    .translate((0, -80, 80))\n"
+            ")\n"
+            "hole_d = 4.5\n"
+            "vesa_holes = (\n"
+            "    cq.Workplane('XZ')\n"
+            "    .pushPoints([(50, 50), (-50, 50), (50, -50), (-50, -50)])\n"
+            "    .hole(hole_d)\n"
+            "    .translate((0, -80, 80))\n"
+            ")\n"
+            "result = vesa_plate.cut(vesa_holes)\n"
+        )
+        err = (
+            'Traceback\n  File "<string>", line 12, in <module>\n'
+            "ValueError: Cannot find a solid on the stack or in the parent chain"
+        )
+        patched = try_patch_standalone_workplane_hole(code, err)
+        self.assertIsNotNone(patched)
+        self.assertIn("for hole_x, hole_z in", patched)
+        self.assertIn(".extrude(max(float(hole_d) * 4.0, 20.0), both=True)", patched)
+        ok, shape, _msg = execute_cadquery_code(patched)
+        self.assertTrue(ok)
+        self.assertIsNotNone(shape)
+
+    def test_returns_none_for_unrelated_error(self):
+        code = "import cadquery as cq\nresult = cq.Workplane('XY').box(1, 1, 1)\n"
+        self.assertIsNone(try_patch_standalone_workplane_hole(code, "ValueError: nope"))
+
+
+class TestTryPatchWorkplaneBoundingBox(unittest.TestCase):
+    def test_patches_workplane_bounding_box_and_minmax_names(self):
+        code = (
+            "import cadquery as cq\n"
+            "result = cq.Workplane('XY').box(10, 10, 2)\n"
+            "bbox = result.BoundingBox()\n"
+            "min_z = bbox.zMin\n"
+            "result = result.translate((0, 0, -min_z))\n"
+        )
+        err = "AttributeError: 'Workplane' object has no attribute 'BoundingBox'"
+
+        patched = try_patch_workplane_bounding_box(code, err)
+
+        self.assertIsNotNone(patched)
+        self.assertIn("result.val().BoundingBox()", patched)
+        self.assertIn("bbox.zmin", patched)
+        ok, shape, _msg = execute_cadquery_code(patched)
+        self.assertTrue(ok)
+        self.assertIsNotNone(shape)
+
+    def test_returns_none_for_unrelated_error(self):
+        code = "import cadquery as cq\nresult = cq.Workplane('XY').box(1, 1, 1)\n"
+        self.assertIsNone(try_patch_workplane_bounding_box(code, "ValueError: nope"))
 
 
 class TestSanitizeTraceback(unittest.TestCase):

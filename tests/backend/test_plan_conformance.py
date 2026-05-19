@@ -10,6 +10,7 @@ exactly this case. The new "disconnected-sub-shape" branch fires on its own.
 import unittest
 
 from backend.agent.plan_conformance import check_plan_conformance
+from backend.agent.plan_conformance import _expected_solid_count
 from backend.domain.models import Connection, DesignComponent, DesignPlan, PhysicalUse
 
 
@@ -94,6 +95,29 @@ class TestDisconnectedSolidsCheck(unittest.TestCase):
         self.assertIsNotNone(report)
         self.assertTrue(report.passed)
 
+    def test_cut_components_do_not_count_as_expected_solids(self):
+        components = [
+            DesignComponent(name="base", description="", primitive="box", operation="base"),
+            DesignComponent(name="wall", description="", primitive="box", operation="union"),
+            DesignComponent(name="hole", description="", primitive="cylinder", operation="cut"),
+            DesignComponent(name="slot", description="", primitive="box", operation="cut"),
+            DesignComponent(name="rounding", description="", primitive="custom", operation="fillet"),
+        ]
+
+        self.assertEqual(_expected_solid_count(components), 2)
+
+    def test_disconnected_repair_prompt_asks_for_fused_contact_not_loose_parts(self):
+        plan = _make_plan_with_union_connections()
+        stats = self._stats(bbox=(180.0, 100.0, 98.0), solid_count=3)
+
+        report = check_plan_conformance(plan, stats)
+        critique = report.as_critique()
+
+        self.assertIn("union", critique.repair_prompt.lower())
+        self.assertIn("physically joined", critique.repair_prompt.lower())
+        self.assertIn("solid_count == 1", critique.repair_prompt)
+        self.assertNotIn("Expected components", critique.repair_prompt)
+
 
 class TestBboxCheckStillFires(unittest.TestCase):
     """Confirm the existing bbox-based reasoning was not weakened."""
@@ -108,6 +132,37 @@ class TestBboxCheckStillFires(unittest.TestCase):
         report = check_plan_conformance(plan, stats)
         self.assertIsNotNone(report)
         self.assertFalse(report.passed)
+
+
+    def test_double_scaled_bbox_is_too_small_for_plan(self):
+        # Regression for the laptop-tray VESA run: two auto-scale patches
+        # produced a model about 73-78% of the planned envelope, which
+        # previously passed because the lower bbox threshold was only 60%.
+        plan = DesignPlan(
+            summary="VESA laptop tray",
+            overall_dimensions_mm=[280.0, 300.0, 170.0],
+            components=[
+                DesignComponent(name="plate", description="", primitive="box", operation="base"),
+                DesignComponent(name="tray", description="", primitive="box", operation="union"),
+                DesignComponent(name="lip", description="", primitive="box", operation="union"),
+                DesignComponent(name="gusset", description="", primitive="custom", operation="union"),
+            ],
+            connections=[
+                Connection(from_part="plate", to_part="tray", kind="union"),
+            ],
+        )
+        stats = {
+            "bbox_x_mm": 203.6,
+            "bbox_y_mm": 224.1,
+            "bbox_z_mm": 131.7,
+            "solid_count": 1,
+        }
+
+        report = check_plan_conformance(plan, stats)
+
+        self.assertIsNotNone(report)
+        self.assertFalse(report.passed)
+        self.assertIn("only", " ".join(report.reasons).lower())
 
 
 class TestTopHeavyCheck(unittest.TestCase):

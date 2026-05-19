@@ -3,10 +3,12 @@ from backend.cad.recipes import (
     build_combined_recipe_context,
     build_recipe_prompt_context,
     infer_requirement_families,
+    merge_plan_quality_reports,
     retrieve_recipe_cards,
+    validate_plan_against_constraints,
     validate_plan_against_recipes,
 )
-from backend.domain.models import DesignComponent, DesignPlan
+from backend.domain.models import Connection, DesignComponent, DesignPlan, HardConstraints
 
 
 def test_retrieves_bracket_recipe():
@@ -14,6 +16,90 @@ def test_retrieves_bracket_recipe():
 
     assert cards
     assert cards[0].recipe_id == "bracket_or_mount"
+
+
+def test_plan_constraints_reject_oversized_single_fused_plan():
+    plan = DesignPlan(
+        summary="Oversized fused laptop tray mount",
+        overall_dimensions_mm=[280.0, 300.0, 170.0],
+        components=[
+            DesignComponent(
+                name="vesa_plate",
+                description="mounting plate",
+                primitive="box",
+                dimensions={"length": 160, "width": 160, "height": 8},
+                operation="base",
+            ),
+            DesignComponent(
+                name="tray_base",
+                description="laptop tray",
+                primitive="box",
+                dimensions={"length": 280, "width": 340, "height": 8},
+                operation="union",
+            ),
+        ],
+        connections=[
+            Connection(from_part="vesa_plate", to_part="tray_base", kind="union"),
+        ],
+    )
+
+    report = validate_plan_against_constraints(plan, HardConstraints())
+
+    assert not report.is_sufficient
+    assert "print-volume cap" in report.feedback
+    assert "result.val().scale" in report.feedback
+
+
+def test_plan_constraints_allow_large_multi_part_assembly_envelope():
+    plan = DesignPlan(
+        summary="Two separately printable rail sections",
+        overall_dimensions_mm=[420.0, 120.0, 30.0],
+        components=[
+            DesignComponent(
+                name="left_rail",
+                description="first printable segment",
+                primitive="box",
+                dimensions={"length": 210, "width": 120, "height": 30},
+                operation="base",
+            ),
+            DesignComponent(
+                name="right_rail",
+                description="second printable segment",
+                primitive="box",
+                dimensions={"length": 210, "width": 120, "height": 30},
+                operation="base",
+            ),
+        ],
+        connections=[],
+    )
+
+    report = validate_plan_against_constraints(plan, HardConstraints())
+
+    assert report.is_sufficient, report.feedback
+
+
+def test_plan_quality_reports_merge_constraint_and_recipe_feedback():
+    recipe_report = validate_plan_against_recipes(
+        DesignPlan(summary="plain mount", components=[]),
+        retrieve_recipe_cards("wall mount bracket"),
+        user_message="wall mount bracket",
+    )
+    constraint_report = validate_plan_against_constraints(
+        DesignPlan(
+            summary="oversized",
+            overall_dimensions_mm=[300, 300, 20],
+            components=[
+                DesignComponent(name="base", description="", primitive="box", operation="base"),
+            ],
+        ),
+        HardConstraints(),
+    )
+
+    merged = merge_plan_quality_reports(recipe_report, constraint_report)
+
+    assert not merged.is_sufficient
+    assert "Missing required plan features" in merged.feedback
+    assert "print-volume" in merged.feedback
 
 
 def test_bracket_plan_rejects_missing_fastener_cuts():

@@ -765,6 +765,11 @@ class VisionCritic:
             "response_format": {"type": "json_object"},
             "format": "json",
         }
+        if self._is_thinking_model():
+            # Ollama thinking models may ignore `/no_think` in multimodal
+            # prompts and stream a long reasoning narrative instead of JSON.
+            # Newer Ollama runners honor `think: false`; older ones ignore it.
+            request_payload["think"] = False
 
         # Call the vision model
         try:

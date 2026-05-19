@@ -203,11 +203,12 @@ Output the JSON array with no surrounding prose.
                         fields=fields[:12],  # cap fields per subject
                         reasoning=item.get("reasoning"),
                     ))
-            return subjects
+            return _add_builtin_subject_fallbacks(user_message, subjects)
         except Exception:
-            # Subject detection is best-effort. If it fails, the orchestrator
+            # Subject detection is best-effort. If it fails, still apply cheap
+            # keyword fallbacks for stable standards before the orchestrator
             # falls back to the existing web-search flow.
-            return []
+            return _add_builtin_subject_fallbacks(user_message, [])
 
     # ------------------------------------------------------------------
     # Per-model recall
@@ -341,6 +342,22 @@ Rules:
 
         Each model's response is emitted to `on_step` for live UI updates.
         """
+        builtin = _builtin_standard_consensus(subject, fields)
+        if builtin is not None:
+            if on_step:
+                await on_step("model_done", {
+                    "model": "built_in_reference",
+                    "subject": subject,
+                    "latency_s": 0.0,
+                    "field_count": len(builtin.fields),
+                    "error": None,
+                    "fields": {
+                        fname: {"value": fv.value, "confidence": fv.confidence}
+                        for fname, fv in builtin.fields.items()
+                    },
+                })
+            return builtin
+
         responses: list[ModelRecallResponse] = []
         prev_consensus_count = 0
         prompt_text = self.build_recall_prompt(subject, fields)
@@ -627,6 +644,85 @@ def _pretty(v: Any) -> str:
     if isinstance(v, list):
         return "[" + ", ".join(_pretty(x) for x in v) + "]"
     return str(v)
+
+
+def _builtin_standard_consensus(subject: str, requested_fields: list[str]) -> Optional[KnowledgeConsensus]:
+    """Small deterministic shortcuts for stable mechanical standards."""
+    normalized = subject.lower()
+    if "vesa" not in normalized:
+        return None
+
+    facts = {
+        "hole_spacing_x_mm": FieldValue(
+            value=[75, 100],
+            confidence=0.98,
+            note="Common MIS-D VESA square patterns are 75x75 mm and 100x100 mm.",
+        ),
+        "hole_spacing_y_mm": FieldValue(
+            value=[75, 100],
+            confidence=0.98,
+            note="Common MIS-D VESA square patterns are 75x75 mm and 100x100 mm.",
+        ),
+        "hole_diameter_mm": FieldValue(
+            value=5.0,
+            confidence=0.9,
+            note="Use about 5 mm clearance holes for M4 fasteners in printable plastic.",
+        ),
+        "bolt_thread_mm": FieldValue(
+            value="M4",
+            confidence=0.95,
+            note="Small VESA MIS-D mounts commonly use M4 screws.",
+        ),
+        "mounting_depth_mm": FieldValue(
+            value=None,
+            confidence=0.0,
+            note="Depth depends on the mating device/arm and should not be guessed.",
+        ),
+    }
+    selected = {
+        name: value for name, value in facts.items()
+        if not requested_fields or name in requested_fields
+    }
+    uncertain = [
+        name for name in requested_fields
+        if name not in selected or selected[name].value is None
+    ]
+    response = ModelRecallResponse(
+        model="built_in_reference",
+        subject=subject,
+        fields=selected,
+        latency_s=0.0,
+        raw_response="built-in stable mechanical standard reference",
+    )
+    return KnowledgeConsensus(
+        subject=subject,
+        fields={name: value for name, value in selected.items() if value.value is not None},
+        contributing_models=["built_in_reference"],
+        uncertain_fields=uncertain,
+        all_responses=[response],
+    )
+
+
+def _add_builtin_subject_fallbacks(
+    user_message: str,
+    subjects: list[RecallSubject],
+) -> list[RecallSubject]:
+    """Add deterministic recall subjects for obvious stable standards."""
+    normalized_prompt = user_message.lower()
+    existing = {subject.subject.lower() for subject in subjects}
+    if "vesa" in normalized_prompt and not any("vesa" in s for s in existing):
+        subjects.append(RecallSubject(
+            subject="VESA mounting standard",
+            fields=[
+                "hole_spacing_x_mm",
+                "hole_spacing_y_mm",
+                "hole_diameter_mm",
+                "bolt_thread_mm",
+                "mounting_depth_mm",
+            ],
+            reasoning="VESA plate geometry needs known hole spacing and fastener clearance.",
+        ))
+    return subjects
 
 
 # ----------------------------------------------------------------------

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import re
 
-from ..domain.models import DesignPlan
+from ..domain.models import DesignPlan, HardConstraints
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,26 @@ class PlanQualityReport:
     missing_features: tuple[str, ...] = ()
     missing_negative_space: tuple[str, ...] = ()
     feedback: str = ""
+
+
+def merge_plan_quality_reports(*reports: PlanQualityReport) -> PlanQualityReport:
+    """Combine independent plan-quality gates into one repair signal."""
+    missing_features: list[str] = []
+    missing_negative_space: list[str] = []
+    feedback: list[str] = []
+    for report in reports:
+        missing_features.extend(report.missing_features)
+        missing_negative_space.extend(report.missing_negative_space)
+        if report.feedback:
+            feedback.append(report.feedback)
+    missing_features = list(dict.fromkeys(missing_features))
+    missing_negative_space = list(dict.fromkeys(missing_negative_space))
+    return PlanQualityReport(
+        is_sufficient=not missing_features and not missing_negative_space,
+        missing_features=tuple(missing_features),
+        missing_negative_space=tuple(missing_negative_space),
+        feedback="\n\n".join(feedback),
+    )
 
 
 RECIPE_SOURCE_ROOT = Path("data") / "cad_sources"
@@ -544,7 +564,7 @@ def validate_plan_against_recipes(
         primary = cards[0]
         if (
             component_count < 3
-            and primary.recipe_id in {"bracket_or_mount", "enclosure"}
+            and primary.recipe_id in {"bracket_or_mount", "enclosure", "tray_or_organizer"}
             and _prompt_satisfies_recipe(primary, user_message)
         ):
             missing.append("at least three named components/sub-shapes with dimensions")
@@ -594,5 +614,99 @@ def validate_plan_against_recipes(
         is_sufficient=is_sufficient,
         missing_features=tuple(missing),
         missing_negative_space=tuple(missing_negative),
+        feedback="\n".join(feedback_lines),
+    )
+
+
+def validate_plan_against_constraints(
+    plan: DesignPlan,
+    hard_constraints: HardConstraints,
+) -> PlanQualityReport:
+    """Reject single-body plans that cannot fit the configured print volume.
+
+    The planner often writes an assembled real-world size first, then assumes
+    the execution repair loop will shrink it if it is too large. That produces
+    misleading plans and repeated scale patches. Catch it before code
+    generation: either keep the single fused part inside the build envelope, or
+    explicitly split the design into separately printable assembly parts.
+    """
+    if not plan:
+        return PlanQualityReport(is_sufficient=True)
+
+    max_dims = (
+        float(hard_constraints.max_x_mm),
+        float(hard_constraints.max_y_mm),
+        float(hard_constraints.max_z_mm),
+    )
+    axis_names = ("X", "Y", "Z")
+    missing: list[str] = []
+
+    union_ops = sum(
+        1 for c in plan.components
+        if (c.operation or "").strip().lower() == "union"
+    )
+    union_connections = sum(
+        1 for c in (plan.connections or [])
+        if (c.kind or "").strip().lower() == "union"
+    )
+    # Most generated plans describe one fused print when they contain union
+    # operations/connections. Plans with no unions may be true multi-part
+    # assemblies; allow their assembled envelope to exceed the per-part cap.
+    appears_single_fused_part = bool(union_ops or union_connections or len(plan.components) <= 1)
+
+    if plan.components and not plan.overall_dimensions_mm:
+        missing.append(
+            "plan does not declare overall_dimensions_mm, so the agent cannot "
+            "verify the design against the print-volume cap"
+        )
+
+    if (
+        appears_single_fused_part
+        and plan.overall_dimensions_mm
+        and len(plan.overall_dimensions_mm) == 3
+    ):
+        for axis, planned, cap in zip(axis_names, plan.overall_dimensions_mm, max_dims):
+            planned_f = float(planned)
+            if planned_f > cap:
+                missing.append(
+                    f"plan overall {axis} dimension {planned_f:.1f}mm exceeds the "
+                    f"{cap:.1f}mm print-volume cap for a single fused part"
+                )
+
+    for component in plan.components:
+        op = (component.operation or "").strip().lower()
+        if op in {"cut", "fillet", "chamfer", "shell", "pattern"}:
+            continue
+        if not component.dimensions:
+            missing.append(
+                f"component `{component.name}` does not declare dimensions, so "
+                "the agent cannot verify it against the print-volume cap"
+            )
+            continue
+        for dim_name, value in (component.dimensions or {}).items():
+            value_f = float(value)
+            if value_f > max(max_dims):
+                missing.append(
+                    f"component `{component.name}` dimension `{dim_name}` is "
+                    f"{value_f:.1f}mm, larger than the largest print-volume axis "
+                    f"({max(max_dims):.1f}mm)"
+                )
+
+    missing = list(dict.fromkeys(missing))
+    if not missing:
+        return PlanQualityReport(is_sufficient=True)
+
+    feedback_lines = [
+        "Plan violates hard print-volume constraints before code generation:",
+        *[f"- {item}" for item in missing],
+        "Revise the plan before code generation. Do not rely on a final "
+        "`result.val().scale(...)` patch to make an oversized single-part "
+        "design printable. Either reduce the named dimensions while preserving "
+        "the functional interfaces, or explicitly split the design into named "
+        "assembly parts that each fit inside the print volume.",
+    ]
+    return PlanQualityReport(
+        is_sufficient=False,
+        missing_features=tuple(missing),
         feedback="\n".join(feedback_lines),
     )

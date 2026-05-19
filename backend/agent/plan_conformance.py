@@ -25,10 +25,11 @@ from ..domain.models import CritiqueReport, DesignComponent, DesignPlan, Geometr
 # legitimate planner-vs-implementation rounding. But a missing tall wall in a
 # 45mm-tall design will produce a bbox that's <50% of the target Z, which is
 # what we actually want to catch.
-BBOX_MIN_FRACTION = 0.6   # measured/target must be >= this on every axis
+BBOX_MIN_FRACTION = 0.75  # measured/target must be >= this on every axis
 BBOX_MAX_FRACTION = 1.6   # and <= this (catches "extruded the whole thing 10x")
-# Components that don't add new solids (edge modifiers, patterns applied in-place)
+# Components that don't add new solids (edge modifiers, cuts, patterns applied in-place)
 _NON_SOLID_OPS = {"fillet", "chamfer", "shell"}
+_ADDITIVE_OPS = {"", "base", "union", "intersect", "pattern"}
 # We need at least this many solid bodies vs the plan's count of additive parts.
 # We accept fused unions as 1 solid — a base + 4 walls fused together is still
 # correct geometry — so the bar is "at least one fused solid OR roughly the
@@ -83,14 +84,24 @@ class ConformanceReport:
             )
         if self.expected_solids and self.measured_solids < self.expected_solids:
             repair_lines.append(
-                f"Plan called for {self.expected_solids} solid sub-shape(s); the result "
-                f"contains only {self.measured_solids}. Implement every component in the "
-                f"plan as actual geometry — do not skip walls, cutouts, ribs, or supports."
+                f"The plan includes {self.expected_solids} additive component(s), while "
+                f"the rendered result reports {self.measured_solids} solid bod"
+                f"{'y' if self.measured_solids == 1 else 'ies'}. This is not a request "
+                f"to create separate loose parts: for a fused printable assembly, each "
+                f"planned body must be present and physically joined into the final part."
+            )
+        if any("disconnected solids" in r.lower() for r in self.reasons):
+            repair_lines.append(
+                "A `.union()` only fuses bodies that intersect or share a face. Move the "
+                "floating plate/rib/support until its bounding box overlaps the body it "
+                "joins, or add a real connector/gusset that bridges the gap. The repaired "
+                "single-piece print should normally report `solid_count == 1`."
             )
         if repair_lines:
             repair_lines.append(
-                "Regenerate the FULL plan: emit code for every component listed under "
-                "'Expected components' in the plan, not just the base body."
+                "Modify the existing component definitions and placements so the rendered "
+                "geometry matches the plan, instead of appending cosmetic cuts or scaling "
+                "the final result."
             )
         repair_prompt = " ".join(repair_lines) if repair_lines else (
             "The rendered geometry does not match the plan's overall dimensions. "
@@ -109,19 +120,17 @@ class ConformanceReport:
 def _expected_solid_count(components: list[DesignComponent]) -> int:
     """Count plan components that contribute additive solid bodies.
 
-    We exclude pure edge modifiers (fillet/chamfer/shell) and treat the base
-    plus every `union` as one expected solid (the generator may fuse them, but
-    each represents a distinct sub-shape that must exist somewhere). Cuts are
-    counted too — they imply real boolean subtraction must happen, not just a
-    bare base plate.
+    We exclude pure edge modifiers and subtractive features. Cuts matter, but
+    they should be verified by feature/vision checks and bbox changes, not by
+    comparing against the number of OCCT solids. Counting holes and cutouts as
+    "expected solids" made repair prompts tell the LLM to create extra bodies
+    when the actual requirement was one fused printable part.
     """
     count = 0
     for c in components:
         op = (c.operation or "").strip().lower()
-        if op in _NON_SOLID_OPS:
-            continue
-        # base / union / cut / intersect all imply distinct geometry steps
-        count += 1
+        if op in _ADDITIVE_OPS and op not in _NON_SOLID_OPS:
+            count += 1
     return count
 
 

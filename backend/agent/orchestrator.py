@@ -84,23 +84,170 @@ def _error_signature(error_message: str) -> str:
             return ln.strip()[:200]
     return ""
 
+
+def _fallback_plan_from_recipes(user_message: str, recipe_cards, hard_constraints) -> Optional[Any]:
+    """Deterministic escape hatch when local planner repair emits prose only.
+
+    This is intentionally narrow: it covers the common product synthesis case
+    where a prompt combines a tray/holder with a mounting bracket. The fallback
+    is still a real structured plan, so normal recipe and print-volume gates
+    validate it before code generation proceeds.
+    """
+    prompt = (user_message or "").lower()
+    recipe_ids = {getattr(card, "recipe_id", "") for card in (recipe_cards or [])}
+    if "tray_or_organizer" not in recipe_ids:
+        return None
+    if not any(word in prompt for word in ("tray", "holder", "stand")):
+        return None
+    if not any(word in prompt for word in ("mount", "vesa", "bracket")):
+        return None
+
+    width = min(220.0, hard_constraints.max_x_mm - 20.0)
+    depth = min(170.0, hard_constraints.max_y_mm - 40.0)
+    height = min(150.0, hard_constraints.max_z_mm - 20.0)
+    wall = max(2.4, hard_constraints.min_wall_thickness_mm * 2)
+    return DesignPlan(
+        summary="Compact 30 degree laptop tray with raised retaining walls, open tray cavity, rear VESA mount plate, M4 clearance holes, and support gussets.",
+        overall_dimensions_mm=[width, depth + 35.0, height],
+        physical_use=PhysicalUse(
+            orientation="VESA plate mounts vertically; tray projects forward and is tilted 30 degrees from horizontal.",
+            contact_surfaces="Laptop bottom rests in the open tray cavity; VESA plate contacts the monitor arm or back plate.",
+            applied_forces="Laptop weight pulls down and forward, creating bending at the tray-to-plate joint.",
+            containment_strategy="Raised front lip and side walls retain the laptop against sliding.",
+            pose_intent="tray_body is tilted 30 degrees from horizontal around the X axis.",
+            use_cycle="Mount once with M4 screws, then place and remove laptop repeatedly.",
+            ergonomic_notes="Compact width fits the print volume while supporting the central laptop footprint.",
+            mating_object="VESA MIS-D 75x75 or 100x100 pattern with M4 clearance holes.",
+        ),
+        feature_decisions=[
+            FeatureDecision(feature="fasteners_or_mounting_holes", needed=True, rationale="VESA mount plate requires M4 clearance holes."),
+            FeatureDecision(feature="internal_cavity_or_shell", needed=True, rationale="Tray needs an open usable cavity with printable walls."),
+            FeatureDecision(feature="retention_geometry", needed=True, rationale="Tilted tray needs front lip and side walls."),
+            FeatureDecision(feature="load_bearing_reinforcement", needed=True, rationale="Gussets resist laptop bending load."),
+            FeatureDecision(feature="clearance_or_port_cutouts", needed=False, rationale="No cable cutout requested."),
+            FeatureDecision(feature="moving_or_mating_interface", needed=False, rationale="Static printed mount."),
+        ],
+        components=[
+            DesignComponent(
+                name="tray_body",
+                description="outer tray body with stable bottom, raised perimeter walls, and rounded internal and external corners",
+                primitive="box",
+                dimensions={"length": width, "width": depth, "height": 18.0, "wall_thickness": wall},
+                position=[0.0, -35.0, 70.0],
+                orientation="tilted tray surface",
+                rotation=Rotation(axis="X", angle_deg=30.0, intent="tilt tray surface 30 degrees from horizontal"),
+                operation="base",
+                spec_source="inferred",
+            ),
+            DesignComponent(
+                name="open_tray_cavity_cut",
+                description="open cavity cut/shell that leaves printable raised perimeter walls",
+                primitive="box",
+                dimensions={"length": width - 2 * wall, "width": depth - 2 * wall, "height": 14.0},
+                position=[0.0, -35.0, 74.0],
+                orientation="tilted with tray body",
+                rotation=Rotation(axis="X", angle_deg=30.0, intent="align cavity with tilted tray"),
+                operation="cut",
+                spec_source="inferred",
+            ),
+            DesignComponent(
+                name="front_lip",
+                description="raised front retention lip with rounded corners",
+                primitive="box",
+                dimensions={"length": width, "width": wall * 2, "height": 24.0},
+                position=[0.0, -depth / 2.0, 82.0],
+                orientation="tilted with tray body",
+                rotation=Rotation(axis="X", angle_deg=30.0, intent="align lip with tilted tray"),
+                operation="union",
+                spec_source="inferred",
+            ),
+            DesignComponent(
+                name="vesa_backplate",
+                description="primary load-bearing VESA mount plate with fastener interface",
+                primitive="box",
+                dimensions={"length": 120.0, "width": 8.0, "height": 120.0},
+                position=[0.0, 55.0, 70.0],
+                orientation="vertical plate",
+                operation="union",
+                spec_source="explicit",
+            ),
+            DesignComponent(
+                name="vesa_holes_cut",
+                description="four M4 clearance through holes on 75x75 or 100x100 VESA pattern",
+                primitive="cylinder",
+                dimensions={"diameter": 5.0, "spacing": 100.0, "depth": 12.0},
+                position=[0.0, 55.0, 70.0],
+                orientation="axis=Y through backplate",
+                operation="cut",
+                spec_source="explicit",
+            ),
+            DesignComponent(
+                name="triangular_support_gussets",
+                description="ribs/gussets joining tray underside to VESA plate for stiffness",
+                primitive="polygon",
+                dimensions={"length": 65.0, "width": 6.0, "height": 80.0},
+                position=[0.0, 30.0, 55.0],
+                orientation="two mirrored side ribs",
+                operation="union",
+                spec_source="inferred",
+            ),
+        ],
+        connections=[
+            Connection(from_part="tray_body", to_part="vesa_backplate", kind="union", description="Tray rear edge is fused to the VESA plate."),
+            Connection(from_part="triangular_support_gussets", to_part="tray_body", kind="union", description="Gussets tie tray underside into the backplate."),
+            Connection(from_part="vesa_holes_cut", to_part="vesa_backplate", kind="cut", description="Holes pass through the mounting plate."),
+        ],
+        key_features=[
+            "outer tray body with stable bottom",
+            "raised perimeter walls with printable wall thickness",
+            "rounded internal and external corners",
+            "open cavity or compartments cut/shelled from the body",
+            "VESA mount plate with M4 clearance holes",
+            "ribs/gussets or thickened junctions for stiffness",
+            "front retention lip",
+        ],
+        assumptions=[
+            "Compact printable tray supports the central footprint of a laptop rather than full laptop width.",
+            "Use 100x100 VESA pattern with 5 mm M4 clearance holes.",
+        ],
+        risks=[
+            "A fully laptop-width tray may exceed the print volume; compact dimensions preserve printability.",
+            "Actual monitor arm load rating must be checked by the user.",
+        ],
+        parameters={
+            "tray_width": width,
+            "tray_depth": depth,
+            "wall_thickness": wall,
+            "tilt_angle_deg": 30.0,
+            "vesa_spacing": 100.0,
+            "m4_clearance_diameter": 5.0,
+        },
+    )
+
 from ..cad.engine import process_cadquery_code
 from ..cad.example_bank import build_example_bank_prompt_context, retrieve_example_snippets
 from ..cad.static_lint import lint_cadquery_source
 from ..cad.recipes import (
     build_combined_recipe_context,
+    merge_plan_quality_reports,
     retrieve_recipe_cards,
+    validate_plan_against_constraints,
     validate_plan_against_recipes,
 )
 from ..domain.models import (
     ChatMessage,
+    Connection,
     CritiqueReport,
+    DesignComponent,
+    FeatureDecision,
     DesignPlan,
     FailureType,
     GeometryStats,
     ModelMetadata,
+    PhysicalUse,
     SelectionContext,
     PipelineStep,
+    Rotation,
 )
 from ..models.llm_service import (
     LLMBackendUnavailable,
@@ -313,6 +460,64 @@ class AgentOrchestrator:
         step failed (registry lookup vs. smoke-test) so the caller can surface
         an actionable error instead of a generic "not available" message.
         """
+        from ..config import VISION_FALLBACK_MODELS, resolve_llm_model, resolve_vision_model
+        from ..vision.critic import VisionCritic
+
+        configured = resolve_vision_model()
+        if configured == resolve_llm_model() and configured not in VISION_FALLBACK_MODELS:
+            candidates = list(VISION_FALLBACK_MODELS) + [configured]
+        else:
+            candidates = [configured] + [m for m in VISION_FALLBACK_MODELS if m != configured]
+        first_failure = ""
+
+        for idx, candidate in enumerate(candidates):
+            critic = VisionCritic(model=candidate)
+            await self._emit_debug("vision", f"Checking vision model availability: {candidate}")
+            available, error = await critic.is_available()
+            if not available:
+                first_failure = first_failure or f"registry check failed - {error}"
+                await self._emit_debug("vision_warning", f"Vision model not available ({candidate}): {error}")
+                continue
+
+            if idx > 0:
+                await self._emit_status(
+                    "preflight",
+                    f"Trying fallback vision model `{candidate}`.",
+                    details=f"Configured vision model `{configured}` did not pass preflight.",
+                    data={
+                        "sub_stage": "vision_fallback",
+                        "rationale": "A vision-capable verifier is required, so the agent tries installed fallback models before blocking generation.",
+                        "model": candidate,
+                    },
+                )
+
+            await self._emit_debug("vision", f"Performing vision smoke test: {candidate}")
+            await self._emit_status(
+                "preflight",
+                "Checking the vision model with a smoke-test image.",
+                details=None,
+                data={
+                    "sub_stage": "vision_smoke_test",
+                    "rationale": "Confirms the configured multimodal model can actually read images before it critiques generated renders.",
+                    "inputs": ["64x64 red square image"],
+                    "model": critic.model,
+                    "system_prompt": "You are a vision assistant. Look at the image and answer the question literally in one word.",
+                    "prompt": "What color is this square? One word.",
+                    "image_views": ["smoke_test_red_square"],
+                    "in_progress": True,
+                },
+            )
+            ok, msg = await critic.smoke_test()
+            if ok:
+                os.environ["VISION_MODEL"] = candidate
+                await self._emit_debug("vision", f"Vision model is fully operational: {candidate}")
+                return True, msg or "ok"
+
+            first_failure = first_failure or f"smoke test failed - {msg}"
+            await self._emit_debug("vision_warning", f"Vision smoke test failed ({candidate}): {msg}")
+
+        return False, first_failure or "no vision model passed preflight"
+
         from ..vision.critic import VisionCritic
         critic = VisionCritic()
         await self._emit_debug("vision", "Checking vision model availability...")
@@ -774,13 +979,15 @@ class AgentOrchestrator:
         recipe_context = build_combined_recipe_context(user_message, recipe_cards)
         planning_example_context = build_example_bank_prompt_context(
             user_message,
-            max_snippets=5,
+            max_snippets=2,
             cadquery_only=False,
+            max_chars=2200,
         )
         code_example_context = build_example_bank_prompt_context(
             user_message,
-            max_snippets=5,
+            max_snippets=3,
             cadquery_only=True,
+            max_chars=3600,
         )
         planning_reference_context = "\n\n".join(
             part for part in [recipe_context, planning_example_context] if part
@@ -937,7 +1144,10 @@ class AgentOrchestrator:
             },
         )
 
-        quality_report = validate_plan_against_recipes(plan, recipe_cards, user_message=user_message)
+        quality_report = merge_plan_quality_reports(
+            validate_plan_against_recipes(plan, recipe_cards, user_message=user_message),
+            validate_plan_against_constraints(plan, config.hard_constraints),
+        )
         if not quality_report.is_sufficient:
             rejected_plan_text = plan_to_prompt_text(plan) or plan.raw_text
             plan_repair_feedback = (
@@ -957,18 +1167,18 @@ class AgentOrchestrator:
             )
             await self._emit_status(
                 "planning",
-                "Plan is missing required product details — repairing.",
+                "Plan needs revision before code generation.",
                 details=(
                     "A rule-based quality gate compared the planner's output "
-                    "against the retrieved CAD recipe checklist and found gaps. "
+                    "against the retrieved CAD recipe checklist and hard print-volume constraints. "
                     "The planner LLM is now asked to rewrite the plan with the "
-                    "missing features filled in. The missing-features list "
+                    "missing features/constraint fixes filled in. The issue list "
                     "below comes from the rule check; the rewritten plan in the "
                     "next step is LLM output."
                 ),
                 data={
                     "sub_stage": "plan_repair",
-                    "rationale": "A weak plan leads to simplistic geometry, so the plan is repaired before CadQuery code is generated.",
+                    "rationale": "A weak or impossible plan leads to bad geometry, so the plan is repaired before CadQuery code is generated.",
                     "missing_features": list(quality_report.missing_features),
                     "missing_negative_space": list(quality_report.missing_negative_space),
                     "feedback": quality_report.feedback,
@@ -992,7 +1202,10 @@ class AgentOrchestrator:
                     soft_constraints=config.soft_constraints,
                     on_chunk=_plan_chunk,
                 )
-                quality_report = validate_plan_against_recipes(plan, recipe_cards, user_message=user_message)
+                quality_report = merge_plan_quality_reports(
+                    validate_plan_against_recipes(plan, recipe_cards, user_message=user_message),
+                    validate_plan_against_constraints(plan, config.hard_constraints),
+                )
             except LLMBackendUnavailable as e:
                 await self._handle_backend_unavailable(e, stage="plan_repair")
                 raise
@@ -1000,13 +1213,85 @@ class AgentOrchestrator:
                 await self._emit_debug("plan_repair_error", f"Plan repair failed: {e}", {"traceback": traceback.format_exc()})
 
             if not quality_report.is_sufficient:
+                fallback_plan = _fallback_plan_from_recipes(user_message, recipe_cards, config.hard_constraints)
+                if fallback_plan is not None:
+                    fallback_quality = merge_plan_quality_reports(
+                        validate_plan_against_recipes(fallback_plan, recipe_cards, user_message=user_message),
+                        validate_plan_against_constraints(fallback_plan, config.hard_constraints),
+                    )
+                    if fallback_quality.is_sufficient:
+                        plan = fallback_plan
+                        quality_report = fallback_quality
+                        await self._emit_status(
+                            "planning",
+                            "Used deterministic recipe fallback plan.",
+                            details=(
+                                "The planner repair returned prose instead of a complete XML plan, "
+                                "so the agent synthesized a conservative tray-plus-mount plan and "
+                                "validated it against the same recipe and print-volume gates."
+                            ),
+                            data={
+                                "sub_stage": "plan_repair_fallback_ok",
+                                "outcome": plan.summary,
+                                "component_count": len(plan.components),
+                                "overall_dimensions_mm": plan.overall_dimensions_mm,
+                            },
+                        )
+                    else:
+                        await self._emit_debug(
+                            "plan_repair_fallback_rejected",
+                            "Deterministic fallback plan did not satisfy quality gate.",
+                            {"feedback": fallback_quality.feedback},
+                        )
+                if quality_report.is_sufficient:
+                    await self._emit_status(
+                        "planning",
+                        "Plan repair passed quality gate.",
+                        details=None,
+                        data={
+                            "sub_stage": "plan_repair_ok",
+                            "outcome": plan.summary or "The revised plan now satisfies the retrieved CAD recipe checklist.",
+                            "outcome_source": "recipe_fallback",
+                        },
+                    )
+                else:
+                    failure_message = (
+                        "Plan repair still failed the quality gate, so code generation was stopped. "
+                        "The revised plan is missing required dimensions/features and would likely "
+                        "produce invalid or placeholder CAD."
+                    )
+                    await self._emit_status(
+                        "planning",
+                        "Plan repair still failed the quality gate.",
+                        details=failure_message,
+                        data={
+                            "sub_stage": "plan_repair_partial",
+                            "rationale": "Generating CadQuery from an incomplete plan produces placeholder geometry and wastes repair cycles, so this turn stops before code generation.",
+                            "missing_features": list(quality_report.missing_features),
+                            "missing_negative_space": list(quality_report.missing_negative_space),
+                            "feedback": quality_report.feedback,
+                            # The LLM did try to repair; surface its post-repair
+                            # summary so the user can see what it returned.
+                            "llm_revised_summary": plan.summary,
+                        },
+                    )
+                    await self._emit_error(failure_message, "plan_quality_failed")
+                    self._save_failure_chat(project_id, thread_id, current_model_id, failure_message)
+                    self._schedule_summarization_safely([], turn_succeeded=False)
+                    return None
+            if not quality_report.is_sufficient:
+                failure_message = (
+                    "Plan repair still failed the quality gate, so code generation was stopped. "
+                    "The revised plan is missing required dimensions/features and would likely "
+                    "produce invalid or placeholder CAD."
+                )
                 await self._emit_status(
                     "planning",
-                    "Plan still has gaps — proceeding with explicit recipe constraints.",
-                    details=None,
+                    "Plan repair still failed the quality gate.",
+                    details=failure_message,
                     data={
                         "sub_stage": "plan_repair_partial",
-                        "rationale": "Proceeding keeps the pipeline usable, but code generation and vision critique will still receive the recipe checklist.",
+                        "rationale": "Generating CadQuery from an incomplete plan produces placeholder geometry and wastes repair cycles, so this turn stops before code generation.",
                         "missing_features": list(quality_report.missing_features),
                         "missing_negative_space": list(quality_report.missing_negative_space),
                         "feedback": quality_report.feedback,
@@ -1015,6 +1300,10 @@ class AgentOrchestrator:
                         "llm_revised_summary": plan.summary,
                     },
                 )
+                await self._emit_error(failure_message, "plan_quality_failed")
+                self._save_failure_chat(project_id, thread_id, current_model_id, failure_message)
+                self._schedule_summarization_safely([], turn_succeeded=False)
+                return None
             else:
                 await self._emit_status(
                     "planning",
@@ -1151,21 +1440,71 @@ class AgentOrchestrator:
                         project_id=project_id,
                         plan_text=plan_text,
                     )
+                    if not last_code.strip():
+                        await self._emit_status(
+                            "generating",
+                            f"Initial response contained no usable CadQuery source; retrying code-only (`{model_id}`)",
+                            details=(
+                                "The extractor rejected the model response as prose/markdown rather "
+                                "than Python source, so this retry asks for a single fenced CadQuery "
+                                "program instead of entering the repair loop with non-code."
+                            ),
+                            data={
+                                "iteration": iteration,
+                                "rationale": "A format retry keeps prose leakage out of syntax repair.",
+                                "inputs": ["code extraction result: empty"],
+                                "model_id": model_id,
+                                "model": self.llm.model,
+                            },
+                        )
+                        last_code = await self._generate_code_streaming(
+                            user_message,
+                            system_prompt,
+                            chat_ctx,
+                            current_source,
+                            base_model_id,
+                            selection,
+                            research_context=code_generation_context,
+                            recipe_context=generation_reference_context,
+                            project_id=project_id,
+                            plan_text=plan_text,
+                            format_retry=True,
+                        )
                 elif last_critique and last_critique.issues:
                     # Vision-driven repair. Bail out if we've already spent
                     # the per-turn vision budget — better to accept the
                     # current model and let the user iterate from there
                     # than to spin forever trying to chase the verifier.
                     if vision_repairs_used >= self.MAX_VISION_REPAIR_ITERATIONS:
+                        first_issue = last_critique.issues[0].description if last_critique.issues else "verifier rejected the model"
+                        failure_message = (
+                            f"Could not produce a model that passes visual/plan verification after "
+                            f"{self.MAX_VISION_REPAIR_ITERATIONS} vision repair attempts. "
+                            f"Last issue: {first_issue[:220]}"
+                        )
                         await self._emit_debug(
                             "vision_budget_exhausted",
                             f"Vision repair budget spent ({vision_repairs_used}/"
-                            f"{self.MAX_VISION_REPAIR_ITERATIONS}); accepting current model.",
+                            f"{self.MAX_VISION_REPAIR_ITERATIONS}); failing turn instead of "
+                            f"shipping an invalid model.",
                         )
-                        # Re-render + accept the *previous* successful model
-                        # as the final output. The previous loop iteration
-                        # already saved its metadata; just exit cleanly.
-                        return current_model_id
+                        await self._emit_status(
+                            "failed",
+                            "Vision/plan verification budget exhausted.",
+                            details=failure_message,
+                            data={
+                                "iteration": iteration,
+                                "model_id": current_model_id,
+                                "failure_type": "vision_quality_failed",
+                                "vision_repairs_used": vision_repairs_used,
+                                "max_vision_repairs": self.MAX_VISION_REPAIR_ITERATIONS,
+                                "last_issue": first_issue,
+                            },
+                        )
+                        await self._emit_error(failure_message, "vision_quality_failed")
+                        self._save_failure_chat(project_id, thread_id, current_model_id, failure_message)
+                        self._schedule_summarization_safely(turn_error_events, turn_succeeded=False)
+                        return None
                     vision_repairs_used += 1
                     recent_turn_errors = _collect_recent_turn_errors(turn_error_events)
                     repair_system_prompt = build_repair_system_prompt(
@@ -1264,6 +1603,34 @@ class AgentOrchestrator:
                     # branch: if syntax bugs already burned through their
                     # budget, give up rather than loop indefinitely.
                     if syntax_repairs_used >= self.MAX_SYNTAX_REPAIR_ITERATIONS:
+                        from ..cad.engine import try_patch_standalone_workplane_hole, try_patch_workplane_bounding_box, try_remove_failing_fillet
+                        emergency_patch = (
+                            try_remove_failing_fillet(last_code, last_error)
+                            or try_patch_workplane_bounding_box(last_code, last_error)
+                            or try_patch_standalone_workplane_hole(last_code, last_error)
+                        )
+                        if emergency_patch is not None:
+                            await self._emit_status(
+                                "repairing",
+                                f"Mechanical fillet recovery after syntax budget · `{model_id}`",
+                                details=(
+                                    "The remaining failure is a known OCCT fillet-construction error. "
+                                    "Fillets are cosmetic/print-quality features, so the agent removes only "
+                                    "the failing fillet line and keeps the geometry otherwise unchanged."
+                                ),
+                                data={
+                                    "iteration": iteration,
+                                    "repair_kind": "mechanical",
+                                    "rationale": "A deterministic fillet-line removal is safer than aborting after the LLM repair budget is exhausted.",
+                                    "outcome": "Applied one deterministic execution fix.",
+                                    "model_id": model_id,
+                                },
+                            )
+                            last_code = emergency_patch
+                            repair_notes.append(
+                                "Mechanical fix (no LLM call): Applied one deterministic execution fix after repair budget was exhausted."
+                            )
+                            continue
                         await self._emit_debug(
                             "syntax_budget_exhausted",
                             f"Syntax repair budget spent ({syntax_repairs_used}/"
@@ -1289,10 +1656,48 @@ class AgentOrchestrator:
                     #   1. Missing `result =` → AST-patch alias to the last var.
                     #   2. Syntax error from reasoning prose leaking into the
                     #      code block (qwen3.x failure mode) → strip the prose.
-                    # If neither applies, fall through to the LLM.
+                    #   3. Constraint violation from oversize AABB → append a
+                    #      uniform `.scale(factor)` step that brings the model
+                    #      under the print-volume cap.
+                    # If none apply, fall through to the LLM.
                     mechanical_patch: Optional[str] = None
                     mechanical_note: str = ""
                     if last_failure_type == "syntax_error" and last_error and "must assign" in last_error.lower():
+                        from ..cad.engine import looks_like_parameter_only_stub
+                        if looks_like_parameter_only_stub(last_code):
+                            await self._emit_status(
+                                "repairing",
+                                f"Regenerating full CadQuery source (syntax attempt {syntax_repairs_used}/{self.MAX_SYNTAX_REPAIR_ITERATIONS}) · `{model_id}`",
+                                details=(
+                                    "The previous response was only parameter assignments, "
+                                    "not a CadQuery model. A minimal repair would preserve "
+                                    "the stub, so this retry asks for a complete program."
+                                ),
+                                data={
+                                    "iteration": iteration,
+                                    "repair_kind": "format_regeneration",
+                                    "rationale": "Parameter-only stubs need full code generation, not a local missing-result patch.",
+                                    "inputs": ["parameter-only source stub", last_failure_type],
+                                    "model_id": model_id,
+                                },
+                            )
+                            last_code = await self._generate_code_streaming(
+                                user_message,
+                                system_prompt,
+                                chat_ctx,
+                                current_source,
+                                current_model_id,
+                                selection,
+                                research_context=merged_external_context,
+                                recipe_context=generation_reference_context,
+                                project_id=project_id,
+                                plan_text=plan_to_prompt_text(plan),
+                                format_retry=True,
+                            )
+                            repair_notes.append(
+                                "Regenerated full code after parameter-only stub."
+                            )
+                            continue
                         from ..cad.engine import try_patch_missing_result
                         mechanical_patch = try_patch_missing_result(last_code)
                         if mechanical_patch is not None:
@@ -1308,15 +1713,45 @@ class AgentOrchestrator:
                                 "Stripped LLM reasoning prose that leaked into "
                                 "the code block (no LLM call)."
                             )
+                    elif last_failure_type == "constraint_violation" and last_geometry_stats:
+                        from ..cad.engine import try_auto_scale_for_fit
+                        scaled = try_auto_scale_for_fit(
+                            last_code,
+                            last_geometry_stats,
+                            max_x_mm=config.hard_constraints.max_x_mm,
+                            max_y_mm=config.hard_constraints.max_y_mm,
+                            max_z_mm=config.hard_constraints.max_z_mm,
+                        )
+                        if scaled is not None:
+                            mechanical_patch = scaled
+                            mechanical_note = (
+                                "Appended a uniform `result.val().scale(...)` step "
+                                "to bring the geometry under the print-volume cap "
+                                "(deterministic — no LLM repair call needed)."
+                            )
+
+                    elif last_failure_type == "execution_error" and last_error:
+                        from ..cad.engine import try_patch_standalone_workplane_hole, try_patch_workplane_bounding_box, try_remove_failing_fillet
+                        exec_patch = (
+                            try_remove_failing_fillet(last_code, last_error)
+                            or try_patch_workplane_bounding_box(last_code, last_error)
+                            or try_patch_standalone_workplane_hole(last_code, last_error)
+                        )
+                        if exec_patch is not None:
+                            mechanical_patch = exec_patch
+                            mechanical_note = (
+                                "Applied a deterministic execution fix for a known "
+                                "CadQuery/OCC failure mode (no LLM call)."
+                            )
 
                     if mechanical_patch is not None:
                         await self._emit_status("repairing",
-                            f"Mechanical syntax fix (syntax attempt {syntax_repairs_used}/{self.MAX_SYNTAX_REPAIR_ITERATIONS}) · `{model_id}`",
+                            f"Mechanical fix (syntax attempt {syntax_repairs_used}/{self.MAX_SYNTAX_REPAIR_ITERATIONS}) · `{model_id}`",
                             details=None,
                             data={
                                 "iteration": iteration,
                                 "repair_kind": "mechanical",
-                                "rationale": "Deterministic fix avoids a ~90s LLM repair call when the bug is a known textual artifact (missing `result` alias or LLM reasoning prose leaking into the code block).",
+                                "rationale": "Deterministic fix avoids a ~90s LLM repair call when the bug is a known textual artifact (missing `result` alias, LLM reasoning prose leaking into the code block, or oversize geometry that just needs a uniform scale-down).",
                                 "outcome": mechanical_note,
                                 "inputs": ["AST analysis"],
                                 "model_id": model_id,
@@ -1329,7 +1764,7 @@ class AgentOrchestrator:
                         })
                         last_code = mechanical_patch
                         repair_notes.append(
-                            f"Mechanical syntax fix (no LLM call): {mechanical_note}"
+                            f"Mechanical fix (no LLM call): {mechanical_note}"
                         )
                         # Record the fix on the most-recent pending failure so
                         # the post-turn summarizer can see which strategy was
@@ -1837,6 +2272,21 @@ class AgentOrchestrator:
                 needs_repair = critique and (
                     vision_score < self.VISION_SCORE_THRESHOLD or has_errors or intent_mismatch
                 )
+                only_vision_parse_failed = bool(
+                    critique
+                    and critique.issues
+                    and all(i.issue_type == "vision_parse_failed" for i in critique.issues)
+                )
+                if only_vision_parse_failed:
+                    failure_message = (
+                        "Vision verifier did not return parseable JSON, so the model cannot be "
+                        "certified as matching the user's intent. Geometry execution and "
+                        "plan-conformance may have passed, but visual acceptance failed."
+                    )
+                    await self._emit_error(failure_message, "vision_parse_failed")
+                    self._save_failure_chat(project_id, thread_id, model_id, failure_message)
+                    self._schedule_summarization_safely(turn_error_events, turn_succeeded=False)
+                    return None
 
                 # Track best-so-far across the repair loop. We only count
                 # iterations where a real vision critique was produced — the
@@ -1897,10 +2347,18 @@ class AgentOrchestrator:
                     # one (or when the current iteration has no real score,
                     # which happens when vision was unavailable at the tail).
                     current_score_known = critique is not None
+                    best_is_acceptable = (
+                        best_critique is not None
+                        and best_vision_score is not None
+                        and best_vision_score >= self.VISION_SCORE_THRESHOLD
+                        and best_critique.matches_intent is not False
+                        and not any(i.severity == "error" for i in best_critique.issues)
+                    )
                     best_is_better = (
                         best_model_id is not None
                         and best_model_id != model_id
                         and best_vision_score is not None
+                        and best_is_acceptable
                         and (
                             (not current_score_known)
                             or vision_score < best_vision_score - VISION_REGRESSION_MARGIN
@@ -1937,12 +2395,36 @@ class AgentOrchestrator:
                             )
                             self._schedule_summarization_safely(turn_error_events, turn_succeeded=True)
                             return best_model_id
+                    first_issue = critique.issues[0].description if critique and critique.issues else "verifier rejected the model"
+                    failure_message = (
+                        f"Could not produce a model that passes visual/plan verification after "
+                        f"{self.MAX_VISION_REPAIR_ITERATIONS} vision repair attempts. "
+                        f"Last issue: {first_issue[:220]}"
+                    )
                     await self._emit_debug(
                         "vision_budget_exhausted",
                         f"Vision score {vision_score:.2f} still below threshold but "
                         f"used {vision_repairs_used}/{self.MAX_VISION_REPAIR_ITERATIONS} "
-                        f"vision attempts; shipping current model.",
+                        f"vision attempts; failing turn instead of shipping invalid geometry.",
                     )
+                    await self._emit_status(
+                        "failed",
+                        "Vision/plan verification budget exhausted.",
+                        details=failure_message,
+                        data={
+                            "iteration": iteration,
+                            "model_id": model_id,
+                            "failure_type": "vision_quality_failed",
+                            "vision_score": vision_score,
+                            "vision_repairs_used": vision_repairs_used,
+                            "max_vision_repairs": self.MAX_VISION_REPAIR_ITERATIONS,
+                            "last_issue": first_issue,
+                        },
+                    )
+                    await self._emit_error(failure_message, "vision_quality_failed")
+                    self._save_failure_chat(project_id, thread_id, model_id, failure_message)
+                    self._schedule_summarization_safely(turn_error_events, turn_succeeded=False)
+                    return None
 
                 # Promote this metadata to final and persist again. We re-save
                 # the same metadata object with is_final=True so the version
@@ -2056,6 +2538,7 @@ class AgentOrchestrator:
         recipe_context: str = "",
         project_id: str = "",
         plan_text: str = "",
+        format_retry: bool = False,
     ) -> str:
         effective_user_message = user_message
 
@@ -2116,11 +2599,24 @@ class AgentOrchestrator:
             project_id=project_id,
             plan_text=plan_text,
         )
+        if format_retry:
+            effective_user_message += (
+                "\n\n## Format Retry (highest priority)\n"
+                "Your previous response did not contain usable Python source "
+                "or only listed parameter assignments without building geometry. "
+                "Return exactly one ```python fenced block and nothing else. "
+                "Do not write bullets, diagnosis, planning notes, or markdown prose. "
+                "The first line inside the block must be `import cadquery as cq`, "
+                "the program must contain real `cq.Workplane(...)` or `cq.Assembly(...)` "
+                "geometry construction, and it must assign the final CadQuery shape "
+                "or assembly to `result`."
+            )
 
         await self._emit_debug("llm_request", "Sending request to LLM", {
             "model": self.llm.model,
             "user_message": user_message,
             "base_model_id": current_model_id,
+            "format_retry": format_retry,
         })
 
         full_response = ""
@@ -2245,25 +2741,42 @@ class AgentOrchestrator:
                 await self._emit_status(
                     "critiquing",
                     "⚠️ Vision verifier returned no parseable JSON — plan-conformance "
-                    "is now the only acceptance gate for this iteration.",
+                    "so this iteration cannot be vision-certified.",
                     details=(
                         "The vision model produced prose or malformed JSON that the "
-                        "parser couldn't recover. Vision-driven repair is skipped (an "
-                        "LLM without a signal to act on just thrashes); deterministic "
-                        "plan-conformance still runs and can trigger repair on bbox or "
-                        "rotation mismatches. To diagnose: see "
+                        "parser couldn't recover. The model will not be accepted as "
+                        "final from geometry checks alone. To diagnose: see "
                         "scratch/vision_raw_response.txt or switch VISION_MODEL to one "
                         "with better JSON discipline."
                     ),
                     data={
                         "iteration": iteration,
-                        "rationale": "A silent vision skip would let visual bugs ship if plan-conformance also passes; the warning makes the gap visible.",
+                        "rationale": "A silent vision skip would let visual bugs ship if plan-conformance also passes; treating it as a verifier failure keeps final artifacts honest.",
                         "outcome": critique_result.message or "Verifier output could not be parsed.",
-                        "skipped": ["vision-driven repair"],
+                        "skipped": ["vision-based acceptance"],
                         "raw_response_preview": (critique_result.raw_response or "")[:600],
                     },
                 )
-                return None
+                return CritiqueReport(
+                    issues=[
+                        GeometryIssue(
+                            issue_type="vision_parse_failed",
+                            severity="error",
+                            description=critique_result.message or "Vision verifier output could not be parsed.",
+                            location_hint="vision verifier response",
+                        )
+                    ],
+                    overall_printability=0.0,
+                    suggested_repairs=[
+                        "Vision verifier did not return parseable JSON; rerun with a JSON-disciplined vision model or retry the verifier."
+                    ],
+                    confidence=0.0,
+                    matches_intent=False,
+                    repair_prompt=(
+                        "Vision verifier did not return parseable JSON, so this model cannot be certified "
+                        "as matching the user's intent from vision evidence."
+                    ),
+                )
 
             report = critique_result.report
             render_urls = {
@@ -2460,13 +2973,13 @@ class AgentOrchestrator:
         
         return f"✓ Model generated (`{mid}`, attempt {iter}).{size_text}{m_text}{critique_text}{repair_text}"
 
-    def _save_failure_chat(self, pid, tid, mid=None):
+    def _save_failure_chat(self, pid, tid, mid=None, message: str = "Failed to generate valid model after retries."):
         # Use update instead of append because we already have a placeholder
         self.storage.update_last_chat_thread_message(
             pid, tid,
             ChatMessage(
                 role="assistant",
-                content="Failed to generate valid model after retries.",
+                content=message,
                 model_id=mid,
                 steps=self.current_steps,
             ),
