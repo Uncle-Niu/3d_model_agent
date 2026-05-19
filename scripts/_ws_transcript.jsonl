@@ -11584,3 +11584,41 @@
 {"type": "reasoning_chunk", "channel": "planning", "content": "=true"}
 {"type": "reasoning_chunk", "channel": "planning", "content": ","}
 {"type": "reasoning_chunk", "channel": "planning", "content": " reinforcement"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "=true"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ","}
+{"type": "reasoning_chunk", "channel": "planning", "content": " clearance"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "=false"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ","}
+{"type": "reasoning_chunk", "channel": "planning", "content": " moving"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "=false"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": "\n   -"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " Check"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " recipe"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " requirements"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ":"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " outer"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " tray"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " body"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ","}
+{"type": "reasoning_chunk", "channel": "planning", "content": " raised"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " walls"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ","}
+{"type": "reasoning_chunk", "channel": "planning", "content": " rounded"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " corners"}
+{"type": "reasoning_chunk", "channel": "planning", "content": ","}
+{"type": "reasoning_chunk", "channel": "planning", "content": " open"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " cavity"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": " All"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " addressed"}
+{"type": "reasoning_chunk", "channel": "planning", "content": "."}
+{"type": "reasoning_chunk", "channel": "planning", "content": "\n   -"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " I"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " will"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " ensure"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " the"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " XML"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " matches"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " the"}
+{"type": "reasoning_chunk", "channel": "planning", "content": " schema"}
