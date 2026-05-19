@@ -824,7 +824,6 @@ class LLMService:
             hard_constraints,
             soft_constraints,
             recent_turn_errors=recent_turn_errors,
-            geometry_repair=True,
         )
         repair_prompt = build_repair_prompt(
             original_code, error_message, iteration,
@@ -853,7 +852,10 @@ class LLMService:
         verbatim — no truncation, no execution-error guidance wrapper.
         """
         system_prompt = build_repair_system_prompt(
-            hard_constraints, soft_constraints, recent_turn_errors=recent_turn_errors
+            hard_constraints,
+            soft_constraints,
+            recent_turn_errors=recent_turn_errors,
+            geometry_repair=True,
         )
         return await self.generate(user_prompt, system_prompt, max_tokens=7168)
 

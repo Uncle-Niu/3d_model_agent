@@ -539,6 +539,29 @@ def try_patch_standalone_workplane_hole(code: str, error_message: str) -> Option
     return patched
 
 
+def try_patch_workplane_clone(code: str, error_message: str) -> Optional[str]:
+    """Remove invalid ``.clone()`` calls from CadQuery Workplane expressions.
+
+    CadQuery ``Workplane`` instances are immutable enough for the common LLM
+    pattern ``part.clone().translate(...)``; ``translate`` returns a moved copy.
+    The API has no ``clone`` method, so dropping that method call preserves the
+    intended duplicated-part expression without spending an LLM repair attempt.
+    """
+    if not code or not error_message:
+        return None
+    low = error_message.lower()
+    if "object has no attribute 'clone'" not in low and 'object has no attribute "clone"' not in low:
+        return None
+    if ".clone()" not in code:
+        return None
+    patched = code.replace(".clone()", "")
+    try:
+        ast.parse(patched)
+    except SyntaxError:
+        return None
+    return patched
+
+
 def try_patch_workplane_bounding_box(code: str, error_message: str) -> Optional[str]:
     """Fix common CadQuery BoundingBox attribute mistakes from LLM output."""
     if not code or not error_message:

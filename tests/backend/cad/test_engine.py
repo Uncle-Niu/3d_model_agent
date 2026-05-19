@@ -11,6 +11,7 @@ from backend.cad.engine import (
     try_auto_scale_for_fit,
     try_patch_standalone_workplane_hole,
     try_patch_workplane_bounding_box,
+    try_patch_workplane_clone,
     try_remove_failing_fillet,
     try_patch_missing_result,
     validate_cadquery_code,
@@ -444,6 +445,28 @@ class TestTryPatchStandaloneWorkplaneHole(unittest.TestCase):
     def test_returns_none_for_unrelated_error(self):
         code = "import cadquery as cq\nresult = cq.Workplane('XY').box(1, 1, 1)\n"
         self.assertIsNone(try_patch_standalone_workplane_hole(code, "ValueError: nope"))
+
+
+class TestTryPatchWorkplaneClone(unittest.TestCase):
+    def test_drops_invalid_clone_call(self):
+        code = (
+            "import cadquery as cq\n"
+            "rib = cq.Workplane('YZ').polyline([(0, 0), (20, 0), (20, 30)]).close().extrude(4)\n"
+            "left = rib.clone().translate((-20, 0, 0))\n"
+            "right = rib.clone().translate((20, 0, 0))\n"
+            "result = left.union(right)\n"
+        )
+        err = "AttributeError: 'Workplane' object has no attribute 'clone'. Did you mean: 'close'?"
+        patched = try_patch_workplane_clone(code, err)
+        self.assertIsNotNone(patched)
+        self.assertNotIn(".clone()", patched)
+        ok, shape, _msg = execute_cadquery_code(patched)
+        self.assertTrue(ok)
+        self.assertIsNotNone(shape)
+
+    def test_returns_none_for_unrelated_error(self):
+        code = "import cadquery as cq\nresult = cq.Workplane('XY').box(1, 1, 1)\n"
+        self.assertIsNone(try_patch_workplane_clone(code, "ValueError: nope"))
 
 
 class TestTryPatchWorkplaneBoundingBox(unittest.TestCase):

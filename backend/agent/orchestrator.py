@@ -85,145 +85,6 @@ def _error_signature(error_message: str) -> str:
     return ""
 
 
-def _fallback_plan_from_recipes(user_message: str, recipe_cards, hard_constraints) -> Optional[Any]:
-    """Deterministic escape hatch when local planner repair emits prose only.
-
-    This is intentionally narrow: it covers the common product synthesis case
-    where a prompt combines a tray/holder with a mounting bracket. The fallback
-    is still a real structured plan, so normal recipe and print-volume gates
-    validate it before code generation proceeds.
-    """
-    prompt = (user_message or "").lower()
-    recipe_ids = {getattr(card, "recipe_id", "") for card in (recipe_cards or [])}
-    if "tray_or_organizer" not in recipe_ids:
-        return None
-    if not any(word in prompt for word in ("tray", "holder", "stand")):
-        return None
-    if not any(word in prompt for word in ("mount", "vesa", "bracket")):
-        return None
-
-    width = min(220.0, hard_constraints.max_x_mm - 20.0)
-    depth = min(170.0, hard_constraints.max_y_mm - 40.0)
-    height = min(150.0, hard_constraints.max_z_mm - 20.0)
-    wall = max(2.4, hard_constraints.min_wall_thickness_mm * 2)
-    return DesignPlan(
-        summary="Compact 30 degree laptop tray with raised retaining walls, open tray cavity, rear VESA mount plate, M4 clearance holes, and support gussets.",
-        overall_dimensions_mm=[width, depth + 35.0, height],
-        physical_use=PhysicalUse(
-            orientation="VESA plate mounts vertically; tray projects forward and is tilted 30 degrees from horizontal.",
-            contact_surfaces="Laptop bottom rests in the open tray cavity; VESA plate contacts the monitor arm or back plate.",
-            applied_forces="Laptop weight pulls down and forward, creating bending at the tray-to-plate joint.",
-            containment_strategy="Raised front lip and side walls retain the laptop against sliding.",
-            pose_intent="tray_body is tilted 30 degrees from horizontal around the X axis.",
-            use_cycle="Mount once with M4 screws, then place and remove laptop repeatedly.",
-            ergonomic_notes="Compact width fits the print volume while supporting the central laptop footprint.",
-            mating_object="VESA MIS-D 75x75 or 100x100 pattern with M4 clearance holes.",
-        ),
-        feature_decisions=[
-            FeatureDecision(feature="fasteners_or_mounting_holes", needed=True, rationale="VESA mount plate requires M4 clearance holes."),
-            FeatureDecision(feature="internal_cavity_or_shell", needed=True, rationale="Tray needs an open usable cavity with printable walls."),
-            FeatureDecision(feature="retention_geometry", needed=True, rationale="Tilted tray needs front lip and side walls."),
-            FeatureDecision(feature="load_bearing_reinforcement", needed=True, rationale="Gussets resist laptop bending load."),
-            FeatureDecision(feature="clearance_or_port_cutouts", needed=False, rationale="No cable cutout requested."),
-            FeatureDecision(feature="moving_or_mating_interface", needed=False, rationale="Static printed mount."),
-        ],
-        components=[
-            DesignComponent(
-                name="tray_body",
-                description="outer tray body with stable bottom, raised perimeter walls, and rounded internal and external corners",
-                primitive="box",
-                dimensions={"length": width, "width": depth, "height": 18.0, "wall_thickness": wall},
-                position=[0.0, -35.0, 70.0],
-                orientation="tilted tray surface",
-                rotation=Rotation(axis="X", angle_deg=30.0, intent="tilt tray surface 30 degrees from horizontal"),
-                operation="base",
-                spec_source="inferred",
-            ),
-            DesignComponent(
-                name="open_tray_cavity_cut",
-                description="open cavity cut/shell that leaves printable raised perimeter walls",
-                primitive="box",
-                dimensions={"length": width - 2 * wall, "width": depth - 2 * wall, "height": 14.0},
-                position=[0.0, -35.0, 74.0],
-                orientation="tilted with tray body",
-                rotation=Rotation(axis="X", angle_deg=30.0, intent="align cavity with tilted tray"),
-                operation="cut",
-                spec_source="inferred",
-            ),
-            DesignComponent(
-                name="front_lip",
-                description="raised front retention lip with rounded corners",
-                primitive="box",
-                dimensions={"length": width, "width": wall * 2, "height": 24.0},
-                position=[0.0, -depth / 2.0, 82.0],
-                orientation="tilted with tray body",
-                rotation=Rotation(axis="X", angle_deg=30.0, intent="align lip with tilted tray"),
-                operation="union",
-                spec_source="inferred",
-            ),
-            DesignComponent(
-                name="vesa_backplate",
-                description="primary load-bearing VESA mount plate with fastener interface",
-                primitive="box",
-                dimensions={"length": 120.0, "width": 8.0, "height": 120.0},
-                position=[0.0, 55.0, 70.0],
-                orientation="vertical plate",
-                operation="union",
-                spec_source="explicit",
-            ),
-            DesignComponent(
-                name="vesa_holes_cut",
-                description="four M4 clearance through holes on 75x75 or 100x100 VESA pattern",
-                primitive="cylinder",
-                dimensions={"diameter": 5.0, "spacing": 100.0, "depth": 12.0},
-                position=[0.0, 55.0, 70.0],
-                orientation="axis=Y through backplate",
-                operation="cut",
-                spec_source="explicit",
-            ),
-            DesignComponent(
-                name="triangular_support_gussets",
-                description="ribs/gussets joining tray underside to VESA plate for stiffness",
-                primitive="polygon",
-                dimensions={"length": 65.0, "width": 6.0, "height": 80.0},
-                position=[0.0, 30.0, 55.0],
-                orientation="two mirrored side ribs",
-                operation="union",
-                spec_source="inferred",
-            ),
-        ],
-        connections=[
-            Connection(from_part="tray_body", to_part="vesa_backplate", kind="union", description="Tray rear edge is fused to the VESA plate."),
-            Connection(from_part="triangular_support_gussets", to_part="tray_body", kind="union", description="Gussets tie tray underside into the backplate."),
-            Connection(from_part="vesa_holes_cut", to_part="vesa_backplate", kind="cut", description="Holes pass through the mounting plate."),
-        ],
-        key_features=[
-            "outer tray body with stable bottom",
-            "raised perimeter walls with printable wall thickness",
-            "rounded internal and external corners",
-            "open cavity or compartments cut/shelled from the body",
-            "VESA mount plate with M4 clearance holes",
-            "ribs/gussets or thickened junctions for stiffness",
-            "front retention lip",
-        ],
-        assumptions=[
-            "Compact printable tray supports the central footprint of a laptop rather than full laptop width.",
-            "Use 100x100 VESA pattern with 5 mm M4 clearance holes.",
-        ],
-        risks=[
-            "A fully laptop-width tray may exceed the print volume; compact dimensions preserve printability.",
-            "Actual monitor arm load rating must be checked by the user.",
-        ],
-        parameters={
-            "tray_width": width,
-            "tray_depth": depth,
-            "wall_thickness": wall,
-            "tilt_angle_deg": 30.0,
-            "vesa_spacing": 100.0,
-            "m4_clearance_diameter": 5.0,
-        },
-    )
-
 from ..cad.engine import process_cadquery_code
 from ..cad.example_bank import build_example_bank_prompt_context, retrieve_example_snippets
 from ..cad.static_lint import lint_cadquery_source
@@ -1213,73 +1074,6 @@ class AgentOrchestrator:
                 await self._emit_debug("plan_repair_error", f"Plan repair failed: {e}", {"traceback": traceback.format_exc()})
 
             if not quality_report.is_sufficient:
-                fallback_plan = _fallback_plan_from_recipes(user_message, recipe_cards, config.hard_constraints)
-                if fallback_plan is not None:
-                    fallback_quality = merge_plan_quality_reports(
-                        validate_plan_against_recipes(fallback_plan, recipe_cards, user_message=user_message),
-                        validate_plan_against_constraints(fallback_plan, config.hard_constraints),
-                    )
-                    if fallback_quality.is_sufficient:
-                        plan = fallback_plan
-                        quality_report = fallback_quality
-                        await self._emit_status(
-                            "planning",
-                            "Used deterministic recipe fallback plan.",
-                            details=(
-                                "The planner repair returned prose instead of a complete XML plan, "
-                                "so the agent synthesized a conservative tray-plus-mount plan and "
-                                "validated it against the same recipe and print-volume gates."
-                            ),
-                            data={
-                                "sub_stage": "plan_repair_fallback_ok",
-                                "outcome": plan.summary,
-                                "component_count": len(plan.components),
-                                "overall_dimensions_mm": plan.overall_dimensions_mm,
-                            },
-                        )
-                    else:
-                        await self._emit_debug(
-                            "plan_repair_fallback_rejected",
-                            "Deterministic fallback plan did not satisfy quality gate.",
-                            {"feedback": fallback_quality.feedback},
-                        )
-                if quality_report.is_sufficient:
-                    await self._emit_status(
-                        "planning",
-                        "Plan repair passed quality gate.",
-                        details=None,
-                        data={
-                            "sub_stage": "plan_repair_ok",
-                            "outcome": plan.summary or "The revised plan now satisfies the retrieved CAD recipe checklist.",
-                            "outcome_source": "recipe_fallback",
-                        },
-                    )
-                else:
-                    failure_message = (
-                        "Plan repair still failed the quality gate, so code generation was stopped. "
-                        "The revised plan is missing required dimensions/features and would likely "
-                        "produce invalid or placeholder CAD."
-                    )
-                    await self._emit_status(
-                        "planning",
-                        "Plan repair still failed the quality gate.",
-                        details=failure_message,
-                        data={
-                            "sub_stage": "plan_repair_partial",
-                            "rationale": "Generating CadQuery from an incomplete plan produces placeholder geometry and wastes repair cycles, so this turn stops before code generation.",
-                            "missing_features": list(quality_report.missing_features),
-                            "missing_negative_space": list(quality_report.missing_negative_space),
-                            "feedback": quality_report.feedback,
-                            # The LLM did try to repair; surface its post-repair
-                            # summary so the user can see what it returned.
-                            "llm_revised_summary": plan.summary,
-                        },
-                    )
-                    await self._emit_error(failure_message, "plan_quality_failed")
-                    self._save_failure_chat(project_id, thread_id, current_model_id, failure_message)
-                    self._schedule_summarization_safely([], turn_succeeded=False)
-                    return None
-            if not quality_report.is_sufficient:
                 failure_message = (
                     "Plan repair still failed the quality gate, so code generation was stopped. "
                     "The revised plan is missing required dimensions/features and would likely "
@@ -1603,11 +1397,12 @@ class AgentOrchestrator:
                     # branch: if syntax bugs already burned through their
                     # budget, give up rather than loop indefinitely.
                     if syntax_repairs_used >= self.MAX_SYNTAX_REPAIR_ITERATIONS:
-                        from ..cad.engine import try_patch_standalone_workplane_hole, try_patch_workplane_bounding_box, try_remove_failing_fillet
+                        from ..cad.engine import try_patch_standalone_workplane_hole, try_patch_workplane_bounding_box, try_patch_workplane_clone, try_remove_failing_fillet
                         emergency_patch = (
                             try_remove_failing_fillet(last_code, last_error)
                             or try_patch_workplane_bounding_box(last_code, last_error)
                             or try_patch_standalone_workplane_hole(last_code, last_error)
+                            or try_patch_workplane_clone(last_code, last_error)
                         )
                         if emergency_patch is not None:
                             await self._emit_status(
@@ -1731,11 +1526,12 @@ class AgentOrchestrator:
                             )
 
                     elif last_failure_type == "execution_error" and last_error:
-                        from ..cad.engine import try_patch_standalone_workplane_hole, try_patch_workplane_bounding_box, try_remove_failing_fillet
+                        from ..cad.engine import try_patch_standalone_workplane_hole, try_patch_workplane_bounding_box, try_patch_workplane_clone, try_remove_failing_fillet
                         exec_patch = (
                             try_remove_failing_fillet(last_code, last_error)
                             or try_patch_workplane_bounding_box(last_code, last_error)
                             or try_patch_standalone_workplane_hole(last_code, last_error)
+                            or try_patch_workplane_clone(last_code, last_error)
                         )
                         if exec_patch is not None:
                             mechanical_patch = exec_patch

@@ -1,50 +1,5 @@
-{
-  "repair_attempt": {
-    "iteration": 2,
-    "kind": "execution",
-    "has_prior_block": false,
-    "has_fillet_hint": false,
-    "has_structural_demand": false,
-    "user_prompt_len": 2541
-  }
-}
-{
-  "repair_attempt": {
-    "iteration": 3,
-    "kind": "execution",
-    "has_prior_block": true,
-    "has_fillet_hint": false,
-    "has_structural_demand": false,
-    "user_prompt_len": 3599
-  }
-}
-{
-  "repair_attempt": {
-    "iteration": 4,
-    "kind": "vision",
-    "has_prior_block": false,
-    "has_fillet_hint": false,
-    "has_structural_demand": false,
-    "user_prompt_len": 7895
-  }
-}
-{
-  "repair_attempt": {
-    "iteration": 5,
-    "kind": "vision",
-    "has_prior_block": false,
-    "has_fillet_hint": false,
-    "has_structural_demand": false,
-    "user_prompt_len": 9666
-  }
-}
-{
-  "repair_attempt": {
-    "iteration": 5,
-    "kind": "vision_retry",
-    "has_prior_block": false,
-    "has_fillet_hint": false,
-    "has_structural_demand": false,
-    "user_prompt_len": 0
-  }
-}
+
+=== Repair attempts seen ===
+
+=== Final ===
+chat_response: 
