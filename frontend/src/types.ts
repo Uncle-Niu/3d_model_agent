@@ -75,7 +75,10 @@ export interface ChatMessage {
   model_id?: string;
   steps?: PipelineStep[];
   reasoning?: string;
+  agent_logic?: AgentLogic;
 }
+
+export type AgentLogic = 'orchestrator' | 'llm_agent';
 
 export interface ChatThreadSummary {
   thread_id: string;
@@ -163,6 +166,7 @@ export interface WSRunState {
   running: boolean;
   project_id: string;
   thread_id: string;
+  agent_logic?: AgentLogic;
   started_at?: string;
   steps?: PipelineStep[];
 }

@@ -1,7 +1,7 @@
 # Implementation Tracker
 
 > Auto-generated from `design/main_design.md` vs current codebase.
-> Last updated: 2026-05-14
+> Last updated: 2026-05-18
 
 Legend: ✅ Done | 🟡 Partial | ❌ Not started
 
@@ -19,6 +19,19 @@ Legend: ✅ Done | 🟡 Partial | ❌ Not started
 - **Vision critique** can produce a low score (0.2-0.4) on perfectly correct
   geometry if the renders are aesthetically unusual. The plan checklist
   mitigates this but does not eliminate it.
+
+## Recent change set (2026-05-18)
+
+Focus: compare deterministic orchestration with an LLM-authored turn policy.
+
+- Done: Added per-turn `agent_logic` selection with `orchestrator` and
+  `llm_agent` modes.
+- Done: Added an LLM agent policy step that chooses the source strategy plus
+  planning, generation, and verification focus before the shared CAD tools run.
+- Done: Threaded selected logic through WebSocket messages, active-run state,
+  debug logs, chat messages, progress steps, and model metadata.
+- Done: Added a chat-input segmented toggle so each submitted turn can choose
+  the deterministic or LLM-agent path.
 
 ## Recent change set (2026-05-14)
 

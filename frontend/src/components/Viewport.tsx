@@ -355,7 +355,7 @@ function getVisibleStraightEdges(root: THREE.Object3D) {
   });
 
   const distinct = edges
-    .sort((a, b) => b - a)
+    .sort((a, b) => b.length - a.length)
     .reduce<StraightEdgeMeasurement[]>((acc, edge) => {
       const tolerance = Math.max(0.1, edge.length * 0.002);
       if (!acc.some((existing) => Math.abs(existing.length - edge.length) <= tolerance)) {
@@ -420,7 +420,7 @@ function AxisGuideLabel({ position, axis, color, size }: {
         anchorY="middle"
         outlineWidth={size * 0.08}
         outlineColor="#080c14"
-        depthTest={false}
+        material-depthTest={false}
         renderOrder={50}
       >
         {axis}
@@ -447,7 +447,7 @@ function EdgeGuideLabel({ edge, color, size }: {
         anchorY="middle"
         outlineWidth={size * 0.08}
         outlineColor="#080c14"
-        depthTest={false}
+        material-depthTest={false}
         renderOrder={55}
       >
         {edge.id}

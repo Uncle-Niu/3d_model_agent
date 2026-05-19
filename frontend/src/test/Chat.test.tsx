@@ -71,8 +71,19 @@ describe('Chat component', () => {
     const input = screen.getByPlaceholderText(/Describe a 3D part/i);
     await user.type(input, 'Make a sphere');
     await user.keyboard('{Enter}');
-    expect(onSend).toHaveBeenCalledWith('Make a sphere');
+    expect(onSend).toHaveBeenCalledWith('Make a sphere', 'orchestrator');
     expect((input as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('sends the selected agent logic with a turn', async () => {
+    const onSend = vi.fn();
+    const user = userEvent.setup();
+    render(<Chat onSend={onSend} />);
+    await user.click(screen.getByRole('button', { name: /LLM agent/i }));
+    const input = screen.getByPlaceholderText(/Describe a 3D part/i);
+    await user.type(input, 'Make a hinge');
+    await user.keyboard('{Enter}');
+    expect(onSend).toHaveBeenCalledWith('Make a hinge', 'llm_agent');
   });
 
   it('does not send on Shift+Enter (newline)', async () => {

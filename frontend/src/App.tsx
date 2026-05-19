@@ -13,7 +13,7 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { useChatStore, useProjectStore, useSelectionStore, useViewportStore } from './stores';
 import { api } from './api';
 import { formatLocalDateTime } from './time';
-import type { ChatMessage, ChatThread, ChatThreadSummary, ModelInfo, Project } from './types';
+import type { AgentLogic, ChatMessage, ChatThread, ChatThreadSummary, ModelInfo, Project } from './types';
 import { confirmDialog, promptDialog, DialogHost } from './components/ui/ConfirmDialog';
 import { toast, ToastHost } from './components/ui/Toast';
 
@@ -541,7 +541,7 @@ function App() {
     toast.success('Chat deleted');
   }
 
-  function handleSend(message: string) {
+  function handleSend(message: string, agentLogic: AgentLogic) {
     if (!activeThreadId) return;
     setChatThreads((current) =>
       current.map((thread) =>
@@ -555,7 +555,7 @@ function App() {
           : thread
       )
     );
-    sendMessage(message);
+    sendMessage(message, agentLogic);
   }
 
   function compactTitle(message: string): string {

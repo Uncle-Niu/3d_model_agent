@@ -4914,6 +4914,38 @@ body {
   border-color: var(--accent-dim);
   color: var(--accent);
 }
+.chat-logic-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  gap: 2px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.chat-logic-toggle button {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.chat-logic-toggle button:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+.chat-logic-toggle button.active {
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+.chat-logic-toggle button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 .chat-input-row {
   display: flex;
   align-self: stretch;

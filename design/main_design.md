@@ -447,9 +447,15 @@ GET    /api/projects/{id}/history           # Get revision history
 Client to server:
 
 ```json
-{ "type": "chat_message", "content": "Make a box with rounded edges" }
+{ "type": "chat_message", "content": "Make a box with rounded edges", "agent_logic": "orchestrator" }
+{ "type": "chat_message", "content": "Revise this bracket", "agent_logic": "llm_agent" }
 { "type": "selection", "feature_name": "hole_1", "point": [10, 5, 0] }
 ```
+
+`agent_logic` is chosen per chat turn by the frontend chat-input toggle:
+
+- `orchestrator` follows the deterministic backend plan/retrieve/generate/execute/verify/repair sequence.
+- `llm_agent` first asks the LLM to author a turn policy (source strategy plus planning/generation/verification directives), then runs the same CAD tools with that policy included in prompts and progress logs.
 
 Server to client:
 

@@ -6,11 +6,12 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { useChatStore, useSelectionStore } from '../stores';
 import { formatLocalDateTime } from '../time';
+import type { AgentLogic } from '../types';
 import PipelineProgress from './PipelineProgress';
 import AppIcon from './AppIcon';
 
 interface ChatProps {
-  onSend: (message: string) => void;
+  onSend: (message: string, agentLogic: AgentLogic) => void;
   onCancel?: () => void;
   disabled?: boolean;
 }
@@ -24,6 +25,7 @@ const SUGGESTIONS: Array<{ label: string; prompt: string }> = [
 
 export default function Chat({ onSend, onCancel, disabled = false }: ChatProps) {
   const [input, setInput] = useState('');
+  const [agentLogic, setAgentLogic] = useState<AgentLogic>('orchestrator');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { selectedFeatureName } = useSelectionStore();
@@ -51,7 +53,7 @@ export default function Chat({ onSend, onCancel, disabled = false }: ChatProps) 
     e.preventDefault();
     const trimmed = input.trim();
     if (!trimmed || isGenerating || disabled) return;
-    onSend(trimmed);
+    onSend(trimmed, agentLogic);
     setInput('');
   }
 
@@ -95,15 +97,13 @@ export default function Chat({ onSend, onCancel, disabled = false }: ChatProps) 
             <p>Describe a 3D part and I'll generate it for you.</p>
             <div className="chat-suggestions">
               {SUGGESTIONS.map((s) => (
-                <button key={s.label} onClick={() => onSend(s.prompt)}>{s.label}</button>
+                <button key={s.label} onClick={() => onSend(s.prompt, agentLogic)}>{s.label}</button>
               ))}
             </div>
           </div>
         )}
 
         {messages.map((msg, i) => {
-          const isLastAssistant =
-            msg.role === 'assistant' && i === messages.length - 1 && !isGenerating;
           const hasSteps = !!(msg.steps && msg.steps.length > 0);
           const hasContent = msg.content.trim().length > 0;
           return (
@@ -166,6 +166,28 @@ export default function Chat({ onSend, onCancel, disabled = false }: ChatProps) 
             </button>
           </div>
         )}
+        <div className="chat-input-tools">
+          <div className="chat-logic-toggle" role="group" aria-label="Agent logic for this chat turn">
+            <button
+              type="button"
+              className={agentLogic === 'orchestrator' ? 'active' : ''}
+              onClick={() => setAgentLogic('orchestrator')}
+              disabled={isGenerating || disabled}
+              title="Use the deterministic backend orchestrator"
+            >
+              Orchestrator
+            </button>
+            <button
+              type="button"
+              className={agentLogic === 'llm_agent' ? 'active' : ''}
+              onClick={() => setAgentLogic('llm_agent')}
+              disabled={isGenerating || disabled}
+              title="Ask the LLM agent to choose this turn's workflow policy"
+            >
+              LLM agent
+            </button>
+          </div>
+        </div>
         <div className="chat-input-row">
           <textarea
             ref={inputRef}

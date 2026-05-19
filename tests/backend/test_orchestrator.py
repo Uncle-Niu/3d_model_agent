@@ -5,7 +5,7 @@ from backend.agent.orchestrator import AgentOrchestrator, _collect_recent_turn_e
 from backend.knowledge.error_patterns import FailureEvent
 from backend.domain.models import (
     ProjectConfig, ChatMessage, ModelMetadata, CritiqueReport, GeometryIssue,
-    DesignPlan, FailureType, SearchResult
+    AgentTurnPolicy, DesignPlan, FailureType, SearchResult
 )
 
 
@@ -69,6 +69,11 @@ class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
         from backend.config import DEFAULT_LLM_MODEL
         self.mock_llm.model = DEFAULT_LLM_MODEL
         self.mock_llm.decide_research.return_value = None
+        self.mock_llm.decide_agent_policy.return_value = AgentTurnPolicy(
+            strategy="create_new",
+            rationale="Start fresh for this request.",
+            planning_directives=["Keep the part compact."],
+        )
         self.mock_llm.plan_design.return_value = DesignPlan(summary="Test plan", key_features=["a feature"])
         self.mock_llm.repair_design_plan.return_value = DesignPlan(summary="Test plan", key_features=["a feature"])
 
@@ -98,6 +103,37 @@ class TestAgentOrchestrator(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(model_id, "model-001")
         self.assertEqual(mock_exec.call_count, 1)
+
+    @patch("backend.agent.orchestrator.AgentOrchestrator.check_vision_connectivity", new_callable=AsyncMock)
+    @patch("backend.agent.orchestrator.process_cadquery_code")
+    @patch("backend.agent.orchestrator.AgentOrchestrator._run_render", new_callable=AsyncMock)
+    @patch("backend.agent.orchestrator.AgentOrchestrator._run_vision_critique", new_callable=AsyncMock)
+    async def test_run_pipeline_llm_agent_policy(self, mock_critique, mock_render, mock_exec, mock_vision):
+        statuses = []
+
+        async def on_status(stage, message, details=None, data=None):
+            statuses.append((stage, message, data or {}))
+
+        orchestrator = AgentOrchestrator(
+            storage=self.mock_storage,
+            llm=self.mock_llm,
+            on_status=on_status,
+        )
+        mock_vision.return_value = (True, "ok")
+        mock_exec.return_value = {
+            "success": True, "message": "Success", "files": ["glb"],
+            "geometry_stats": {"face_count": 6, "bounding_box": "10x10x10"}, "_shape": MagicMock()
+        }
+        mock_render.return_value = {"iso": "path/to/iso.png"}
+        mock_critique.return_value = CritiqueReport(overall_printability=0.9, issues=[])
+
+        model_id = await orchestrator.run_pipeline("p1", "t1", "make a hinge", agent_logic="llm_agent")
+
+        self.assertEqual(model_id, "model-001")
+        self.assertTrue(self.mock_llm.decide_agent_policy.called)
+        self.assertTrue(any(s[2].get("agent_logic") == "llm_agent" for s in statuses))
+        _, _, chat_message = self.mock_storage.update_last_chat_thread_message.call_args.args
+        self.assertEqual(chat_message.agent_logic, "llm_agent")
 
     @patch("backend.agent.orchestrator.AgentOrchestrator.check_vision_connectivity", new_callable=AsyncMock)
     @patch("backend.agent.orchestrator.process_cadquery_code")

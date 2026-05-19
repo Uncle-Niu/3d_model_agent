@@ -5,6 +5,8 @@ This module extracts the core logic from the API layer to provide a
 reusable, structured generation workflow.
 """
 
+from __future__ import annotations
+
 import asyncio
 import inspect
 import os
@@ -85,6 +87,41 @@ def _error_signature(error_message: str) -> str:
     return ""
 
 
+def _format_agent_policy_for_prompt(policy: Optional[AgentTurnPolicy]) -> str:
+    if policy is None:
+        return ""
+    lines = [
+        "## LLM Agent Turn Policy",
+        f"- Strategy: {policy.strategy}",
+    ]
+    if policy.rationale:
+        lines.append(f"- Rationale: {policy.rationale}")
+    if policy.planning_directives:
+        lines.append("- Planner directives:")
+        lines.extend(f"  - {item}" for item in policy.planning_directives)
+    if policy.generation_directives:
+        lines.append("- Code-generation directives:")
+        lines.extend(f"  - {item}" for item in policy.generation_directives)
+    if policy.verification_focus:
+        lines.append("- Verification focus:")
+        lines.extend(f"  - {item}" for item in policy.verification_focus)
+    if policy.risk_notes:
+        lines.append("- Risks to avoid:")
+        lines.extend(f"  - {item}" for item in policy.risk_notes)
+    return "\n".join(lines)
+
+
+def _agent_policy_log_dict(policy: Optional[AgentTurnPolicy], *, raw_preview_chars: int = 0) -> Optional[dict]:
+    if policy is None:
+        return None
+    data = policy.model_dump()
+    raw = data.pop("raw_text", "") or ""
+    if raw_preview_chars > 0 and raw:
+        data["raw_text_preview"] = raw[:raw_preview_chars]
+        data["raw_text_length"] = len(raw)
+    return data
+
+
 from ..cad.engine import process_cadquery_code
 from ..cad.example_bank import build_example_bank_prompt_context, retrieve_example_snippets
 from ..cad.static_lint import lint_cadquery_source
@@ -101,6 +138,7 @@ from ..domain.models import (
     CritiqueReport,
     DesignComponent,
     FeatureDecision,
+    AgentTurnPolicy,
     DesignPlan,
     FailureType,
     GeometryStats,
@@ -190,6 +228,7 @@ class AgentOrchestrator:
         # Per-run context
         self._current_project_id: Optional[str] = None
         self._current_thread_id: Optional[str] = None
+        self._current_agent_logic: str = "orchestrator"
 
     async def _emit_status(self, stage: str, message: str, details: Optional[str] = None, data: Optional[Dict] = None):
         step = PipelineStep(stage=stage, message=message, details=details, data=data)
@@ -206,7 +245,8 @@ class AgentOrchestrator:
                     ChatMessage(
                         role="assistant",
                         content="Generating model...", # Placeholder content
-                        steps=self.current_steps
+                        steps=self.current_steps,
+                        agent_logic=self._current_agent_logic,
                     )
                 )
             except Exception:
@@ -419,6 +459,7 @@ class AgentOrchestrator:
         user_message: str,
         base_model_id: Optional[str] = None,
         selection: Optional[SelectionContext] = None,
+        agent_logic: str = "orchestrator",
     ) -> Optional[str]:
         """
         Runs the full agentic generation pipeline.
@@ -428,6 +469,10 @@ class AgentOrchestrator:
         if not config:
             await self._emit_error("Project not found")
             return None
+
+        agent_logic = (agent_logic or "orchestrator").strip().lower()
+        if agent_logic not in {"orchestrator", "llm_agent"}:
+            agent_logic = "orchestrator"
 
         self.current_steps = []
 
@@ -535,17 +580,21 @@ class AgentOrchestrator:
         # 1.5 Prepare Storage and Placeholder
         self._current_project_id = project_id
         self._current_thread_id = thread_id
+        self._current_agent_logic = agent_logic
         
         # Add placeholder assistant message so we can update it incrementally
         self.storage.append_chat_thread_message(
             project_id, thread_id,
-            ChatMessage(role="assistant", content="Starting generation...", steps=[])
+            ChatMessage(role="assistant", content="Starting generation...", steps=[], agent_logic=agent_logic)
         )
 
         # 2. Prepare Context
         system_prompt = build_system_prompt(config.hard_constraints, config.soft_constraints)
         history = self.storage.get_chat_thread_messages(project_id, thread_id)
         chat_ctx = [{"role": m.role, "content": m.content} for m in history[-10:]]
+        latest_model_for_policy = self.storage.latest_successful_model(project_id)
+        agent_policy: Optional[AgentTurnPolicy] = None
+        agent_policy_context = ""
 
         await self._emit_status(
             "planning",
@@ -562,6 +611,91 @@ class AgentOrchestrator:
             },
         )
 
+        if agent_logic == "llm_agent":
+            policy_system_prompt, policy_user_prompt = LLMService.build_agent_policy_prompt(
+                user_message,
+                base_model_id=base_model_id,
+                latest_model_id=latest_model_for_policy.model_id if latest_model_for_policy else None,
+                has_selection=selection is not None,
+                selection_name=selection.feature_name if selection else None,
+                hard_constraints=config.hard_constraints,
+                soft_constraints=config.soft_constraints,
+            )
+            await self._emit_status(
+                "planning",
+                "LLM agent is choosing the turn policy.",
+                details=(
+                    "This mode asks the model to decide how the CAD pipeline "
+                    "should gather context and whether this turn should start "
+                    "fresh or edit an existing checkpoint."
+                ),
+                data={
+                    "sub_stage": "agent_policy",
+                    "agent_logic": agent_logic,
+                    "rationale": "The LLM agent path lets the model author the turn policy before the shared CAD tools run.",
+                    "rationale_source": "agent",
+                    "inputs": ["user prompt", "active checkpoint", "latest successful checkpoint", "active selection"],
+                    "model": self.llm.model,
+                    "system_prompt": policy_system_prompt,
+                    "prompt": policy_user_prompt,
+                    "in_progress": True,
+                },
+            )
+            try:
+                agent_policy = await self.llm.decide_agent_policy(
+                    user_message,
+                    chat_history=chat_ctx,
+                    base_model_id=base_model_id,
+                    latest_model_id=latest_model_for_policy.model_id if latest_model_for_policy else None,
+                    has_selection=selection is not None,
+                    selection_name=selection.feature_name if selection else None,
+                    hard_constraints=config.hard_constraints,
+                    soft_constraints=config.soft_constraints,
+                )
+            except LLMBackendUnavailable as e:
+                await self._handle_backend_unavailable(e, stage="agent_policy")
+                raise
+            except Exception as e:
+                await self._emit_debug(
+                    "agent_policy_error",
+                    f"LLM agent policy failed; falling back to conservative defaults: {e}",
+                    {"traceback": traceback.format_exc()},
+                )
+                agent_policy = AgentTurnPolicy(
+                    strategy="auto",
+                    rationale="Policy call failed; using default CAD pipeline behavior.",
+                )
+            agent_policy_context = _format_agent_policy_for_prompt(agent_policy)
+            await self._emit_debug(
+                "agent_policy",
+                "LLM agent turn policy selected",
+                _agent_policy_log_dict(agent_policy, raw_preview_chars=1200) or {},
+            )
+            await self._emit_status(
+                "planning",
+                f"LLM agent policy ready · {agent_policy.strategy if agent_policy else 'auto'}",
+                details=None,
+                data={
+                    "sub_stage": "agent_policy_ready",
+                    "agent_logic": agent_logic,
+                    "outcome": agent_policy.rationale if agent_policy else "Using default policy.",
+                    "outcome_source": "planner",
+                    "policy": _agent_policy_log_dict(agent_policy),
+                },
+            )
+        else:
+            await self._emit_status(
+                "planning",
+                "Using deterministic orchestrator logic.",
+                details=None,
+                data={
+                    "sub_stage": "agent_policy_ready",
+                    "agent_logic": agent_logic,
+                    "outcome": "The backend will follow the hardcoded plan-retrieve-generate-execute-verify-repair sequence.",
+                    "outcome_source": "agent",
+                },
+            )
+
         # 2.0 Local-LLM knowledge recall.
         #
         # Before considering any web search, ask multiple local LLMs (different
@@ -572,10 +706,15 @@ class AgentOrchestrator:
         # gap — turning "did we search?" into "what gaps remain?".
         recall_consensuses: list = []
         recall_context = ""
+        recall_disabled_by_policy = bool(agent_policy and not agent_policy.use_local_recall)
         subject_detection_prompt = self.local_knowledge.build_subject_detection_prompt(user_message)
         await self._emit_status(
             "recalling",
-            "Detecting real-world references that may need exact specs.",
+            (
+                "Local-LLM recall skipped by LLM agent policy."
+                if recall_disabled_by_policy
+                else "Detecting real-world references that may need exact specs."
+            ),
             details=(
                 "This asks the main local LLM whether the request mentions a "
                 "real product, part, or standard whose dimensions would improve "
@@ -594,9 +733,12 @@ class AgentOrchestrator:
             },
         )
         try:
-            recall_subjects = await self.local_knowledge.detect_subjects(
-                user_message, main_model=self.llm.model,
-            )
+            if recall_disabled_by_policy:
+                recall_subjects = []
+            else:
+                recall_subjects = await self.local_knowledge.detect_subjects(
+                    user_message, main_model=self.llm.model,
+                )
         except Exception:
             recall_subjects = []
         await self._emit_status(
@@ -604,7 +746,11 @@ class AgentOrchestrator:
             (
                 f"Found {len(recall_subjects)} reference subject(s) to cross-check."
                 if recall_subjects
-                else "No external reference specs needed."
+                else (
+                    "Local-LLM recall skipped by policy."
+                    if recall_disabled_by_policy
+                    else "No external reference specs needed."
+                )
             ),
             details=None,
             data={
@@ -612,7 +758,11 @@ class AgentOrchestrator:
                 "outcome": (
                     ", ".join(subj.subject for subj in recall_subjects)
                     if recall_subjects
-                    else "The request appears fully specified or purely parametric."
+                    else (
+                        "The LLM agent policy disabled local recall for this turn."
+                        if recall_disabled_by_policy
+                        else "The request appears fully specified or purely parametric."
+                    )
                 ),
                 "outcome_source": "agent",
             },
@@ -777,11 +927,17 @@ class AgentOrchestrator:
 
         current_source = ""
         current_model_id = base_model_id
+        policy_strategy = agent_policy.strategy if agent_policy else "auto"
         # The strategy decision is purely "do we have a prior checkpoint to
         # edit?" — it does NOT consult the user prompt. Track the two probes
         # so the UI's Inputs row shows what the agent actually looked at.
         strategy_probes: list[str] = []
-        if base_model_id:
+        if agent_policy:
+            strategy_probes.append(f"LLM agent strategy: `{policy_strategy}`")
+        if policy_strategy == "create_new":
+            strategy_probes.append("LLM agent requested a fresh model; existing checkpoints ignored")
+            current_model_id = None
+        elif base_model_id and policy_strategy in ("auto", "edit_requested"):
             strategy_probes.append(f"base model id from request: `{base_model_id}`")
             current_source = self.storage.get_model_source_text(project_id, current_model_id or "")
             strategy_probes.append(
@@ -789,8 +945,8 @@ class AgentOrchestrator:
             )
         else:
             strategy_probes.append("base model id from request: none")
-        if not current_source:
-            latest_model = self.storage.latest_successful_model(project_id)
+        if not current_source and policy_strategy not in ("create_new", "edit_requested"):
+            latest_model = latest_model_for_policy
             if latest_model:
                 current_model_id = latest_model.model_id
                 current_source = self.storage.get_model_source_text(project_id, latest_model.model_id)
@@ -807,6 +963,8 @@ class AgentOrchestrator:
             context_used.append(f"base model `{current_model_id}` source")
         if selection:
             context_used.append(f"active selection `{selection.feature_name}`")
+        if agent_policy:
+            context_used.append("LLM agent turn policy")
         if citations:
             context_used.append(f"{len(citations)} research citation(s)")
         await self._emit_status(
@@ -819,7 +977,11 @@ class AgentOrchestrator:
             details=None,
             data={
                 "sub_stage": "strategy",
-                "rationale": "Reuses existing geometry when relevant; otherwise starts fresh.",
+                "rationale": (
+                    "The LLM agent policy chose this source strategy."
+                    if agent_policy
+                    else "Reuses existing geometry when relevant; otherwise starts fresh."
+                ),
                 "outcome": (
                     f"Modify checkpoint `{current_model_id}`."
                     if current_source
@@ -836,19 +998,29 @@ class AgentOrchestrator:
         # writing any CadQuery. The plan is the contract carried through every
         # repair iteration AND given to the vision verifier, so the generator and
         # the critic evaluate against the same explicit goal.
-        recipe_cards = retrieve_recipe_cards(user_message)
-        recipe_context = build_combined_recipe_context(user_message, recipe_cards)
-        planning_example_context = build_example_bank_prompt_context(
-            user_message,
-            max_snippets=2,
-            cadquery_only=False,
-            max_chars=2200,
+        use_recipes = agent_policy.use_recipes if agent_policy else True
+        use_example_bank = agent_policy.use_example_bank if agent_policy else True
+        recipe_cards = retrieve_recipe_cards(user_message) if use_recipes else []
+        recipe_context = build_combined_recipe_context(user_message, recipe_cards) if use_recipes else ""
+        planning_example_context = (
+            build_example_bank_prompt_context(
+                user_message,
+                max_snippets=2,
+                cadquery_only=False,
+                max_chars=2200,
+            )
+            if use_example_bank
+            else ""
         )
-        code_example_context = build_example_bank_prompt_context(
-            user_message,
-            max_snippets=3,
-            cadquery_only=True,
-            max_chars=3600,
+        code_example_context = (
+            build_example_bank_prompt_context(
+                user_message,
+                max_snippets=3,
+                cadquery_only=True,
+                max_chars=3600,
+            )
+            if use_example_bank
+            else ""
         )
         planning_reference_context = "\n\n".join(
             part for part in [recipe_context, planning_example_context] if part
@@ -883,7 +1055,11 @@ class AgentOrchestrator:
                     ],
                 },
             )
-        example_hits = retrieve_example_snippets(user_message, max_snippets=5, cadquery_only=False)
+        example_hits = (
+            retrieve_example_snippets(user_message, max_snippets=5, cadquery_only=False)
+            if use_example_bank
+            else []
+        )
         if example_hits:
             await self._emit_status(
                 "planning",
@@ -912,7 +1088,7 @@ class AgentOrchestrator:
 
         # Build the exact system + user prompt that will be sent to the planner
         # LLM, so the UI can show the user what the model actually saw.
-        merged_external_context = _merge_external_context(recall_context, research_context)
+        merged_external_context = _merge_external_context(agent_policy_context, recall_context, research_context)
         plan_system_prompt, plan_user_prompt = LLMService.build_planning_prompt(
             user_message=user_message,
             current_source=current_source,
@@ -1057,7 +1233,7 @@ class AgentOrchestrator:
                     chat_history=chat_ctx,
                     current_source=current_source,
                     current_model_id=current_model_id,
-                    research_context=_merge_external_context(recall_context, research_context),
+                    research_context=_merge_external_context(agent_policy_context, recall_context, research_context),
                     recipe_context=planning_reference_context,
                     hard_constraints=config.hard_constraints,
                     soft_constraints=config.soft_constraints,
@@ -1190,6 +1366,7 @@ class AgentOrchestrator:
         # Identifier used as ``turn_id`` in the error log so events from a
         # single turn cluster together when humans audit pitfalls.
         error_turn_id = f"{project_id}:{thread_id}:{turn_index}"
+        agent_policy_dump = _agent_policy_log_dict(agent_policy, raw_preview_chars=1200)
 
         # 3. Iterative Loop
         iteration = 0
@@ -1202,7 +1379,7 @@ class AgentOrchestrator:
 
                 # ── Step A: Generate or Repair code ──────────────────────────
                 if iteration == 1:
-                    code_generation_context = _merge_external_context(recall_context, research_context)
+                    code_generation_context = _merge_external_context(agent_policy_context, recall_context, research_context)
                     code_generation_prompt = self._build_code_generation_user_prompt(
                         user_message=user_message,
                         current_source=current_source,
@@ -1757,6 +1934,8 @@ class AgentOrchestrator:
                             is_final=False,
                             thread_id=thread_id,
                             turn_index=turn_index,
+                            agent_logic=agent_logic,
+                            agent_policy=agent_policy_dump,
                         )
                         self.storage.save_model_metadata(project_id, metadata)
                         current_model_id = model_id
@@ -1890,6 +2069,8 @@ class AgentOrchestrator:
                         is_final=False,
                         thread_id=thread_id,
                         turn_index=turn_index,
+                        agent_logic=agent_logic,
+                        agent_policy=agent_policy_dump,
                     )
                     self.storage.save_model_metadata(project_id, metadata)
                     current_model_id = model_id # Track latest WIP
@@ -1930,6 +2111,8 @@ class AgentOrchestrator:
                     is_final=False,
                     thread_id=thread_id,
                     turn_index=turn_index,
+                    agent_logic=agent_logic,
+                    agent_policy=agent_policy_dump,
                 )
                 self.storage.save_model_metadata(project_id, preliminary_metadata)
 
@@ -2052,6 +2235,8 @@ class AgentOrchestrator:
                     is_final=False,  # may be promoted below if we accept this iteration
                     thread_id=thread_id,
                     turn_index=turn_index,
+                    agent_logic=agent_logic,
+                    agent_policy=agent_policy_dump,
                 )
                 self.storage.save_model_metadata(project_id, metadata)
 
@@ -2187,6 +2372,7 @@ class AgentOrchestrator:
                                     content=response_text,
                                     model_id=best_model_id,
                                     steps=self.current_steps,
+                                    agent_logic=agent_logic,
                                 ),
                             )
                             self._schedule_summarization_safely(turn_error_events, turn_succeeded=True)
@@ -2239,7 +2425,8 @@ class AgentOrchestrator:
                         role="assistant",
                         content=response_text,
                         model_id=model_id,
-                        steps=self.current_steps
+                        steps=self.current_steps,
+                        agent_logic=agent_logic,
                     ),
                 )
 
@@ -2778,6 +2965,7 @@ class AgentOrchestrator:
                 content=message,
                 model_id=mid,
                 steps=self.current_steps,
+                agent_logic=self._current_agent_logic,
             ),
         )
 

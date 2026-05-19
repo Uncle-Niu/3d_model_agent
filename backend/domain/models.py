@@ -304,6 +304,10 @@ class ModelMetadata(BaseModel):
     # The turn (1-based index of user messages in the thread) this model belongs
     # to, when known. Useful for grouping iterations of one turn.
     turn_index: Optional[int] = None
+    # Which turn-level orchestration logic generated this model.
+    agent_logic: str = "orchestrator"
+    # Optional LLM-authored policy used by the llm_agent logic.
+    agent_policy: Optional[dict[str, Any]] = None
 
 
 class ProjectConfig(BaseModel):
@@ -353,6 +357,26 @@ class ChatMessage(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     model_id: Optional[str] = None  # linked model if applicable
     steps: list[PipelineStep] = Field(default_factory=list)
+    agent_logic: Optional[str] = None
+
+
+class AgentTurnPolicy(BaseModel):
+    """LLM-authored policy for one chat turn.
+
+    The policy does not execute tools by itself. It chooses how the shared CAD
+    pipeline should gather context, pick a base model, and focus planning.
+    """
+
+    strategy: str = "auto"  # auto | create_new | edit_requested | edit_latest
+    use_local_recall: bool = True
+    use_recipes: bool = True
+    use_example_bank: bool = True
+    verification_focus: list[str] = Field(default_factory=list)
+    planning_directives: list[str] = Field(default_factory=list)
+    generation_directives: list[str] = Field(default_factory=list)
+    risk_notes: list[str] = Field(default_factory=list)
+    rationale: str = ""
+    raw_text: str = ""
 
 
 class SearchResult(BaseModel):

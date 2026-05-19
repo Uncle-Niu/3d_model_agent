@@ -20,6 +20,7 @@ from backend.models.llm_service import (
     build_vision_repair_prompt,
     detect_repair_deletion,
     extract_code_from_response,
+    parse_agent_turn_policy,
     parse_design_plan,
 )
 
@@ -76,6 +77,31 @@ class TestBuildSystemPrompt(unittest.TestCase):
         # Should not raise; defaults applied
         self.assertIsInstance(prompt, str)
         self.assertGreater(len(prompt), 100)
+
+
+class TestAgentTurnPolicyParser(unittest.TestCase):
+    def test_parses_first_json_object_before_extra_reasoning(self):
+        raw = """{
+  "strategy": "create_new",
+  "use_local_recall": true,
+  "use_recipes": true,
+  "use_example_bank": true,
+  "verification_focus": ["dimensions are 10x10x10 mm"],
+  "planning_directives": ["Plan a simple box geometry"],
+  "generation_directives": ["Use cq.Workplane('XY').box(10, 10, 10)"],
+  "risk_notes": ["Ensure exact dimensions"],
+  "rationale": "User requested a new object with no base model."
+}
+The model then kept thinking and wrote another sketch:
+JSON structure:
+{
+  "strategy": "create_new"
+}
+"""
+        policy = parse_agent_turn_policy(raw)
+        self.assertEqual(policy.strategy, "create_new")
+        self.assertEqual(policy.verification_focus, ["dimensions are 10x10x10 mm"])
+        self.assertIn("simple box", policy.planning_directives[0])
 
 
 class TestBuildRepairPrompt(unittest.TestCase):

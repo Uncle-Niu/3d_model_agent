@@ -36,6 +36,7 @@ class LLMBackendUnavailable(RuntimeError):
 from ..cad.examples import get_api_reference, get_examples_text
 from ..domain.models import (
     Connection,
+    AgentTurnPolicy,
     DesignComponent,
     DesignPlan,
     FeatureDecision,
@@ -1221,6 +1222,86 @@ class LLMService:
             on_chunk=on_chunk,
         )
 
+    @staticmethod
+    def build_agent_policy_prompt(
+        user_message: str,
+        *,
+        base_model_id: Optional[str] = None,
+        latest_model_id: Optional[str] = None,
+        has_selection: bool = False,
+        selection_name: Optional[str] = None,
+        hard_constraints: Optional[HardConstraints] = None,
+        soft_constraints: Optional[SoftConstraints] = None,
+    ) -> tuple[str, str]:
+        hc = hard_constraints or HardConstraints()
+        sc = soft_constraints or SoftConstraints()
+        system_prompt = (
+            "You are a CAD workflow coordinator. Decide the best turn-level "
+            "policy for an FDM 3D-printable CAD agent before it plans and writes "
+            "CadQuery code. Return ONLY compact JSON, no markdown.\n\n"
+            "Schema:\n"
+            "{\n"
+            '  "strategy": "auto|create_new|edit_requested|edit_latest",\n'
+            '  "use_local_recall": true,\n'
+            '  "use_recipes": true,\n'
+            '  "use_example_bank": true,\n'
+            '  "verification_focus": ["short checklist item"],\n'
+            '  "planning_directives": ["specific instruction for the planner"],\n'
+            '  "generation_directives": ["specific instruction for code generation"],\n'
+            '  "risk_notes": ["risk to watch for"],\n'
+            '  "rationale": "one short sentence"\n'
+            "}\n\n"
+            "Strategy rules: choose create_new when the user asks for a new or "
+            "unrelated object; edit_requested when an explicit base model exists "
+            "and the request modifies it; edit_latest when no explicit base is "
+            "provided but the request is a change to the current project; auto "
+            "when uncertain. Keep all lists short and concrete."
+        )
+        user_prompt = (
+            f"Request: {user_message}\n\n"
+            "Available context:\n"
+            f"- Explicit base_model_id: {base_model_id or 'none'}\n"
+            f"- Latest successful model: {latest_model_id or 'none'}\n"
+            f"- Active selection: {selection_name if has_selection else 'none'}\n"
+            f"- Print volume: {hc.max_x_mm} x {hc.max_y_mm} x {hc.max_z_mm} mm\n"
+            f"- Min wall thickness: {hc.min_wall_thickness_mm} mm\n"
+            f"- Material: {sc.material}; max overhang: {sc.overhang_angle_max} deg"
+        )
+        return system_prompt, user_prompt
+
+    async def decide_agent_policy(
+        self,
+        user_message: str,
+        *,
+        chat_history: Optional[list[dict]] = None,
+        base_model_id: Optional[str] = None,
+        latest_model_id: Optional[str] = None,
+        has_selection: bool = False,
+        selection_name: Optional[str] = None,
+        hard_constraints: Optional[HardConstraints] = None,
+        soft_constraints: Optional[SoftConstraints] = None,
+    ) -> AgentTurnPolicy:
+        """Ask the LLM to choose a per-turn orchestration policy."""
+        system_prompt, user_prompt = self.build_agent_policy_prompt(
+            user_message,
+            base_model_id=base_model_id,
+            latest_model_id=latest_model_id,
+            has_selection=has_selection,
+            selection_name=selection_name,
+            hard_constraints=hard_constraints,
+            soft_constraints=soft_constraints,
+        )
+        raw = await self.generate(
+            user_prompt,
+            system_prompt,
+            chat_history=chat_history,
+            allow_thinking=False,
+            max_tokens=2048,
+        )
+        policy = parse_agent_turn_policy(raw)
+        policy.raw_text = raw
+        return policy
+
     async def decide_research(self, user_message: str, chat_history: Optional[list[dict]] = None) -> tuple[Optional[str], str]:
         """
         Decide if web research is needed for the user's request.
@@ -1261,6 +1342,62 @@ Output your response in this exact XML format:
                 reasoning = "Model provided a query directly."
 
         return query, reasoning
+
+
+def parse_agent_turn_policy(raw_text: str) -> AgentTurnPolicy:
+    """Parse the coordinator JSON into a conservative AgentTurnPolicy."""
+    if not raw_text:
+        return AgentTurnPolicy(rationale="LLM policy response was empty; using defaults.")
+
+    text = raw_text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+
+    data: dict[str, Any] = {}
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            parsed, _ = decoder.raw_decode(text[match.start():])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            data = parsed
+            break
+
+    allowed_strategy = {"auto", "create_new", "edit_requested", "edit_latest"}
+    strategy = str(data.get("strategy") or "auto").strip().lower()
+    if strategy not in allowed_strategy:
+        strategy = "auto"
+
+    def _bool(name: str, default: bool = True) -> bool:
+        value = data.get(name, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() not in {"false", "0", "no", "off"}
+        return default
+
+    def _list(name: str) -> list[str]:
+        value = data.get(name, [])
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip()[:240] for item in value if str(item).strip()][:8]
+
+    return AgentTurnPolicy(
+        strategy=strategy,
+        use_local_recall=_bool("use_local_recall", True),
+        use_recipes=_bool("use_recipes", True),
+        use_example_bank=_bool("use_example_bank", True),
+        verification_focus=_list("verification_focus"),
+        planning_directives=_list("planning_directives"),
+        generation_directives=_list("generation_directives"),
+        risk_notes=_list("risk_notes"),
+        rationale=str(data.get("rationale") or "").strip()[:600],
+        raw_text=raw_text,
+    )
 
 
 def extract_diagnosis_from_response(response: str) -> str:

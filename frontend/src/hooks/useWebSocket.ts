@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import { useChatStore, useCritiqueStore, useDebugStore, useViewportStore } from '../stores';
-import type { WSMessage } from '../types';
+import type { AgentLogic, WSMessage } from '../types';
 
 export function useWebSocket(projectId: string | null, threadId: string | null) {
   const wsRef = useRef<WebSocket | null>(null);
@@ -204,7 +204,7 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
   }, [projectId, chat, viewport, debug, critique]);
 
   const sendMessage = useCallback(
-    (content: string) => {
+    (content: string, agentLogic: AgentLogic = 'orchestrator') => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
         console.error('[WS] Not connected');
         chat.addMessage({
@@ -219,6 +219,7 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
         role: 'user',
         content,
         timestamp: new Date().toISOString(),
+        agent_logic: agentLogic,
       });
       chat.setGenerating(true);
       chat.clearStream();
@@ -229,6 +230,7 @@ export function useWebSocket(projectId: string | null, threadId: string | null) 
           content,
           thread_id: threadId,
           base_model_id: viewport.currentModelId,
+          agent_logic: agentLogic,
         }),
       );
     },

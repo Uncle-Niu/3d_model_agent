@@ -36,6 +36,7 @@ class ActiveChatRun:
     thread_id: str
     task: asyncio.Task
     orchestrator: AgentOrchestrator
+    agent_logic: str = "orchestrator"
     started_at: str = field(default_factory=_now_iso)
     events: list[dict[str, Any]] = field(default_factory=list)
     subscribers: set[asyncio.Queue] = field(default_factory=set)
@@ -52,6 +53,7 @@ class ActiveChatRun:
             "running": self.running,
             "project_id": self.project_id,
             "thread_id": self.thread_id,
+            "agent_logic": self.agent_logic,
             "started_at": self.started_at,
             "steps": [
                 step.model_dump(mode="json")
@@ -119,6 +121,7 @@ class ChatRunManager:
         content: str,
         base_model_id: Optional[str],
         selection: Optional[SelectionContext],
+        agent_logic: str = "orchestrator",
     ) -> ActiveChatRun:
         existing = self.get_run(project_id, thread_id)
         if existing:
@@ -216,10 +219,14 @@ class ChatRunManager:
             on_reasoning=on_reasoning,
         )
 
+        agent_logic = (agent_logic or "orchestrator").strip().lower()
+        if agent_logic not in {"orchestrator", "llm_agent"}:
+            agent_logic = "orchestrator"
+
         self.storage.append_chat_thread_message(
             project_id,
             thread_id,
-            ChatMessage(role="user", content=content),
+            ChatMessage(role="user", content=content, agent_logic=agent_logic),
         )
 
         async def run_turn():
@@ -230,6 +237,7 @@ class ChatRunManager:
                     user_message=content,
                     base_model_id=base_model_id,
                     selection=selection,
+                    agent_logic=agent_logic,
                 )
                 await self._publish_latest_assistant(run_ref["run"])
             except asyncio.CancelledError as exc:
@@ -265,6 +273,7 @@ class ChatRunManager:
             thread_id=thread_id,
             task=task,
             orchestrator=orchestrator,
+            agent_logic=agent_logic,
         )
         run.subscribers = self._idle_subscribers.pop(self._key(project_id, thread_id), set())
         run_ref["run"] = run
@@ -280,6 +289,7 @@ class ChatRunManager:
                 "thread_id": thread_id,
                 "llm_base_url": llm.base_url,
                 "llm_model": llm.model,
+                "agent_logic": agent_logic,
             },
         })
         return run
@@ -303,6 +313,7 @@ class ChatRunManager:
             role="assistant",
             content="Stopped by user.",
             steps=run.orchestrator.current_steps,
+            agent_logic=run.agent_logic,
         )
         messages = self.storage.get_chat_thread_messages(run.project_id, run.thread_id)
         if messages and messages[-1].role == "assistant":
@@ -331,6 +342,7 @@ class ChatRunManager:
             role="assistant",
             content=content,
             steps=run.orchestrator.current_steps,
+            agent_logic=run.agent_logic,
         )
         messages = self.storage.get_chat_thread_messages(run.project_id, run.thread_id)
         if messages and messages[-1].role == "assistant":
@@ -439,6 +451,7 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
                 content = msg.get("content", "").strip()
                 incoming_thread_id = msg.get("thread_id") or thread_id
                 base_model_id = msg.get("base_model_id")
+                agent_logic = msg.get("agent_logic") or "orchestrator"
 
                 if incoming_thread_id != thread_id:
                     outbound.put_nowait({"type": "error", "message": "Thread changed; reconnecting is required."})
@@ -448,7 +461,7 @@ async def websocket_endpoint(ws: WebSocket, project_id: str):
                     continue
 
                 try:
-                    manager.start_run(project_id, thread_id, content, base_model_id, active_selection)
+                    manager.start_run(project_id, thread_id, content, base_model_id, active_selection, agent_logic)
                 except RuntimeError as exc:
                     outbound.put_nowait({"type": "error", "message": str(exc)})
 
