@@ -86,3 +86,54 @@ def test_vision_system_prompt_includes_tilt_and_contact_patch_rules():
     assert "Tilt verification" in VISION_SYSTEM_PROMPT
     assert "Containment under gravity" in VISION_SYSTEM_PROMPT
     assert "weak_contact_patch" in VISION_SYSTEM_PROMPT
+
+
+def test_vision_prompt_pre_flags_below_floor_geometry():
+    # Real failure from the laptop-tray run: the tray dropped 77mm below
+    # the build plate (bbox_z_min = -77.5mm). The vision model returned
+    # matches_intent=true and 0 errors because the render hid the issue
+    # (the camera framed the part, not the build plate). Inject a hard
+    # pre-flag derived from the OCCT stats so the critic can't pretend
+    # the issue doesn't exist.
+    stats = {
+        "bbox_x_mm": 228.0, "bbox_y_mm": 248.3, "bbox_z_mm": 106.5,
+        "bbox_z_min_mm": -77.5, "bbox_z_max_mm": 29.0,
+    }
+    prompt = _build_vision_user_prompt(
+        user_intent="laptop tray with vesa mount",
+        geometry_stats=stats,
+    )
+    assert "Pre-Detected Hard Failures" in prompt
+    assert "weak_contact_patch" in prompt
+    assert "77" in prompt
+    # The instruction tying the pre-flag to the verdict must be present.
+    assert "matches_intent=true" in prompt
+    assert "score" in prompt.lower()
+
+
+def test_vision_prompt_skips_pre_flag_block_when_geometry_is_grounded():
+    # The pre-flag block should not pollute every prompt — only those where
+    # the deterministic check found a problem.
+    stats = {
+        "bbox_x_mm": 100.0, "bbox_y_mm": 100.0, "bbox_z_mm": 50.0,
+        "bbox_z_min_mm": 0.0, "bbox_z_max_mm": 50.0,
+    }
+    prompt = _build_vision_user_prompt(
+        user_intent="phone holder",
+        geometry_stats=stats,
+    )
+    assert "Pre-Detected Hard Failures" not in prompt
+
+
+def test_vision_prompt_pre_flag_tolerance_for_numerical_noise():
+    # A bbox_z_min of -0.01mm is OCC numerical noise from booleans; no
+    # pre-flag should fire.
+    stats = {
+        "bbox_x_mm": 100.0, "bbox_y_mm": 100.0, "bbox_z_mm": 50.0,
+        "bbox_z_min_mm": -0.01, "bbox_z_max_mm": 49.99,
+    }
+    prompt = _build_vision_user_prompt(
+        user_intent="phone holder",
+        geometry_stats=stats,
+    )
+    assert "Pre-Detected Hard Failures" not in prompt

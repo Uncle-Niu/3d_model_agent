@@ -143,6 +143,41 @@ Respond with ONLY a JSON object, no markdown fences, no preamble:
 """
 
 
+def _deterministic_pre_flags(geometry_stats: Optional[dict]) -> list[dict]:
+    """Inspect geometry stats for hard, unambiguous failure signals that the
+    vision model regularly misses (e.g. geometry far below z=0 isn't visible
+    in a rendered preview because the camera frames the part). Each flag has
+    a fixed issue type and message the critic MUST surface in its `issues`
+    list and MUST NOT contradict in its `matches_intent`/`score`.
+    """
+    if not geometry_stats:
+        return []
+
+    flags: list[dict] = []
+    z_min = geometry_stats.get("bbox_z_min_mm")
+    if z_min is not None:
+        try:
+            zmin_f = float(z_min)
+        except (TypeError, ValueError):
+            zmin_f = 0.0
+        # 0.5 mm tolerance — matches the plan-conformance gate so the two
+        # checks never disagree about the same model.
+        if zmin_f < -0.5:
+            flags.append({
+                "issue_type": "weak_contact_patch",
+                "severity": "error",
+                "description": (
+                    f"Geometry extends {abs(zmin_f):.1f}mm below the build plate "
+                    f"(measured bbox_z_min = {zmin_f:.1f}mm). The model cannot "
+                    f"print as-is — a `.rotate(...)` flipped a component the wrong "
+                    f"way or a body was placed at z=0 center without lifting it "
+                    f"onto the base."
+                ),
+                "rule": "bbox_z_min < -0.5mm is incompatible with FDM printing",
+            })
+    return flags
+
+
 def _build_vision_user_prompt(
     user_intent: str,
     geometry_stats: Optional[dict] = None,
@@ -156,6 +191,32 @@ def _build_vision_user_prompt(
         for k, v in geometry_stats.items():
             if v is not None:
                 stats_text += f"- {k}: {v}\n"
+
+    # Deterministic pre-flags — hard failure signals computed from the stats
+    # that the vision model must agree with. Adding them to the prompt anchors
+    # the LLM against approving a render that the metrics already condemned.
+    # The "Pre-detected" framing is critical: the model is being told "this
+    # already failed" instead of being asked "do you see anything wrong?",
+    # which it tends to answer "no" for any rendering that looks like CAD.
+    pre_flags = _deterministic_pre_flags(geometry_stats)
+    pre_flag_text = ""
+    if pre_flags:
+        pre_flag_text = "\n## Pre-Detected Hard Failures (you MUST include these in `issues` and you MUST NOT return matches_intent=true)\n"
+        for f in pre_flags:
+            pre_flag_text += (
+                f"- [{f['severity'].upper()}/{f['issue_type']}] {f['description']} "
+                f"(rule: {f['rule']})\n"
+            )
+        pre_flag_text += (
+            "\nThese were computed deterministically from the OCCT geometry "
+            "and are not visual judgments. Even if the renders look fine, "
+            "approving them would ship a broken model. Reflect each flag as "
+            "an `error`-severity entry in your `issues` array (you may use the "
+            "exact `issue_type` shown), set `matches_intent` to false, and "
+            "keep `score` <= 0.4. Your `repair_prompt` MUST tell the next "
+            "iteration how to fix the underlying rotation/translation bug, "
+            "not just scale or hide the failing geometry.\n"
+        )
 
     plan_text = ""
     if plan and (plan.summary or plan.key_features or plan.components):
@@ -230,7 +291,7 @@ Verify this generated 3D CAD model against the user's intent and the plan below.
 
 ## User's Original Request
 {user_intent}
-{recipe_text}{plan_text}{stats_text}
+{recipe_text}{plan_text}{stats_text}{pre_flag_text}
 You are looking at four rendered views of the model: isometric, front, right, and top.
 Inspect each key feature in the checklist individually. Only return `matches_intent=true`
 if every feature in the checklist is actually visible, every required recipe/archetype
@@ -830,6 +891,52 @@ class VisionCritic:
         report = _json_to_critique_report(parsed)
         repair_prompt = parsed.get("repair_prompt", "")
         matches_intent = bool(parsed.get("matches_intent", True))
+
+        # Deterministic-flag override. The pre-flag block in the prompt asks
+        # the LLM to surface known hard failures, but qwen3.x-class vision
+        # models routinely ignore that instruction and still return
+        # matches_intent=true with an empty issue list (observed: 0.95 score
+        # on a tray rotated 77mm below the build plate). When the
+        # deterministic check found issues but the parsed JSON did not, the
+        # measurements are authoritative — overwrite the verdict so the
+        # orchestrator triggers repair instead of shipping a broken model.
+        pre_flags = _deterministic_pre_flags(geometry_stats)
+        if pre_flags:
+            existing_descs = {(i.description or "").lower() for i in report.issues}
+            added: list[GeometryIssue] = []
+            for f in pre_flags:
+                desc = f["description"]
+                if desc.lower() in existing_descs:
+                    continue
+                added.append(GeometryIssue(
+                    issue_type=f["issue_type"],
+                    severity=f["severity"],
+                    description=desc,
+                    location_hint="deterministic OCCT measurement",
+                ))
+            if added:
+                report.issues.extend(added)
+            # Any error-severity pre-flag forces matches_intent=false and
+            # caps the score so the orchestrator's repair branch fires.
+            if any(f["severity"] == "error" for f in pre_flags):
+                matches_intent = False
+                report.matches_intent = False
+                report.overall_printability = min(report.overall_printability, 0.3)
+                # Stitch a hint about the pre-flag onto the repair prompt
+                # so the next iteration sees what the deterministic check
+                # caught even if the vision LLM didn't mention it.
+                pre_flag_summary = " ".join(
+                    f"[{f['issue_type']}] {f['description']}"
+                    for f in pre_flags if f["severity"] == "error"
+                )
+                if repair_prompt:
+                    repair_prompt = (
+                        f"{repair_prompt}\n\n"
+                        f"DETERMINISTIC CHECK ALSO FOUND: {pre_flag_summary}"
+                    )
+                else:
+                    repair_prompt = pre_flag_summary
+                report.repair_prompt = repair_prompt
 
         return VisionCritiqueResult(
             success=True,

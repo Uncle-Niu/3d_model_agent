@@ -363,6 +363,34 @@ class TestAutoScaleForFit(unittest.TestCase):
         self.assertLess(bb.ymax - bb.ymin, 256.0)
         self.assertLess(bb.zmax - bb.zmin, 256.0)
 
+    def test_refuses_to_scale_when_geometry_extends_below_build_plate(self):
+        # Real failure from the laptop-tray run: a -30° rotation dropped
+        # bbox_z_min to -77.5mm. Pure scaling can't fix that — scaling by
+        # 0.95 leaves the bottom at -73mm, still below the build plate.
+        # try_auto_scale_for_fit must defer to LLM repair so the rotation
+        # sign can actually be corrected.
+        stats = {
+            "bbox_x_mm": 228.0, "bbox_y_mm": 262.0, "bbox_z_mm": 112.0,
+            "bbox_z_min_mm": -77.5, "bbox_z_max_mm": 34.5,
+        }
+        self.assertIsNone(try_auto_scale_for_fit(
+            self.BASE_CODE, stats,
+            max_x_mm=256.0, max_y_mm=256.0, max_z_mm=256.0,
+        ))
+
+    def test_scales_when_bbox_z_min_is_within_floor_tolerance(self):
+        # Tiny below-floor offsets are numerical noise from booleans;
+        # scaling is still safe in that case.
+        stats = {
+            "bbox_x_mm": 270.0, "bbox_y_mm": 290.0, "bbox_z_mm": 58.0,
+            "bbox_z_min_mm": -0.01, "bbox_z_max_mm": 57.99,
+        }
+        patched = try_auto_scale_for_fit(
+            self.BASE_CODE, stats,
+            max_x_mm=256.0, max_y_mm=256.0, max_z_mm=256.0,
+        )
+        self.assertIsNotNone(patched)
+
 
 class TestTryRemoveFailingFillet(unittest.TestCase):
     def test_comments_out_traceback_fillet_assignment(self):

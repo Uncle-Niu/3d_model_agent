@@ -303,6 +303,19 @@ def try_auto_scale_for_fit(
     if bbox_x <= 0 and bbox_y <= 0 and bbox_z <= 0:
         return None
 
+    # Refuse to scale when the geometry has a layout bug, not a sizing
+    # problem. Real failure mode from the laptop-tray run: a -30° rotation
+    # tipped the tray below the build plate (bbox_z_min ≈ -77 mm). The bbox
+    # was technically oversized in Y because the rotated body jutted out,
+    # but scaling by 0.95 left the tray still 73 mm below z=0 — printable
+    # only on a printer with no build plate. Worse, the smaller bbox passed
+    # the size check, masked the bug, and the vision critic approved a
+    # broken model. Defer to LLM repair when this signal is present so the
+    # rotation can be re-derived from scratch.
+    z_min = geometry_stats.get("bbox_z_min_mm")
+    if z_min is not None and float(z_min) < -1.0:
+        return None
+
     factors: list[float] = []
     if bbox_x > max_x_mm:
         factors.append(max_x_mm / bbox_x)

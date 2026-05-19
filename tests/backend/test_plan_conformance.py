@@ -252,5 +252,158 @@ class TestTopHeavyCheck(unittest.TestCase):
         self.assertNotIn("top-heavy", joined)
 
 
+class TestBuildPlateFloorViolation(unittest.TestCase):
+    """Universal build-plate floor-violation check.
+
+    Motivating failure: a "30 degree laptop tray with VESA mount plate on the
+    back" prompt produced a plan with `physical_use.orientation = "Printed
+    flat on the build plate with the VESA plate face down on Z=0"`, then
+    rotated the tray by -30° around X with its center at +Y so the front of
+    the tray dropped to bbox_z_min = -77.5mm — 77mm below the print bed.
+    The old check used keyword matching on "desk/table/floor" and missed the
+    "build plate" phrasing entirely, the top-heavy CoM check didn't fire,
+    and the vision critic returned matches_intent=true with 0 errors.
+
+    The new check is independent of plan text: any FDM model with
+    bbox_z_min < -tol is broken, period. The only exception is a model
+    explicitly modeled in its in-use pose (e.g. wall-mount).
+    """
+
+    def _plan_with_orientation(self, orientation: str) -> DesignPlan:
+        return DesignPlan(
+            summary="Tray with VESA mount",
+            components=[
+                DesignComponent(name="plate", description="", primitive="box", operation="base"),
+                DesignComponent(name="tray", description="", primitive="box", operation="union"),
+            ],
+            physical_use=PhysicalUse(orientation=orientation),
+        )
+
+    def test_geometry_below_build_plate_is_flagged_even_when_orientation_says_build_plate(self):
+        # The exact failure from the laptop-tray run.
+        plan = self._plan_with_orientation(
+            "Printed flat on the build plate with the VESA plate face down on Z=0."
+        )
+        stats = {
+            "bbox_x_mm": 228.0, "bbox_y_mm": 248.3, "bbox_z_mm": 106.5,
+            "bbox_z_min_mm": -77.5, "bbox_z_max_mm": 29.0,
+            "solid_count": 1,
+        }
+        report = check_plan_conformance(plan, stats)
+        self.assertIsNotNone(report)
+        self.assertFalse(report.passed)
+        joined = " ".join(report.reasons).lower()
+        self.assertIn("below the build plate", joined)
+        self.assertIn("77", joined)
+        # The repair prompt must teach the LLM why scaling won't help.
+        critique = report.as_critique()
+        self.assertIn("rotation", critique.repair_prompt.lower())
+        # Score must be low so the orchestrator triggers repair.
+        self.assertLessEqual(report.score, 0.3)
+
+    def test_geometry_on_build_plate_passes(self):
+        # Same plan, properly grounded.
+        plan = self._plan_with_orientation(
+            "Printed flat on the build plate with the VESA plate face down on Z=0."
+        )
+        stats = {
+            "bbox_x_mm": 228.0, "bbox_y_mm": 220.0, "bbox_z_mm": 110.0,
+            "bbox_z_min_mm": 0.0, "bbox_z_max_mm": 110.0,
+            "center_of_mass_z": 12.0,
+            "solid_count": 1,
+        }
+        report = check_plan_conformance(plan, stats)
+        self.assertIsNotNone(report)
+        self.assertTrue(report.passed, report.reasons)
+
+    def test_wall_mount_pose_does_not_trigger_floor_violation(self):
+        # When the planner explicitly states the part is shown in its
+        # wall-mounted pose (not its print pose), the floor check would
+        # produce false positives — wall-mount brackets often extend below
+        # the visual "ground" in their in-use orientation.
+        plan = self._plan_with_orientation(
+            "Mounted vertically on a wall via the back face."
+        )
+        stats = {
+            "bbox_x_mm": 180.0, "bbox_y_mm": 30.0, "bbox_z_mm": 200.0,
+            "bbox_z_min_mm": -50.0, "bbox_z_max_mm": 150.0,
+            "center_of_mass_z": 50.0,
+            "solid_count": 1,
+        }
+        report = check_plan_conformance(plan, stats)
+        self.assertIsNotNone(report)
+        joined = " ".join(report.reasons).lower()
+        self.assertNotIn("below the build plate", joined)
+
+    def test_small_below_floor_offset_is_within_tolerance(self):
+        # Numerical noise from boolean operations / fillets often produces
+        # bbox_z_min in the -0.001..-0.1 range. The check must not fire on
+        # those — it would create false-positive repair churn.
+        plan = self._plan_with_orientation("Printed flat on the build plate.")
+        stats = {
+            "bbox_x_mm": 100.0, "bbox_y_mm": 100.0, "bbox_z_mm": 50.0,
+            "bbox_z_min_mm": -0.01, "bbox_z_max_mm": 49.99,
+            "center_of_mass_z": 10.0,
+            "solid_count": 1,
+        }
+        report = check_plan_conformance(plan, stats)
+        self.assertIsNotNone(report)
+        joined = " ".join(report.reasons).lower()
+        self.assertNotIn("below the build plate", joined)
+
+
+class TestUnconnectedManyComponentPlan(unittest.TestCase):
+    """A plan with many components and no `<connection>` tags should be
+    flagged when the result collapses to a single solid. This catches the
+    "12 components planned, 1 solid measured" case from the laptop-tray run
+    where the bbox check was silent because `overall_dimensions_mm` was
+    missing.
+    """
+
+    def test_many_components_no_connections_collapsed_to_one_solid(self):
+        components = [
+            DesignComponent(name=f"part_{i}", description="", primitive="box", operation="base" if i == 0 else "union")
+            for i in range(6)
+        ]
+        plan = DesignPlan(
+            summary="multi-part",
+            components=components,
+            connections=[],  # planner forgot to declare joinery
+        )
+        stats = {
+            "bbox_x_mm": 100.0, "bbox_y_mm": 100.0, "bbox_z_mm": 50.0,
+            "solid_count": 1,
+        }
+        report = check_plan_conformance(plan, stats)
+        self.assertIsNotNone(report)
+        self.assertFalse(report.passed)
+        joined = " ".join(report.reasons).lower()
+        self.assertIn("connection", joined)
+
+    def test_many_components_with_connections_passes_when_one_solid(self):
+        # Same plan but with the proper union connections — fused single
+        # solid is the expected result and must pass.
+        components = [
+            DesignComponent(name=f"part_{i}", description="", primitive="box", operation="base" if i == 0 else "union")
+            for i in range(6)
+        ]
+        connections = [
+            Connection(from_part="part_0", to_part=f"part_{i}", kind="union")
+            for i in range(1, 6)
+        ]
+        plan = DesignPlan(
+            summary="multi-part fused",
+            components=components,
+            connections=connections,
+        )
+        stats = {
+            "bbox_x_mm": 100.0, "bbox_y_mm": 100.0, "bbox_z_mm": 50.0,
+            "solid_count": 1,
+        }
+        report = check_plan_conformance(plan, stats)
+        self.assertIsNotNone(report)
+        self.assertTrue(report.passed, report.reasons)
+
+
 if __name__ == "__main__":
     unittest.main()

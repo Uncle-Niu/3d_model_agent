@@ -49,7 +49,22 @@ _RESTS_ON_SURFACE_WORDS = (
     "desk", "table", "floor", "ground", "shelf", "counter", "benchtop", "bench",
     "rest", "rests", "sit", "sits", "stand", "stands", "stand on", "set on",
     "place on", "placed on",
+    # FDM-print-flat language: the planner often says "Printed flat on the
+    # build plate with X face down on Z=0" instead of using desk/table. The
+    # build plate IS a horizontal surface for the purposes of the
+    # floor-alignment check (no geometry should print below Z=0), so these
+    # phrasings should trigger the same check.
+    "build plate", "print bed", "z=0", "flat on the",
+    "face down", "face-down", "printed flat", "prints flat",
 )
+
+# Below-floor tolerance for FDM models. CadQuery placement frequently lands
+# objects centered on Z=0 (so bottom = -H/2). The floor-violation check fires
+# only when geometry extends measurably below z=0 — small numerical noise from
+# fillets / boolean operations is ignored. Tuned so a 5mm-thick base centered
+# at z=0 (bottom -2.5mm) is caught — anything inside that magnitude is real
+# geometry below the build plate, not numerical jitter.
+FLOOR_VIOLATION_TOL_MM = 0.5
 
 
 @dataclass
@@ -96,6 +111,17 @@ class ConformanceReport:
                 "floating plate/rib/support until its bounding box overlaps the body it "
                 "joins, or add a real connector/gusset that bridges the gap. The repaired "
                 "single-piece print should normally report `solid_count == 1`."
+            )
+        if any("below the build plate" in r.lower() for r in self.reasons):
+            repair_lines.append(
+                "Re-derive every `.rotate(...)` and `.translate(...)` on paper before "
+                "writing them — start each body at origin, apply the rotation, then "
+                "translate so its lowest point lands at z>=0. If the plan says the tray "
+                "tilts UP toward the user, the +Y end must move toward +Z, which is a "
+                "POSITIVE rotation around the X axis (`(0,0,0),(1,0,0),+angle`) when the "
+                "tray's depth extends in +Y. A negative angle on the same axis sends the "
+                "+Y end DOWN through the build plate — that is the bug to fix, not the "
+                "symptom to scale away."
             )
         if repair_lines:
             repair_lines.append(
@@ -233,24 +259,92 @@ def check_plan_conformance(
         )
         score = min(score, 0.3)
 
+    # If the plan listed many components but emitted ZERO connection tags,
+    # the planner skipped its joinery contract — the code generator then
+    # routinely builds half the bodies and leaves the rest out (the
+    # "12 planned components, 1 measured solid" failure). Catch it here so
+    # the bbox path isn't the only safety net (bbox is silent when
+    # `overall_dimensions_mm` is missing, which often co-occurs).
+    if (
+        expected_solids >= 4
+        and measured_solids == 1
+        and not (plan.connections or [])
+    ):
+        reasons.append(
+            f"Plan describes {expected_solids} additive components but did not declare "
+            f"any `<connection>` tags, and the rendered geometry collapsed to a single "
+            f"solid. Either the planner forgot to declare joinery (every union/cut "
+            f"between components needs a connection entry) or the code generator "
+            f"emitted only one body. Re-emit the plan with explicit `<connection>` "
+            f"tags AND verify each planned component appears in the source."
+        )
+        score = min(score, 0.4)
+
     # ------------------------------------------------------------------
-    # 4. Top-heavy / floor-alignment check (only when the plan says the part
-    #    rests on a horizontal surface)
+    # 4a. Build-plate floor violation (universal — applies to every FDM
+    #     print regardless of plan text). Geometry that extends measurably
+    #     below z=0 will collide with the build plate when sliced. The
+    #     classic trigger is a wrongly-signed rotation that tips a tray
+    #     downward instead of upward (e.g. `.rotate((0,0,0),(1,0,0),-30)`
+    #     applied to a body whose origin sits at +Y), leaving the front of
+    #     the tray ~80mm below the print bed. The vision critic frequently
+    #     ignores this — bbox_z_min is the unambiguous signal.
+    #
+    #     We trust this signal more than any planner keyword check because
+    #     no valid FDM design intentionally places solid geometry below the
+    #     build plate. The only sustainable exception is wall-mount parts
+    #     that the planner placed in their "in use" pose rather than their
+    #     print pose — handled below.
+    # ------------------------------------------------------------------
+    z_min = geometry_stats.get("bbox_z_min_mm")
+    pu = plan.physical_use
+    orientation_text = (getattr(pu, "orientation", "") or "").lower() if pu else ""
+    contact_text = (getattr(pu, "contact_surfaces", "") or "").lower() if pu else ""
+    # When the planner explicitly states this is a wall-mount / hanging
+    # part shown in its in-use pose, the floor check is meaningless — the
+    # part doesn't print in that orientation. Detect the small set of
+    # phrasings that signal "not laid flat for printing".
+    _IN_USE_POSE_WORDS = (
+        "wall-mount", "wall mount", "hangs", "hung", "suspended",
+        "ceiling", "mounted vertically",
+    )
+    is_in_use_pose = any(
+        w in orientation_text or w in contact_text for w in _IN_USE_POSE_WORDS
+    )
+    if (
+        z_min is not None
+        and z_min < -FLOOR_VIOLATION_TOL_MM
+        and not is_in_use_pose
+    ):
+        reasons.append(
+            f"Geometry extends {abs(z_min):.1f}mm BELOW the build plate "
+            f"(bbox_z_min = {z_min:.1f}mm). The slicer cannot print solid "
+            f"matter below Z=0. This is almost always a sign that a "
+            f"`.rotate(...)` flipped a component the wrong way (e.g. tilted "
+            f"the tray downward at the front instead of upward) or that a "
+            f"body was placed at z=0 center without lifting it onto the "
+            f"base. Translate every component up by half its height so its "
+            f"bottom sits at z>=0, AND verify the rotation sign tilts the "
+            f"part in the direction the plan describes."
+        )
+        # A big below-floor offset is geometry-breaking — drop the score
+        # hard so this iteration cannot beat a properly-grounded one.
+        score = min(score, 0.2)
+
+    # ------------------------------------------------------------------
+    # 4b. Top-heavy / floor-alignment check (only when the plan says the
+    #     part rests on a horizontal surface)
     # ------------------------------------------------------------------
     # Generic across product categories: applies to anything the planner
     # described as sitting on a desk/table/shelf. Catches the real failure
     # where the LLM centers a backrest at z=0 so half of it extends below
     # the base plate, leaving no flat contact patch — independent of bbox
     # match. Skipped silently for wall-mount, hanging, or hand-held parts.
-    pu = plan.physical_use
-    orientation_text = (getattr(pu, "orientation", "") or "").lower() if pu else ""
-    contact_text = (getattr(pu, "contact_surfaces", "") or "").lower() if pu else ""
     rests_on_surface = any(
         w in orientation_text or w in contact_text
         for w in _RESTS_ON_SURFACE_WORDS
     )
     com_z = geometry_stats.get("center_of_mass_z")
-    z_min = geometry_stats.get("bbox_z_min_mm")
     z_max = geometry_stats.get("bbox_z_max_mm")
     if (
         rests_on_surface
