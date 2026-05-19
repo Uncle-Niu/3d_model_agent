@@ -87,6 +87,150 @@ def _error_signature(error_message: str) -> str:
     return ""
 
 
+def _build_regen_with_critique_user_message(
+    *,
+    user_message: str,
+    current_code: str,
+    critique,
+    iteration: int,
+    escalation_reason: str,
+) -> str:
+    """LLM-agent escalation: assemble a code-generation prompt that includes
+    the previous attempt's source and the vision verifier's complaints.
+
+    This is the fallback when patch-style repair stalls. We bypass the lean
+    repair LLM call and route the prompt through ``_generate_code_streaming``
+    instead — which uses the full generation system prompt (CadQuery API
+    reference, examples, anti-stub guardrails). The model sees:
+
+    - the original user intent (so it can rebuild from scratch if needed),
+    - the previous code (so it can keep what works and replace what doesn't),
+    - the vision issues + repair instructions (so it knows *what* to change),
+    - an explicit "the patch path stalled" note (so it doesn't try the same
+      micro-edit the patch LLM was already failing on).
+    """
+    issue_lines: list[str] = []
+    for it in (critique.issues if critique else [])[:10]:
+        severity = (it.severity or "info").upper()
+        loc = it.location_hint or "unknown location"
+        issue_lines.append(f"- [{severity}] {it.issue_type} ({loc}): {it.description}")
+    issues_text = "\n".join(issue_lines) or "- (no specific issues listed)"
+
+    repair_block = ""
+    if critique and (critique.repair_prompt or "").strip():
+        repair_block = (
+            "## Verifier-supplied repair instructions\n"
+            f"{critique.repair_prompt.strip()}\n\n"
+        )
+
+    score_text = f"{critique.overall_printability:.2f}" if critique else "?"
+    matches_text = "yes" if (critique and critique.matches_intent) else "NO"
+
+    return (
+        "## Original user request\n"
+        f"{user_message}\n\n"
+        "## What happened so far\n"
+        f"The patch-style repair path stalled on attempt {iteration} — "
+        f"{escalation_reason}. This is a full code-generation retry; ignore "
+        "the failed patches and rebuild a complete program that passes vision "
+        "verification this time.\n\n"
+        "## Previous CadQuery source (the program that the verifier rejected)\n"
+        "```python\n"
+        f"{current_code}\n"
+        "```\n\n"
+        "## Vision verifier findings on the previous source\n"
+        f"- Overall score: {score_text} (threshold ~0.65)\n"
+        f"- Matches user intent: {matches_text}\n\n"
+        "### Specific issues\n"
+        f"{issues_text}\n\n"
+        f"{repair_block}"
+        "## How to think about this rewrite\n"
+        "The previous code already runs cleanly — the geometry it produces is what's wrong. "
+        "If the verifier complaint is structural (e.g. \"X is oriented wrong\", \"Y is not "
+        "vertical\", \"Z should be tilted\"), do NOT just add another `.rotate(...)` or "
+        "`.translate(...)` on top of the assembled result. That style of fix usually rotates "
+        "every component including the ones the verifier said WERE correct, breaking another "
+        "constraint. Instead, build each component in its FINAL orientation:\n"
+        "- If a panel must stay vertical, build it on a vertical workplane (`cq.Workplane(\"XZ\")` "
+        "or `cq.Workplane(\"YZ\")`) so it's vertical by construction.\n"
+        "- If a tray/plate must be tilted N degrees, rotate THAT plate (and only it) before "
+        "translating it into place; leave the other components alone.\n"
+        "- Don't rotate the unioned assembly at the end as a shortcut — every other "
+        "component gets dragged along with it.\n\n"
+        "## Required output\n"
+        "Write a SINGLE complete CadQuery program inside one ```python fenced "
+        "block. The program must address every vision issue above while still "
+        "honoring the Design Plan. Treat this as a fresh write — keep the "
+        "parameter block and useful components from the previous code, but do "
+        "NOT preserve geometry that the verifier called out as wrong. The "
+        "first line must be `import cadquery as cq`; the last meaningful line "
+        "must assign the final shape to `result`. No prose outside the code block."
+    )
+
+
+_PYTHON_BLOCK_RE = re.compile(r"```\s*python[^\n]*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_best_cadquery_block(blob: str) -> str:
+    """Pick the most-complete CadQuery program out of a blob that may contain
+    several fenced ``​```python​`` drafts.
+
+    Used by the LLM-agent regeneration path. Thinking-mode models (qwen3.x in
+    particular) ignore ``/no_think`` on complex prompts and emit a long
+    monologue with multiple partial code drafts before the final program.
+    The default extractor returns the FIRST block that parses, which is
+    usually one of those drafts (e.g. a 10-line sketch of just the VESA
+    plate). This scorer picks the block that actually looks like a finished
+    CadQuery program — typically the last one.
+
+    Scoring (higher = more likely to be the finished program):
+
+    - Must parse with ``ast.parse`` → otherwise score 0
+    - +20 if it contains ``import cadquery``
+    - +15 if it contains ``result =`` (or ``result=`` ignoring whitespace)
+    - +1 per meaningful non-comment line, up to a cap
+    - +5 if it contains ``.union(`` or ``.cut(`` (sign of an assembled model)
+
+    Returns the best-scoring block, or an empty string if no block scores
+    above zero. The caller can then fall back to ``extract_code_from_response``
+    if needed.
+    """
+    if not blob:
+        return ""
+    candidates = _PYTHON_BLOCK_RE.findall(blob)
+    if not candidates:
+        return ""
+
+    import ast as _ast
+
+    best_score = 0
+    best_code = ""
+    for raw_block in candidates:
+        block = raw_block.strip()
+        if not block:
+            continue
+        try:
+            _ast.parse(block)
+        except SyntaxError:
+            continue
+        score = 0
+        if "import cadquery" in block:
+            score += 20
+        if re.search(r"^\s*result\s*=", block, re.MULTILINE):
+            score += 15
+        meaningful = [
+            ln for ln in block.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        ]
+        score += min(len(meaningful), 80)
+        if ".union(" in block or ".cut(" in block:
+            score += 5
+        if score > best_score:
+            best_score = score
+            best_code = block
+    return best_code if best_score >= 20 else ""
+
+
 def _format_agent_policy_for_prompt(policy: Optional[AgentTurnPolicy]) -> str:
     if policy is None:
         return ""
@@ -1359,6 +1503,22 @@ class AgentOrchestrator:
         # into the vision budget and vice versa.
         syntax_repairs_used = 0
         vision_repairs_used = 0
+        # LLM-agent escalation tracking. The patch-style repair LLM frequently
+        # returns truncated code (drops `import cadquery`); the deletion guard
+        # then falls back to the prior source, so two consecutive vision
+        # repairs can produce byte-identical code while still burning budget.
+        # When that happens in `llm_agent` mode we abandon the patch path and
+        # do a full code regeneration with the vision feedback embedded — the
+        # generation LLM has the full system prompt and produces a complete
+        # program from scratch, which the patch LLM cannot.
+        prev_vision_repair_code: str = ""
+        consecutive_identical_vision_repairs = 0
+        # Track the persistent failure mode: if the same primary issue_type
+        # recurs across iterations the model is structurally wrong, not just
+        # imperfect. The escalation prompt surfaces this signal so the
+        # generator can apply a structurally different approach.
+        prev_primary_issue: str = ""
+        consecutive_same_issue = 0
         # Error-pattern events recorded across this turn. Each repair attempt
         # appends one event so the post-turn summarizer can see the full
         # failure → fix → next-result trajectory.
@@ -1478,44 +1638,160 @@ class AgentOrchestrator:
                         return None
                     vision_repairs_used += 1
                     recent_turn_errors = _collect_recent_turn_errors(turn_error_events)
-                    repair_system_prompt = build_repair_system_prompt(
-                        config.hard_constraints, config.soft_constraints,
-                        recent_turn_errors=recent_turn_errors,
+
+                    # Stall detection (LLM-agent only):
+                    #   The patch-style repair LLM frequently returns truncated
+                    #   code; ``_accept_or_recover_repair`` then falls back to
+                    #   the previous source so we don't ship a 2-line stub. The
+                    #   side effect: two consecutive vision repairs can produce
+                    #   byte-identical `last_code`, and the same vision issue
+                    #   recurs forever. When that pattern shows up under the
+                    #   LLM-agent strategy, we abandon the patch path and run a
+                    #   full code-generation pass with the vision critique
+                    #   embedded — the generator has the full system prompt
+                    #   (API reference, examples, anti-stub guardrails) so it
+                    #   can produce a complete fresh program. The hardcoded
+                    #   orchestrator never gets this escalation; this is the
+                    #   primary improvement of `llm_agent` over `orchestrator`.
+                    code_unchanged = (
+                        prev_vision_repair_code != ""
+                        and prev_vision_repair_code == last_code
                     )
-                    repair_user_prompt = build_vision_repair_prompt(
-                        last_code,
-                        intent=user_message,
-                        iteration=iteration,
-                        issues=[
-                            {
-                                "severity": i.severity,
-                                "issue_type": i.issue_type,
-                                "description": i.description,
-                                "location_hint": i.location_hint,
-                            }
-                            for i in last_critique.issues
-                        ],
-                        repair_instructions=last_critique.repair_prompt or "",
-                        matches_intent=bool(last_critique.matches_intent),
-                        overall_score=last_critique.overall_printability,
-                        confidence=last_critique.confidence,
-                        plan_summary=plan.summary or "",
-                        key_features=list(plan.key_features) if plan.key_features else None,
-                        plan_components=list(plan.components) if plan.components else None,
+                    if code_unchanged:
+                        consecutive_identical_vision_repairs += 1
+                    else:
+                        consecutive_identical_vision_repairs = 0
+
+                    primary_issue_signature = ""
+                    if last_critique.issues:
+                        top = last_critique.issues[0]
+                        primary_issue_signature = f"{top.issue_type}::{(top.description or '')[:80]}"
+                    if primary_issue_signature and primary_issue_signature == prev_primary_issue:
+                        consecutive_same_issue += 1
+                    else:
+                        consecutive_same_issue = 1 if primary_issue_signature else 0
+                    prev_primary_issue = primary_issue_signature
+
+                    # Escalation thresholds:
+                    #   - Code unchanged across two vision repairs ⇒ patch path
+                    #     is structurally broken for this prompt, regenerate.
+                    #   - Same primary issue for 3+ vision iterations ⇒ the
+                    #     model isn't converging via patches even if code is
+                    #     changing slightly, regenerate.
+                    escalate_to_regen = (
+                        agent_logic == "llm_agent"
+                        and (
+                            consecutive_identical_vision_repairs >= 1
+                            or consecutive_same_issue >= 3
+                        )
                     )
-                    await self._emit_status("repairing",
-                        f"Repairing for vision feedback (vision attempt {vision_repairs_used}/{self.MAX_VISION_REPAIR_ITERATIONS}) · `{model_id}`",
-                        details=None,
-                        data={
-                            "iteration": iteration,
-                            "repair_kind": "vision",
-                            "rationale": "The rendered model passed execution but did not meet the visual/printability quality threshold.",
-                            "outcome": f"Fixing {len(last_critique.issues)} vision issue(s).",
-                            "inputs": [
-                                f"vision score {last_critique.overall_printability:.2f}",
-                                f"{len(last_critique.issues)} critique issue(s)",
-                            ],
-                            "vision_issues": [
+
+                    if escalate_to_regen:
+                        escalation_reason = (
+                            "patch-repair output identical to previous iteration"
+                            if consecutive_identical_vision_repairs >= 1
+                            else f"same primary vision issue recurred {consecutive_same_issue}× in a row"
+                        )
+                        await self._emit_status(
+                            "repairing",
+                            f"LLM agent escalating: full code regeneration (vision attempt {vision_repairs_used}/{self.MAX_VISION_REPAIR_ITERATIONS}) · `{model_id}`",
+                            details=(
+                                "The patch-style repair path is stuck — the model keeps "
+                                "returning truncated code that the deletion guard rejects, "
+                                "or the same vision issue keeps surviving each patch. "
+                                "Escalating to a full code-generation pass with the vision "
+                                "critique embedded in the user message. The generator has "
+                                "the full system prompt (API reference + examples) and "
+                                "produces a complete program from scratch, which the patch "
+                                "LLM cannot."
+                            ),
+                            data={
+                                "iteration": iteration,
+                                "repair_kind": "regenerate_with_critique",
+                                "rationale": (
+                                    "LLM-agent supervises the repair loop. When the patch "
+                                    "path stalls, switch to a fresh full generation grounded "
+                                    "in the plan + vision feedback."
+                                ),
+                                "outcome": f"Escalating because {escalation_reason}.",
+                                "inputs": [
+                                    f"vision score {last_critique.overall_printability:.2f}",
+                                    f"{len(last_critique.issues)} critique issue(s)",
+                                    escalation_reason,
+                                ],
+                                "vision_issues": [
+                                    {
+                                        "severity": i.severity,
+                                        "issue_type": i.issue_type,
+                                        "description": i.description,
+                                        "location_hint": i.location_hint,
+                                    }
+                                    for i in last_critique.issues
+                                ],
+                                "model_id": model_id,
+                                "model": self.llm.model,
+                            },
+                        )
+                        # Use the geometry-repair system prompt for the regen
+                        # call: it's smaller than the full generation prompt
+                        # (no example bank), so qwen3.x has more headroom to
+                        # produce the final program instead of burning tokens
+                        # on partial drafts. The plan + recipes + research
+                        # already travel in the user message via
+                        # `external_context` / `recipe_context`.
+                        regen_system_prompt = build_repair_system_prompt(
+                            config.hard_constraints,
+                            config.soft_constraints,
+                            recent_turn_errors=recent_turn_errors,
+                            geometry_repair=True,
+                        )
+                        last_code = await self._llm_agent_regenerate_with_critique(
+                            user_message=user_message,
+                            current_code=last_code,
+                            critique=last_critique,
+                            iteration=iteration,
+                            escalation_reason=escalation_reason,
+                            system_prompt=regen_system_prompt,
+                            plan_text=plan_text,
+                            external_context=_merge_external_context(
+                                agent_policy_context, recall_context, research_context
+                            ),
+                            recipe_context=generation_reference_context,
+                        )
+                        prev_vision_repair_code = last_code
+                        repair_notes.append(
+                            f"LLM-agent escalation (iter {iteration}): "
+                            f"regenerated from scratch because {escalation_reason}."
+                        )
+                        vision_event = _error_patterns.record_failure(
+                            failure_type="vision_critique",
+                            error_text=(last_critique.repair_prompt or "vision critique below threshold"),
+                            fix_kind="regenerate",
+                            succeeded=False,
+                            iteration=iteration,
+                            turn_id=error_turn_id,
+                            model=self.llm.model,
+                        )
+                        if vision_event is not None:
+                            turn_error_events.append(vision_event)
+                        # Drop into the post-repair common path. Skip the
+                        # patch-LLM call below by guarding on this flag.
+                        last_critique = None  # consumed
+                        # Continue execution below the patch-style block.
+                        repair_done_via_escalation = True
+                    else:
+                        repair_done_via_escalation = False
+
+                    if not repair_done_via_escalation:
+                        repair_system_prompt = build_repair_system_prompt(
+                            config.hard_constraints, config.soft_constraints,
+                            recent_turn_errors=recent_turn_errors,
+                        )
+                        repair_user_prompt = build_vision_repair_prompt(
+                            last_code,
+                            intent=user_message,
+                            iteration=iteration,
+                            issues=[
                                 {
                                     "severity": i.severity,
                                     "issue_type": i.issue_type,
@@ -1524,51 +1800,82 @@ class AgentOrchestrator:
                                 }
                                 for i in last_critique.issues
                             ],
-                            "model_id": model_id,
-                            "model": self.llm.model,
-                            "system_prompt": repair_system_prompt,
-                            "prompt": repair_user_prompt,
+                            repair_instructions=last_critique.repair_prompt or "",
+                            matches_intent=bool(last_critique.matches_intent),
+                            overall_score=last_critique.overall_printability,
+                            confidence=last_critique.confidence,
+                            plan_summary=plan.summary or "",
+                            key_features=list(plan.key_features) if plan.key_features else None,
+                            plan_components=list(plan.components) if plan.components else None,
+                        )
+                        await self._emit_status("repairing",
+                            f"Repairing for vision feedback (vision attempt {vision_repairs_used}/{self.MAX_VISION_REPAIR_ITERATIONS}) · `{model_id}`",
+                            details=None,
+                            data={
+                                "iteration": iteration,
+                                "repair_kind": "vision",
+                                "rationale": "The rendered model passed execution but did not meet the visual/printability quality threshold.",
+                                "outcome": f"Fixing {len(last_critique.issues)} vision issue(s).",
+                                "inputs": [
+                                    f"vision score {last_critique.overall_printability:.2f}",
+                                    f"{len(last_critique.issues)} critique issue(s)",
+                                ],
+                                "vision_issues": [
+                                    {
+                                        "severity": i.severity,
+                                        "issue_type": i.issue_type,
+                                        "description": i.description,
+                                        "location_hint": i.location_hint,
+                                    }
+                                    for i in last_critique.issues
+                                ],
+                                "model_id": model_id,
+                                "model": self.llm.model,
+                                "system_prompt": repair_system_prompt,
+                                "prompt": repair_user_prompt,
+                            })
+                        await self._emit_debug("repair_request", f"Vision repair attempt {iteration}", {
+                            "score": last_critique.overall_printability,
+                            "issues_count": len(last_critique.issues),
+                            "user_prompt_chars": len(repair_user_prompt),
                         })
-                    await self._emit_debug("repair_request", f"Vision repair attempt {iteration}", {
-                        "score": last_critique.overall_printability,
-                        "issues_count": len(last_critique.issues),
-                        "user_prompt_chars": len(repair_user_prompt),
-                    })
-                    repair_response = await self.llm.repair_cadquery_vision(
-                        user_prompt=repair_user_prompt,
-                        hard_constraints=config.hard_constraints,
-                        soft_constraints=config.soft_constraints,
-                        recent_turn_errors=recent_turn_errors,
-                    )
-                    repair_notes.append(f"Vision critique identified {len(last_critique.issues)} issues (score: {last_critique.overall_printability:.2f})")
-                    candidate_code = extract_code_from_response(repair_response)
-                    last_code = await self._accept_or_recover_repair(
-                        original_code=last_code,
-                        candidate_code=candidate_code,
-                        iteration=iteration,
-                        repair_kind="vision",
-                        error_message=repair_user_prompt,
-                        failure_type=None,
-                        geometry_stats=last_geometry_stats,
-                        hard_constraints=config.hard_constraints,
-                        soft_constraints=config.soft_constraints,
-                        repair_notes=repair_notes,
-                    )
-                    # Vision-driven repairs don't have a prior failed-execution
-                    # event to update — they fire after a *successful* render
-                    # whose critique flagged issues. Record an event so the
-                    # learner sees vision-repair journeys too.
-                    vision_event = _error_patterns.record_failure(
-                        failure_type="vision_critique",
-                        error_text=(last_critique.repair_prompt or "vision critique below threshold"),
-                        fix_kind="vision",
-                        succeeded=False,
-                        iteration=iteration,
-                        turn_id=error_turn_id,
-                        model=self.llm.model,
-                    )
-                    if vision_event is not None:
-                        turn_error_events.append(vision_event)
+                        repair_response = await self.llm.repair_cadquery_vision(
+                            user_prompt=repair_user_prompt,
+                            hard_constraints=config.hard_constraints,
+                            soft_constraints=config.soft_constraints,
+                            recent_turn_errors=recent_turn_errors,
+                        )
+                        repair_notes.append(f"Vision critique identified {len(last_critique.issues)} issues (score: {last_critique.overall_printability:.2f})")
+                        candidate_code = extract_code_from_response(repair_response)
+                        last_code = await self._accept_or_recover_repair(
+                            original_code=last_code,
+                            candidate_code=candidate_code,
+                            iteration=iteration,
+                            repair_kind="vision",
+                            error_message=repair_user_prompt,
+                            failure_type=None,
+                            geometry_stats=last_geometry_stats,
+                            hard_constraints=config.hard_constraints,
+                            soft_constraints=config.soft_constraints,
+                            repair_notes=repair_notes,
+                        )
+                        prev_vision_repair_code = last_code
+                        # Vision-driven repairs don't have a prior failed-execution
+                        # event to update — they fire after a *successful* render
+                        # whose critique flagged issues. Record an event so the
+                        # learner sees vision-repair journeys too. (The escalation
+                        # branch already records its own event upstream.)
+                        vision_event = _error_patterns.record_failure(
+                            failure_type="vision_critique",
+                            error_text=(last_critique.repair_prompt or "vision critique below threshold"),
+                            fix_kind="vision",
+                            succeeded=False,
+                            iteration=iteration,
+                            turn_id=error_turn_id,
+                            model=self.llm.model,
+                        )
+                        if vision_event is not None:
+                            turn_error_events.append(vision_event)
                 else:
                     # Execution / syntax repair. Same idea as the vision
                     # branch: if syntax bugs already burned through their
@@ -2628,23 +2935,171 @@ class AgentOrchestrator:
         # If the model put the code in the reasoning channel instead of content
         # (a Qwen3.x failure mode), recover by extracting from reasoning. We
         # prefer content when both have code blocks.
+        #
+        # When the model emits multiple partial drafts inside reasoning before
+        # the final program (e.g. "Step 1: ... ```python ... ``` Step 2: ...
+        # ```python ... ``` Final: ```python complete program ```"), the
+        # first-block extractor picks one of the early sketches and returns
+        # an incomplete program. ``_extract_best_cadquery_block`` scores all
+        # candidate blocks and prefers the one that looks like a finished
+        # CadQuery program (has `import cadquery` + `result =`).
         extracted = extract_code_from_response(full_response).strip()
-        if not extracted and reasoning_buffer:
-            extracted_from_reasoning = extract_code_from_response(reasoning_buffer).strip()
-            if extracted_from_reasoning:
+
+        # If content extraction yielded only a fragment (no `import cadquery`
+        # or no `result =`), but the reasoning buffer holds a more complete
+        # program, prefer the reasoning's best block. Without this, a 115-char
+        # fragment like the one observed in 20260519-062300-74b35034 / run1+run2
+        # model-001 propagates into the syntax-repair loop and burns multiple
+        # iterations on something that the reasoning channel already had a
+        # complete answer for.
+        looks_incomplete = bool(extracted) and (
+            "import cadquery" not in extracted
+            or not re.search(r"^\s*result\s*=", extracted, re.MULTILINE)
+        )
+        if looks_incomplete and reasoning_buffer:
+            best_from_reasoning = _extract_best_cadquery_block(reasoning_buffer)
+            if best_from_reasoning and len(best_from_reasoning) > len(extracted):
                 await self._emit_debug(
                     "code_recovered_from_reasoning",
-                    "Code block was in the reasoning channel; recovered.",
-                    {"reasoning_length": len(reasoning_buffer), "code_length": len(extracted_from_reasoning)},
+                    "Content extract was a fragment; replaced with best CadQuery block from reasoning.",
+                    {
+                        "content_extract_chars": len(extracted),
+                        "reasoning_extract_chars": len(best_from_reasoning),
+                        "candidate_block_count": len(_PYTHON_BLOCK_RE.findall(reasoning_buffer)),
+                        "extractor": "smart_best_block_replacement",
+                    },
                 )
-                # Synthesize the full_response so the rest of the pipeline (parse,
-                # save, etc.) sees the code as if it had arrived normally.
-                full_response = "```python\n" + extracted_from_reasoning + "\n```"
+                full_response = "```python\n" + best_from_reasoning + "\n```"
+                extracted = best_from_reasoning
+
+        if not extracted and reasoning_buffer:
+            # Try the smart extractor first — it handles multi-draft traces.
+            best_from_reasoning = _extract_best_cadquery_block(reasoning_buffer)
+            if best_from_reasoning:
+                await self._emit_debug(
+                    "code_recovered_from_reasoning",
+                    "Picked best CadQuery block from reasoning channel (multi-draft trace).",
+                    {
+                        "reasoning_length": len(reasoning_buffer),
+                        "code_length": len(best_from_reasoning),
+                        "candidate_block_count": len(_PYTHON_BLOCK_RE.findall(reasoning_buffer)),
+                        "extractor": "smart_best_block",
+                    },
+                )
+                full_response = "```python\n" + best_from_reasoning + "\n```"
+            else:
+                extracted_from_reasoning = extract_code_from_response(reasoning_buffer).strip()
+                if extracted_from_reasoning:
+                    await self._emit_debug(
+                        "code_recovered_from_reasoning",
+                        "Code block was in the reasoning channel; recovered via first-block extractor.",
+                        {
+                            "reasoning_length": len(reasoning_buffer),
+                            "code_length": len(extracted_from_reasoning),
+                            "extractor": "first_block",
+                        },
+                    )
+                    # Synthesize the full_response so the rest of the pipeline
+                    # (parse, save, etc.) sees the code as if it had arrived
+                    # normally.
+                    full_response = "```python\n" + extracted_from_reasoning + "\n```"
 
         elapsed = time.time() - t_start
         await self._emit_debug("llm_response", f"LLM response complete ({elapsed:.1f}s)")
-        
+
         return extract_code_from_response(full_response)
+
+    async def _llm_agent_regenerate_with_critique(
+        self,
+        *,
+        user_message: str,
+        current_code: str,
+        critique,
+        iteration: int,
+        escalation_reason: str,
+        system_prompt: str,
+        plan_text: str,
+        external_context: str,
+        recipe_context: str,
+    ) -> str:
+        """Full code regeneration grounded in the previous attempt's vision
+        critique. Used by the LLM-agent escalation when patch-style repair has
+        stalled.
+
+        This bypasses the streaming generator (which is qwen3.x-friendly but
+        burns the token budget on partial reasoning drafts) and instead uses
+        a single non-streaming `generate()` call with thinking disabled and a
+        higher max_tokens budget. The response goes through a scoring extractor
+        that prefers blocks looking like a finished CadQuery program (has
+        `import cadquery` + `result =` + union/cut), not the first partial
+        draft a thinking model emitted while warming up.
+        """
+        regen_user_message = _build_regen_with_critique_user_message(
+            user_message=user_message,
+            current_code=current_code,
+            critique=critique,
+            iteration=iteration,
+            escalation_reason=escalation_reason,
+        )
+        # Wrap with the same plan + recipe + research context the generation
+        # path normally injects, but skip the `## Requested Change`
+        # boilerplate — the regen body already states the task clearly.
+        prefix_parts = [p for p in (external_context, recipe_context, plan_text) if p]
+        prefix = "\n\n".join(prefix_parts)
+        full_prompt = (
+            f"{prefix}\n\n{regen_user_message}" if prefix else regen_user_message
+        )
+
+        await self._emit_debug("llm_request", "Regen-with-critique request", {
+            "model": self.llm.model,
+            "iteration": iteration,
+            "prompt_chars": len(full_prompt),
+            "current_code_chars": len(current_code),
+        })
+
+        t_start = time.time()
+        try:
+            response = await self.llm.generate(
+                full_prompt,
+                system_prompt,
+                allow_thinking=False,
+                max_tokens=10240,
+            )
+        except Exception as exc:
+            await self._emit_debug(
+                "regen_with_critique_failed",
+                f"LLM regen call failed: {exc}",
+                {"traceback": traceback.format_exc()},
+            )
+            return current_code  # Keep the previous code so the next iter still has something
+        elapsed = time.time() - t_start
+
+        # Prefer the best-scoring complete program from the response. Falls
+        # back to the standard first-block extractor when only one candidate
+        # exists (or when none scored above the cadquery threshold).
+        best = _extract_best_cadquery_block(response)
+        fallback_used = ""
+        if not best:
+            best = extract_code_from_response(response).strip()
+            fallback_used = "extract_code_from_response"
+        if not best:
+            # Both extractors failed. The model produced no usable program.
+            # Returning the previous code keeps the loop alive — the next
+            # iteration's patch attempt has something to work from — instead
+            # of poisoning Step B with empty source.
+            best = current_code
+            fallback_used = "kept_previous_code"
+        await self._emit_debug(
+            "llm_response",
+            f"Regen-with-critique response ({elapsed:.1f}s)",
+            {
+                "response_chars": len(response or ""),
+                "extracted_chars": len(best),
+                "candidate_block_count": len(_PYTHON_BLOCK_RE.findall(response or "")),
+                "fallback_used": fallback_used or "smart_extractor",
+            },
+        )
+        return best
 
     async def _run_render(self, shape, model_dir, iteration: int) -> Dict[str, str]:
         await self._emit_status("rendering", "Rendering ISO / Top / Front / Side views…",

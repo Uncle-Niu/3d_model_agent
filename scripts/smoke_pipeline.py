@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Optional
 
 # Make stdout UTF-8 even on Windows cp1252 consoles so we can print live LLM
 # tokens that contain unicode (em-dashes, etc.) without crashing the pipeline.
@@ -34,8 +35,9 @@ from backend.models.llm_service import LLMService
 from backend.storage import StorageService
 
 
-async def run(prompt: str, keep_data: bool) -> None:
-    tmpdir = Path(tempfile.mkdtemp(prefix="cad_smoke_"))
+async def run(prompt: str, keep_data: bool, agent_logic: str = "orchestrator", out_dir: Optional[Path] = None) -> Optional[str]:
+    tmpdir = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="cad_smoke_"))
+    tmpdir.mkdir(parents=True, exist_ok=True)
     try:
         storage = StorageService(tmpdir)
         project = ProjectConfig(project_id="smoke", name="Smoke Test")
@@ -128,6 +130,7 @@ async def run(prompt: str, keep_data: bool) -> None:
             project_id="smoke",
             thread_id="default",
             user_message=prompt,
+            agent_logic=agent_logic,
         )
         elapsed = time.time() - t0
 
@@ -139,10 +142,11 @@ async def run(prompt: str, keep_data: bool) -> None:
                 print(f"Renders saved to: {renders_dir}")
                 for p in sorted(renders_dir.glob("render_*.png")):
                     print(f"  - {p}")
-        if keep_data:
+        if keep_data or out_dir:
             print(f"Data dir preserved at: {tmpdir}")
+        return model_id
     finally:
-        if not keep_data:
+        if not (keep_data or out_dir):
             shutil.rmtree(tmpdir, ignore_errors=True)
 
 
@@ -150,8 +154,24 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("prompt", help="What to build")
     parser.add_argument("--keep", action="store_true", help="Keep tempdir after run")
+    parser.add_argument(
+        "--agent-logic",
+        choices=("orchestrator", "llm_agent"),
+        default="orchestrator",
+        help="Which agent flow to use (default: orchestrator).",
+    )
+    parser.add_argument(
+        "--out-dir",
+        default=None,
+        help="Persist data under this directory instead of a tempdir (implies --keep).",
+    )
     args = parser.parse_args()
-    asyncio.run(run(args.prompt, args.keep))
+    asyncio.run(run(
+        args.prompt,
+        args.keep,
+        agent_logic=args.agent_logic,
+        out_dir=Path(args.out_dir) if args.out_dir else None,
+    ))
 
 
 if __name__ == "__main__":
