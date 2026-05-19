@@ -9,6 +9,12 @@ build/
 .venv/
 venv/
 env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
 
 # Node
 node_modules/
@@ -17,13 +23,17 @@ frontend/dist/
 # Data
 data/
 scratch/
+temp_render_test/
 
 # Local agent files and logs
 .claude/
 *.log
+scripts/_*
 
 # Environment
 .env
+.env.local
+.env.*.local
 
 # IDE
 .vscode/
