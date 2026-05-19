@@ -885,32 +885,20 @@ class LLMService:
             "Think carefully about geometry, orientation, joinery, and printability. "
             "Be specific — never say things like 'reasonable size' — pick numbers in mm.\n\n"
             "## Output format (STRICT)\n"
-            "1. First, a short `<thinking>` section with your free-form reasoning (1-3 paragraphs). "
-            "   Use this to consider proportions, references, ambiguities, and risks.\n"
-            "2. Then a `<physical_use>` block that grounds the design in the real world (see schema below). "
-            "   This is where you reason about gravity, contact surfaces, applied forces, and how the object is actually used.\n"
-            "3. Then a `<feature_decisions>` block where you decide which OPTIONAL feature families this design needs, "
-            "   with a one-line rationale per decision. Skip features the request does not actually require.\n"
-            "4. Finally, output a single `<design_plan>` XML block with this exact schema. DO NOT output JSON:\n"
+            "Output ONLY three XML blocks, in this exact order, with NO prose, NO markdown, "
+            "NO code fences, and NO `<thinking>` tag anywhere:\n"
+            "  1. `<design_plan>` — the full structured plan. EMIT THIS FIRST so that even if your "
+            "     response is cut short, the most critical content survives. Every component "
+            "     MUST have <dimensions>, <position>, <operation>, and <spec_source>. A component "
+            "     missing <dimensions> is invalid.\n"
+            "  2. `<physical_use>` — real-world use grounding (orientation, forces, containment).\n"
+            "  3. `<feature_decisions>` — yes/no decisions on OPTIONAL feature families with a one-line rationale.\n\n"
+            "Your very first non-whitespace character MUST be `<` (the start of `<design_plan>`). "
+            "Do any internal reasoning silently — do NOT write a prose preamble, a `<thinking>` tag, "
+            "or markdown step-by-step notes. The agent reads only the three XML blocks; everything "
+            "else is wasted output and risks cutting off the plan before it is complete.\n\n"
+            "Exact schemas (DO NOT output JSON):\n"
             "```xml\n"
-            "<physical_use>\n"
-            "  <orientation>How the part sits in normal use — which face is the bottom under gravity? If it rests on a desk/table/floor, say so explicitly here.</orientation>\n"
-            "  <contact_surfaces>What the part touches in use (table, wall, hand, the object it holds). For a part that sits on a surface, name the flat contact face and its approximate footprint in mm — every other component MUST stay above that face's Z height.</contact_surfaces>\n"
-            "  <applied_forces>Where loads come from and roughly how big (e.g. 200g phone pulling forward on the holder lip). Decompose into the dominant directions (down, forward/back, sideways) so you can decide which features resist them.</applied_forces>\n"
-            "  <containment_strategy>How the held / mating / supported object is kept in place under those forces. Name the actual feature: front lip, side guides, snap clip, friction pad, magnet, screws, gravity into a pocket, etc. \"It just rests there\" is only acceptable when the contact face is horizontal and there is no forward/sideways force component.</containment_strategy>\n"
-            "  <pose_intent>If any component is meant to be tilted, leaned, reclined, or otherwise rotated away from axis-aligned — name the component AND state the angle in degrees from horizontal or vertical AND the axis it tilts around. This is the ONLY place prose-style angle descriptions count; the actual code generator reads the structured &lt;rotation&gt; tags on each component, so whatever you say here you MUST also emit as a &lt;rotation&gt; tag on the relevant component below. Leave empty if nothing tilts.</pose_intent>\n"
-            "  <use_cycle>How a user interacts with it (place once, insert/remove repeatedly, screw down, etc.)</use_cycle>\n"
-            "  <ergonomic_notes>Any human-scale considerations: graspable, finger clearance, visibility</ergonomic_notes>\n"
-            "  <mating_object>If holding/mounting/joining something, describe its key dimensions and clearances</mating_object>\n"
-            "</physical_use>\n"
-            "<feature_decisions>\n"
-            "  <decision feature=\"fasteners_or_mounting_holes\" needed=\"true|false\">why this design does/does not need fastener holes</decision>\n"
-            "  <decision feature=\"internal_cavity_or_shell\" needed=\"true|false\">why this design does/does not need a hollow cavity</decision>\n"
-            "  <decision feature=\"retention_geometry\" needed=\"true|false\">why retention (lips, clips, hooks) is or is not required</decision>\n"
-            "  <decision feature=\"load_bearing_reinforcement\" needed=\"true|false\">whether ribs/gussets are needed for the expected loads</decision>\n"
-            "  <decision feature=\"clearance_or_port_cutouts\" needed=\"true|false\">whether cable paths/ports/access cutouts are required</decision>\n"
-            "  <decision feature=\"moving_or_mating_interface\" needed=\"true|false\">whether the design has hinges/threads/sliding parts</decision>\n"
-            "</feature_decisions>\n"
             "<design_plan>\n"
             "  <summary>one-sentence description of the final part</summary>\n"
             "  <overall_dimensions_mm>\n"
@@ -949,6 +937,24 @@ class LLMService:
             "    <parameter name=\"param_name\">10.0</parameter>\n"
             "  </parameters>\n"
             "</design_plan>\n"
+            "<physical_use>\n"
+            "  <orientation>How the part sits in normal use — which face is the bottom under gravity? If it rests on a desk/table/floor, say so explicitly here.</orientation>\n"
+            "  <contact_surfaces>What the part touches in use (table, wall, hand, the object it holds). For a part that sits on a surface, name the flat contact face and its approximate footprint in mm — every other component MUST stay above that face's Z height.</contact_surfaces>\n"
+            "  <applied_forces>Where loads come from and roughly how big (e.g. 200g phone pulling forward on the holder lip). Decompose into the dominant directions (down, forward/back, sideways) so you can decide which features resist them.</applied_forces>\n"
+            "  <containment_strategy>How the held / mating / supported object is kept in place under those forces. Name the actual feature: front lip, side guides, snap clip, friction pad, magnet, screws, gravity into a pocket, etc. \"It just rests there\" is only acceptable when the contact face is horizontal and there is no forward/sideways force component.</containment_strategy>\n"
+            "  <pose_intent>If any component is meant to be tilted, leaned, reclined, or otherwise rotated away from axis-aligned — name the component AND state the angle in degrees from horizontal or vertical AND the axis it tilts around. This is the ONLY place prose-style angle descriptions count; the actual code generator reads the structured &lt;rotation&gt; tags on each component, so whatever you say here you MUST also emit as a &lt;rotation&gt; tag on the relevant component below. Leave empty if nothing tilts.</pose_intent>\n"
+            "  <use_cycle>How a user interacts with it (place once, insert/remove repeatedly, screw down, etc.)</use_cycle>\n"
+            "  <ergonomic_notes>Any human-scale considerations: graspable, finger clearance, visibility</ergonomic_notes>\n"
+            "  <mating_object>If holding/mounting/joining something, describe its key dimensions and clearances</mating_object>\n"
+            "</physical_use>\n"
+            "<feature_decisions>\n"
+            "  <decision feature=\"fasteners_or_mounting_holes\" needed=\"true|false\">why this design does/does not need fastener holes</decision>\n"
+            "  <decision feature=\"internal_cavity_or_shell\" needed=\"true|false\">why this design does/does not need a hollow cavity</decision>\n"
+            "  <decision feature=\"retention_geometry\" needed=\"true|false\">why retention (lips, clips, hooks) is or is not required</decision>\n"
+            "  <decision feature=\"load_bearing_reinforcement\" needed=\"true|false\">whether ribs/gussets are needed for the expected loads</decision>\n"
+            "  <decision feature=\"clearance_or_port_cutouts\" needed=\"true|false\">whether cable paths/ports/access cutouts are required</decision>\n"
+            "  <decision feature=\"moving_or_mating_interface\" needed=\"true|false\">whether the design has hinges/threads/sliding parts</decision>\n"
+            "</feature_decisions>\n"
             "```\n\n"
             "## Constraints\n"
             f"- Max print volume: {hc.max_x_mm} × {hc.max_y_mm} × {hc.max_z_mm} mm\n"
@@ -984,7 +990,14 @@ class LLMService:
             "component description have NO effect on the generated geometry. The code generator only reads structured `<rotation>` tags. "
             "If a component's description names a tilt, you MUST also emit a `<rotation>` tag on that same component. The plan quality "
             "gate rejects any plan that describes a tilt in prose without the corresponding structured tag.\n"
-            "- **Surface-resting designs:** If the part is meant to sit on a desk/table/floor (state this in `<physical_use>` / `<orientation>`), the bottom of EVERY component must share the same floor Z. Nothing should protrude below the base. List the base/footprint component first and translate every other component to z ≥ base_top. A backrest centered at z=0 will extend below the floor — explicitly translate it up.\n"
+            "- **Surface-resting designs:** If the part is meant to sit on a desk/table/floor (state this in `<physical_use>` / `<orientation>`), the bottom of EVERY component must share the same floor Z. Nothing should protrude below the base. List the base/footprint component first and translate every other component to z ≥ base_top. A backrest centered at z=0 will extend below the floor — explicitly translate it up.\n\n"
+            "## Final output reminder\n"
+            "Your response is consumed by an XML parser, not a human. Emit only the three blocks "
+            "above (`<design_plan>` first, then `<physical_use>`, then `<feature_decisions>`). No "
+            "preamble, no `<thinking>`, no markdown headings, no commentary, no closing summary. "
+            "Every `<component>` must contain `<dimensions>`, `<position>`, `<operation>`, and "
+            "`<spec_source>` — a component without these is treated as malformed and the plan is "
+            "rejected before code generation.\n"
         )
 
         user_parts = []
@@ -1039,7 +1052,14 @@ class LLMService:
             soft_constraints=soft_constraints,
         )
 
-        user_msg = self._suffix_no_think(user_msg)
+        # Planning is the one stage where qwen3's hidden reasoning channel is
+        # *helpful* — letting the model think internally (in `reasoning_content`)
+        # keeps the visible `content` channel reserved for the structured XML.
+        # The old behaviour appended `/no_think` and asked for `<thinking>` in
+        # the visible output, which trained the model to burn 4-5k content
+        # tokens on prose before reaching `<design_plan>` and routinely got
+        # truncated at max_tokens. Now: no `/no_think`, no `<thinking>` block,
+        # structured XML only in content.
         messages = [{"role": "system", "content": system_prompt}]
         if chat_history:
             messages.extend(chat_history)
@@ -1052,6 +1072,12 @@ class LLMService:
         full_content = ""
         full_reasoning = ""
         planning_timeout_s = float(os.getenv("LLM_PLAN_TIMEOUT_S", "360"))
+        # Generous budget for the visible-content channel — the structured plan
+        # is emitted FIRST so even a heavily truncated response now lands the
+        # important content, but a complete plan for a 6-component assembly
+        # plus physical_use/feature_decisions can still run ~5-7k content
+        # tokens. Env-overridable for very large designs.
+        plan_max_tokens = int(os.getenv("LLM_PLAN_MAX_TOKENS", "12288"))
 
         async def _stream_plan_once() -> None:
             nonlocal full_content, full_reasoning
@@ -1059,7 +1085,7 @@ class LLMService:
                 model=self.model,
                 messages=messages,
                 temperature=0.3,
-                max_tokens=6144,
+                max_tokens=plan_max_tokens,
                 stream=True,
                 timeout=planning_timeout_s,
             )
@@ -1100,7 +1126,7 @@ class LLMService:
                     model=self.model,
                     messages=messages,
                     temperature=0.3,
-                    max_tokens=6144,
+                    max_tokens=plan_max_tokens,
                     timeout=planning_timeout_s,
                 )
             except (APIConnectionError, APITimeoutError, APIStatusError) as fallback_exc:
@@ -1157,78 +1183,41 @@ class LLMService:
         soft_constraints: Optional[SoftConstraints] = None,
         on_chunk: Optional[Callable[[str], Any]] = None,
     ) -> DesignPlan:
-        """Regenerate a plan after the deterministic recipe gate rejects it."""
-        rejected_text = plan_to_prompt_text(rejected_plan) or rejected_plan.raw_text
-        hc = hard_constraints or HardConstraints()
-        sc = soft_constraints or SoftConstraints()
-        system_prompt = (
-            "You repair CAD design plans. Output XML only: one <physical_use>, "
-            "one <feature_decisions>, and one complete <design_plan>. No prose, "
-            "no markdown, no JSON. Every component must have dimensions, position, "
-            "operation, and spec_source. If a component is tilted, add a structured "
-            "<rotation axis=\"X|Y|Z\" angle_deg=\"...\" intent=\"...\"/> tag."
-        )
-        user_prompt = self._suffix_no_think(
-            "Rewrite the rejected CAD plan from scratch so it satisfies the gate.\n\n"
-            f"Request: {user_message}\n\n"
-            f"Print constraints: max {hc.max_x_mm} x {hc.max_y_mm} x {hc.max_z_mm} mm, "
-            f"min wall {hc.min_wall_thickness_mm} mm, material {sc.material}, "
-            f"max overhang {sc.overhang_angle_max} deg.\n\n"
-            "Quality gate feedback to fix:\n"
+        """Regenerate a plan after the deterministic recipe gate rejects it.
+
+        Uses the same prompt contract as `plan_design` (structured XML first, no
+        prose) plus the rejection feedback, so a single retry has the same
+        completion-budget headroom as the first draft instead of being squeezed
+        into a tight non-streaming call.
+        """
+        rejected_text = plan_to_prompt_text(rejected_plan) or rejected_plan.raw_text or ""
+        rejected_text = rejected_text[:1500]
+
+        # Prepend the rejection context to plan_feedback so it threads through
+        # build_planning_prompt's existing slot rather than living in a parallel
+        # mini-prompt that drifts out of sync with the planner contract.
+        composed_feedback = (
             f"{quality_feedback}\n\n"
-            "Required XML shape:\n"
-            "<physical_use>...</physical_use>\n"
-            "<feature_decisions>\n"
-            "  <decision feature=\"fasteners_or_mounting_holes\" needed=\"true|false\">...</decision>\n"
-            "  <decision feature=\"internal_cavity_or_shell\" needed=\"true|false\">...</decision>\n"
-            "  <decision feature=\"retention_geometry\" needed=\"true|false\">...</decision>\n"
-            "  <decision feature=\"load_bearing_reinforcement\" needed=\"true|false\">...</decision>\n"
-            "  <decision feature=\"clearance_or_port_cutouts\" needed=\"true|false\">...</decision>\n"
-            "  <decision feature=\"moving_or_mating_interface\" needed=\"true|false\">...</decision>\n"
-            "</feature_decisions>\n"
-            "<design_plan>\n"
-            "  <summary>...</summary>\n"
-            "  <overall_dimensions_mm><x>...</x><y>...</y><z>...</z></overall_dimensions_mm>\n"
-            "  <components>\n"
-            "    <component><name>...</name><description>...</description><primitive>box</primitive>"
-            "<dimensions><length>...</length><width>...</width><height>...</height></dimensions>"
-            "<position><x>...</x><y>...</y><z>...</z></position><orientation>...</orientation>"
-            "<operation>base|union|cut|fillet|chamfer|shell</operation><spec_source>explicit|inferred|default</spec_source></component>\n"
-            "  </components>\n"
-            "  <connections>...</connections><key_features>...</key_features>"
-            "<assumptions>...</assumptions><risks>...</risks><parameters>...</parameters>\n"
-            "</design_plan>\n\n"
-            "Use printable dimensions that fit the volume. For this kind of laptop tray, "
-            "prefer a compact single-piece design around 230-250 mm wide, 170-220 mm deep, "
-            "with tray walls/lip, an open usable tray cavity/shell, VESA back plate, M4/VESA holes, "
-            "and ribs/gussets. Do not output a plain slab.\n\n"
-            "Rejected plan summary (truncated):\n"
-            f"{rejected_text[:800]}"
+            "Rewrite the plan from scratch so it passes the gate. Keep the same intent "
+            "and the same functional interfaces as the rejected attempt, but fill in "
+            "every required field (dimensions, position, operation, spec_source on "
+            "every component; <rotation> on every tilted component; "
+            "<overall_dimensions_mm> that fits inside the print volume).\n\n"
+            "Rejected plan summary (truncated for context):\n"
+            f"{rejected_text}"
         )
-        try:
-            resp = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.2,
-                max_tokens=4096,
-                timeout=float(os.getenv("LLM_PLAN_TIMEOUT_S", "360")),
-            )
-        except (APIConnectionError, APITimeoutError, APIStatusError) as exc:
-            raise LLMBackendUnavailable(
-                f"LLM backend failed during compact plan repair: {type(exc).__name__}: {exc}",
-                cause=exc,
-            ) from exc
-        content = resp.choices[0].message.content or ""
-        reasoning = getattr(resp.choices[0].message, "reasoning", None) or getattr(resp.choices[0].message, "reasoning_content", None) or ""
-        combined = (content + "\n" + reasoning).strip()
-        if on_chunk and combined:
-            await on_chunk(combined)
-        plan = parse_design_plan(combined)
-        plan.raw_text = combined
-        return plan
+        return await self.plan_design(
+            user_message=user_message,
+            chat_history=chat_history,
+            current_source=current_source,
+            current_model_id=current_model_id,
+            research_context=research_context,
+            recipe_context=recipe_context,
+            plan_feedback=composed_feedback,
+            hard_constraints=hard_constraints,
+            soft_constraints=soft_constraints,
+            on_chunk=on_chunk,
+        )
 
     async def decide_research(self, user_message: str, chat_history: Optional[list[dict]] = None) -> tuple[Optional[str], str]:
         """
@@ -1285,19 +1274,31 @@ def extract_diagnosis_from_response(response: str) -> str:
 
 
 def _plan_has_structured_content(plan: DesignPlan) -> bool:
-    """True if the parsed plan carries anything beyond an empty skeleton.
+    """True if the parsed plan carries enough structure to be worth using.
 
-    Used by ``plan_design`` to decide whether to retry parsing against a
-    different source (e.g. fall back from content to reasoning).
+    Used by ``plan_design`` to decide whether to retry parsing against the
+    reasoning channel. A skeleton — components with only a `<name>` and no
+    `<dimensions>` — is what the parser produces when the LLM was truncated
+    mid-component; treating that as "structured content" would skip the
+    fallback to the reasoning channel where the full plan may actually live,
+    and then waste a repair cycle on the gate complaining about missing
+    dimensions. Require at least one component that actually carries
+    dimensions OR a non-additive operation (cut/fillet/chamfer/shell/pattern,
+    which don't need dimensions to be useful) before treating the plan as
+    structured.
     """
-    return bool(
-        plan.summary
-        or plan.components
-        or plan.key_features
-        or plan.parameters
-        or plan.assumptions
-        or plan.risks
-    )
+    if plan.summary or plan.key_features or plan.assumptions or plan.risks or plan.parameters:
+        return True
+    if not plan.components:
+        return False
+    _MODIFIER_OPS = {"cut", "fillet", "chamfer", "shell", "pattern"}
+    for c in plan.components:
+        op = (c.operation or "").strip().lower()
+        if c.dimensions:
+            return True
+        if op in _MODIFIER_OPS:
+            return True
+    return False
 
 
 def _parse_physical_use_block(content: str) -> Optional[PhysicalUse]:
